@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\ED8Editor.Core\ED8Editor.Core.csproj" />
+    <ProjectReference Include="..\ED8Editor.ScriptHeaders\ED8Editor.ScriptHeaders.csproj" />
+  </ItemGroup>
+</Project>

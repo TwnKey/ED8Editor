@@ -1,0 +1,107 @@
+warning: unused import: `std::collections::HashMap`
+ --> src\core\phyre_parse.rs:4:5
+  |
+4 | use std::collections::HashMap;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `pixel_offset`
+  --> src\core\phyre.rs:54:44
+   |
+54 |     let (format, width, height, mip_count, pixel_offset) = scan_texture_metadata(data)?;
+   |                                            ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_pixel_offset`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `data`
+   --> src\core\phyre.rs:191:28
+    |
+191 | fn find_texture_dimensions(data: &[u8], total_pixels: usize) -> Option<(u32, u32)> {
+    |                            ^^^^ help: if this is intentional, prefix it with an underscore: `_data`
+
+warning: unused variable: `user_fixup_count`
+  --> src\core\phyre_parse.rs:29:9
+   |
+29 |     let user_fixup_count = read_u32_endian(data, 48, is_be) as usize;
+   |         ^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_user_fixup_count`
+
+warning: unused variable: `user_fixup_data_size`
+  --> src\core\phyre_parse.rs:30:9
+   |
+30 |     let user_fixup_data_size = read_u32_endian(data, 52, is_be) as usize;
+   |         ^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_user_fixup_data_size`
+
+warning: unused variable: `total_data_size`
+  --> src\core\phyre_parse.rs:31:9
+   |
+31 |     let total_data_size = read_u32_endian(data, 56, is_be) as usize;
+   |         ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_total_data_size`
+
+warning: unused variable: `header_class_inst_count`
+  --> src\core\phyre_parse.rs:32:9
+   |
+32 |     let header_class_inst_count = read_u32_endian(data, 60, is_be) as usize;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_header_class_inst_count`
+
+warning: unused variable: `header_class_child_count`
+  --> src\core\phyre_parse.rs:33:9
+   |
+33 |     let header_class_child_count = read_u32_endian(data, 64, is_be) as usize;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_header_class_child_count`
+
+warning: variable `ptex2d_member_offset` is assigned to, but never used
+  --> src\core\phyre_parse.rs:72:9
+   |
+72 |     let mut ptex2d_member_offset: usize = 0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: consider using `_ptex2d_member_offset` instead
+
+warning: variable `ptex2d_member_count` is assigned to, but never used
+  --> src\core\phyre_parse.rs:73:9
+   |
+73 |     let mut ptex2d_member_count: usize = 0;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: consider using `_ptex2d_member_count` instead
+
+warning: value assigned to `ptex2d_member_offset` is never read
+  --> src\core\phyre_parse.rs:93:13
+   |
+93 |             ptex2d_member_offset = running_member_offset;
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: maybe it is overwritten before being read?
+   = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `ptex2d_member_count` is never read
+  --> src\core\phyre_parse.rs:94:13
+   |
+94 |             ptex2d_member_count = dm_count;
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: maybe it is overwritten before being read?
+
+warning: function `is_power_of_two` is never used
+   --> src\core\phyre.rs:218:4
+    |
+218 | fn is_power_of_two(n: u32) -> bool {
+    |    ^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eff-editor` (lib) generated 13 warnings (run `cargo fix --lib -p eff-editor` to apply 8 suggestions)
+warning: variable does not need to be mutable
+   --> src\cli\main.rs:326:13
+    |
+326 |         let mut wide: Vec<_> = fields.iter().filter(|(_, vs)| vs.len() > 20).collect();
+    |             ----^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `eff-editor` (bin "eff-cli") generated 1 warning (run `cargo fix --bin "eff-cli" -p eff-editor` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 0.95s
+     Running `target\release\eff-cli.exe dump 'C:/Program Files (x86)/Steam/steamapps/common/Trails of Cold Steel/data/effects/system/mk_lp.eff'`

@@ -1,0 +1,5 @@
+# Statically link the MSVC C runtime so the release binaries have no external
+# runtime dependency (no Visual C++ Redistributable needed) — they only use
+# system DLLs that ship with Windows. Makes distribution "just ship the .exe".
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

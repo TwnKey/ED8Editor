@@ -1,0 +1,59 @@
+[package]
+name = "eff-editor"
+version = "0.1.0"
+edition = "2021"
+description = "Trails of Cold Steel .eff file editor - parse, analyze, visualize, and modify effect files"
+
+[[bin]]
+name = "eff-cli"
+path = "src/cli/main.rs"
+
+[[bin]]
+name = "eff-gui"
+path = "src/gui/main.rs"
+
+[lib]
+name = "eff_core"
+path = "src/lib.rs"
+
+[dependencies]
+# Binary parsing
+encoding_rs = "0.8"       # cp932 (Shift-JIS) decoding
+byteorder = "1.5"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# GUI (egui)
+eframe = "0.29"
+egui = "0.29"
+egui_glow = "0.29"
+glow = "0.13"
+
+# Serialization (for JSON export and knowledge base)
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Math
+glam = "0.28"             # Vec3, Mat4 etc - useful for effect params
+
+# Clipboard (image copy)
+arboard = "3.4"
+
+# GIF encoding (preview recording)
+gif = "0.13"
+
+# Image decoding/encoding (DDS parse + PNG/JPEG import for texture replacement)
+image = { version = "0.25", default-features = false, features = ["dds", "png", "jpeg"] }
+
+# Logging
+log = "0.4"
+
+# Native file dialogs
+rfd = "0.14"
+env_logger = "0.11"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

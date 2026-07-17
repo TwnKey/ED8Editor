@@ -1,0 +1,1519 @@
+=== op 0	thunk 0x4064BA	handler 0x64F2D0 ===
+  param_1[0x1a] = param_1[0x1a] + 1;
+
+=== op 1	thunk 0x401E15	handler 0x64F2F0 ===
+  param_1[0x1a] = param_1[0x1a] + 1;
+  if ((short)param_1[0x1f] == 0) {
+  uVar2 = (short)param_1[0x1f] - 1;
+  if ((short)param_1[0x1f] == 0) {
+  uVar2 = (short)param_1[0x1f] - 1;
+  param_1[0x1a] = iVar4;
+
+=== op 2	thunk 0x4012BC	handler 0x653050 ===
+  _Src = (char *)(iVar6 + 1 + param_2[0x1a]);
+  memcpy((void *)((int)&param_2 + 3),_Src,(int)pcVar1 - (int)_Src);
+  } while (cVar2 != '\0');
+  piVar3[0x1a] = (int)(pcVar4 + piVar3[0x1a] + (3 - (int)(_Src + 2)));
+  if (param_2._3_1_ != '\0') {
+  *(short *)(piVar3 + 0x1f) = (short)piVar3[0x1f] + 1;
+  piVar3[*(ushort *)(piVar3 + 0x1f) + 0x20] = piVar3[0x1a];
+  *(short *)(piVar3 + 0x1f) = (short)piVar3[0x1f] + 1;
+  piVar3[0x1a] = iVar5;
+
+=== op 3	thunk 0x40E610	handler 0x64F360 ===
+  *(undefined4 *)(param_1 + 0x68) =
+  *(undefined4 *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+
+=== op 4	thunk 0x40CB08	handler 0x6531A0 ===
+  _Src = (char *)(param_2[0x19] + 1 + param_2[0x1a]);
+  memcpy((void *)((int)&param_2 + 3),_Src,(int)pcVar1 - (int)_Src);
+  } while (cVar2 != '\0');
+  piVar3[0x1a] = iVar6;
+  strncpy((char *)(piVar3 + 0xb),(char *)param_2,0x2f);
+  piVar3[0x1a] = (int)pcVar4 - piVar3[0x19];
+
+=== op 5	thunk 0x403189	handler 0x6532E0 ===
+  iVar1 = thunk_FUN_00652c20(param_1,0);
+  *(undefined4 *)(param_1 + 0x68) =
+  *(undefined4 *)(*(int *)(param_1 + 100) + *(int *)(param_1 + 0x68));
+  *(int *)(param_1 + 0x68) = *(int *)(param_1 + 0x68) + 4;
+
+=== op 6	thunk 0x401109	handler 0x653320 ===
+  local_14 = thunk_FUN_00652c20(param_1,0);
+  pvVar1 = (void *)(*(int *)(iVar4 + 100) + *(int *)(iVar4 + 0x68));
+  memcpy(&local_5,pvVar1,(int)_Src_00 - (int)pvVar1);
+  memcpy(local_c,_Src_00,(int)pvVar1 - (int)_Src_00);
+  memcpy(&local_18,_Src,(int)(iVar3 + 2U) - (int)_Src);
+  *(undefined4 *)(param_1 + 0x68) = local_18;
+  memcpy(&param_1,_Src_00,(int)((int)_Src_00 + 4U) - (int)_Src_00);
+  *(int *)(iVar4 + 0x68) = param_1;
+
+=== op 7	thunk 0x40F853	handler 0x64F380 ===
+  puVar1 = (uint *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  *(int *)(param_2 + 0x68) = (int)puVar1 + (4 - *(int *)(param_2 + 100));
+
+=== op 8	thunk 0x40C11C	handler 0x653410 ===
+  iVar1 = *(int *)(param_1 + 0x68);
+  _Src = (void *)(*(int *)(param_1 + 100) + 1 + iVar1);
+  memcpy((void *)((int)_Src + (int)&param_1 + (-iVar1 - *(int *)(param_1 + 100)) + -1),_Src,
+  *(int *)(iVar2 + 0x68) = iVar1 + 1;
+  uVar3 = thunk_FUN_00652c20(iVar2,0);
+
+=== op 9	thunk 0x404D4A	handler 0x64F3E0 ===
+  *(int *)(param_1 + 0x68) = *(int *)(param_1 + 0x68) + 1;
+
+=== op 10	thunk 0x40373D	handler 0x653480 ===
+  iVar1 = *(int *)(param_2 + 0x68);
+  _Src = (void *)(*(int *)(param_2 + 100) + 1 + iVar1);
+  memcpy((void *)((int)_Src + (int)&param_2 + (-iVar1 - *(int *)(param_2 + 100)) + 2),_Src,
+  *(int *)(uVar3 + 0x68) = iVar1 + 1;
+  uVar2 = param_2 >> 0x18;
+  uVar4 = thunk_FUN_00652c20(uVar3,*(undefined4 *)(param_1 + 0x30 + uVar2 * 4));
+
+=== op 11	thunk 0x40215D	handler 0x64F400 ===
+  *(int *)(param_1 + 0x68) = *(int *)(param_1 + 0x68) + 1;
+
+=== op 12	thunk 0x40AFCE	handler 0x6534F0 ===
+  _Src = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&param_1,_Src,(int)((int)_Src + 2U) - (int)_Src);
+  *(int *)(iVar1 + 0x68) = (int)_Src + (2 - *(int *)(iVar1 + 100));
+
+=== op 13	thunk 0x40A795	handler 0x653540 ===
+  _Src = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&param_1,_Src,(int)((int)_Src + 2U) - (int)_Src);
+  *(int *)(iVar1 + 0x68) = (int)_Src + (2 - *(int *)(iVar1 + 100));
+
+=== op 14	thunk 0x40B64F	handler 0x653590 ===
+  _Src = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&param_1,_Src,(int)((int)_Src + 4U) - (int)_Src);
+  *(int *)(uVar1 + 0x68) = (int)_Src + (4 - *(int *)(uVar1 + 100));
+
+=== op 15	thunk 0x4035EE	handler 0x6535E0 ===
+  _Src = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&param_1,_Src,(int)((int)_Src + 4U) - (int)_Src);
+  *(int *)(uVar1 + 0x68) = (int)_Src + (4 - *(int *)(uVar1 + 100));
+
+=== op 16	thunk 0x401EE2	handler 0x64F420 ===
+  _Src = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&param_2,_Src,(int)pvVar1 - (int)_Src);
+  *(int *)(uVar4 + 0x68) = (int)pvVar1 - *(int *)(uVar4 + 100);
+
+=== op 17	thunk 0x40C2B6	handler 0x64F570 ===
+  iVar4 = *(int *)(param_2 + 100);
+  pvVar1 = (void *)(iVar4 + 1 + *(int *)(param_2 + 0x68));
+  memcpy(local_8,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(&param_2,_Src,(int)pvVar1 - (int)_Src);
+  *(int *)(uVar3 + 0x68) = (int)pvVar1 - iVar4;
+  *(int *)(uVar3 + 0x68) = (int)pvVar1 - *(int *)(uVar3 + 100);
+
+=== op 18	thunk 0x40353A	handler 0x653630 ===
+  iVar1 = *(int *)(param_1 + 0x68);
+  _Src = (void *)(*(int *)(param_1 + 100) + 1 + iVar1);
+  memcpy((void *)((int)_Src + (int)&param_1 + (-iVar1 - *(int *)(param_1 + 100)) + 2),_Src,
+  *(int *)(uVar3 + 0x68) = iVar1 + 1;
+  uVar2 = param_1 >> 0x18;
+  uVar4 = thunk_FUN_00652c20(uVar3,uVar4);
+
+=== op 19	thunk 0x406BF4	handler 0x653A40 ===
+  pcVar6 = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_90,pcVar6,(int)pcVar7 - (int)pcVar6);
+  } while (cVar2 != '\0');
+  } while (cVar2 != '\0');
+  } while (*pcVar5 != '\0');
+  memcpy(&local_8a,pcVar6,(int)pcVar1 - (int)pcVar6);
+  memcpy(&local_a0,pcVar1,(int)pcVar7 - (int)pcVar1);
+  memcpy(&local_b4,pcVar7,(int)pcVar6 - (int)pcVar7);
+  memcpy(&local_b0,pcVar6,(int)pcVar7 - (int)pcVar6);
+  memcpy(&local_ac,pcVar7,(int)pcVar6 - (int)pcVar7);
+  memcpy(&local_bc,pcVar6,(int)pcVar7 - (int)pcVar6);
+  memcpy(&local_a4,pcVar7,(int)pcVar6 - (int)pcVar7);
+  memcpy(&local_c4,pcVar6,(int)pcVar7 - (int)pcVar6);
+  memcpy(&local_c0,pcVar7,(int)pcVar5 - (int)pcVar7);
+  } while (cVar2 != '\0');
+  } while (*pcVar6 != '\0');
+  memcpy(&local_c8,pcVar7,(int)pcVar1 - (int)pcVar7);
+  memcpy(&local_8b,pcVar1,(int)pcVar7 - (int)pcVar1);
+  memcpy(&local_dc,pcVar7,(int)pcVar5 - (int)pcVar7);
+  memcpy(&local_e8,pcVar5,(int)pcVar7 - (int)pcVar5);
+  memcpy(local_a8,pcVar7,(int)local_e4 - (int)pcVar7);
+  } while (cVar2 != '\0');
+  strncpy((char *)(iVar8 + 900),local_b8,0xf);
+  } while (cVar2 != '\0');
+  } while (cVar2 != '\0');
+  } while (cVar2 != '\0');
+  strncpy((char *)(iVar8 + 0x31c),local_48,0x1f);
+  *(int *)(local_e0 + 0x68) = (int)local_e4 - *(int *)(local_e0 + 100);
+
+=== op 20	thunk 0x402C07	handler 0x655BF0 ===
+  pcVar5 = (char *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_c,pcVar5,(int)pcVar2 - (int)pcVar5);
+  memcpy(&local_6,pcVar2,(int)_Src - (int)pcVar2);
+  memcpy(&local_5,_Src,(int)pcVar5 - (int)_Src);
+  } while (cVar1 != '\0');
+  *(int *)(param_2 + 0x68) = (int)pcVar2 - *(int *)(param_2 + 100);
+
+=== op 21	thunk 0x4025EF	handler 0x655DF0 ===
+  pvVar1 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_8,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy((void *)((int)&param_1 + 3),_Src,(int)pvVar1 - (int)_Src);
+  (**(code **)(*(int *)(iVar3 + 0x13ac + (param_1 >> 0x18) * 0x124) + 8))();
+  thunk_FUN_0055c040(param_1 >> 0x18);
+  *(int *)(uVar2 + 0x68) = (int)pvVar1 - *(int *)(uVar2 + 100);
+
+=== op 22	thunk 0x40EF8E	handler 0x661200 ===
+  _Src = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_11,_Src,(int)pvVar1 - (int)_Src);
+  if (*(char *)(iVar10 + 0x5ac9) != '\0') {
+  if (*(char *)(iVar10 + 0x5ac9) != '\0') {
+  if (*(char *)(iVar10 + 0x5ac9) != '\0') {
+  if (cVar5 != '\0') {
+  if ((cVar5 != '\0') || (*(float *)(iVar6 + 0x144) != 0.0)) {
+  *(int *)(param_1 + 0x68) = (int)pvVar1 - *(int *)(param_1 + 100);
+
+=== op 23	thunk 0x40BF6E	handler 0x655EF0 ===
+  _Src = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy((void *)((int)&param_2 + 3),_Src,(int)pvVar1 - (int)_Src);
+  if ((((cVar8 != '\0') || (*(float *)(iVar9 + 0x144) != 0.0)) ||
+  if (cVar8 != '\0') {
+  if (cVar8 != '\0') {
+  if ((cVar8 != '\0') && ((*(byte *)(iVar11 + 0x3a8) & 2) == 0)) {
+  if (((*(uint *)(param_2 + 0x3a4) & 0x80000) != 0) && (*(char *)(param_2 + 0xc74) != '\0')) {
+  strncpy((char *)(iVar9 + 0x1cfc),"",0x2f);
+  *(int *)(iVar7 + 0x68) = (int)pvVar1 - *(int *)(iVar7 + 100);
+
+=== op 24	thunk 0x40E061	handler 0x6567F0 ===
+  _Src = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_8,_Src,(int)pvVar1 - (int)_Src);
+  strncpy((char *)(iVar5 + 0x1cfc),(char *)(iVar6 + 0x2ec),0x2f);
+  *(int *)(param_2 + 0x68) = iVar4 - *(int *)(param_2 + 100);
+
+=== op 25	thunk 0x4037EC	handler 0x64FC30 ===
+  pvVar2 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_5,pvVar2,(int)pvVar5 - (int)pvVar2);
+  memcpy(&local_10,pvVar5,(int)pvVar1 - (int)pvVar5);
+  memcpy(&local_c,pvVar1,(int)pvVar5 - (int)pvVar1);
+  memcpy(&local_18,pvVar5,(int)pvVar1 - (int)pvVar5);
+  memcpy(&local_14,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(&local_5,_Src,(int)pvVar5 - (int)_Src);
+  *(int *)(iVar3 + 0x68) = (int)pvVar5 - *(int *)(iVar3 + 100);
+  memcpy(&local_18,pvVar5,(int)pvVar1 - (int)pvVar5);
+  memcpy(&local_14,pvVar1,(int)pvVar5 - (int)pvVar1);
+  memcpy((void *)((int)&param_1 + 3),pvVar5,(int)pvVar2 - (int)pvVar5);
+  *(int *)(iVar3 + 0x68) = (int)pvVar2 - *(int *)(iVar3 + 100);
+  memcpy(&param_1,pvVar5,(int)pvVar1 - (int)pvVar5);
+  memcpy(&local_18,pvVar1,(int)pvVar2 - (int)pvVar1);
+  *(int *)(iVar3 + 0x68) = (int)pvVar2 - *(int *)(iVar3 + 100);
+  *(int *)(iVar3 + 0x68) = (int)pvVar5 - *(int *)(iVar3 + 100);
+
+=== op 26	thunk 0x401F55	handler 0x6569C0 ===
+  _Src = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_14,_Src,(int)pvVar1 - (int)_Src);
+  *(int *)(param_2 + 0x68) = iVar4 - *(int *)(param_2 + 100);
+  if (cVar3 != '\0') {
+  *(int *)(param_2 + 0x68) = iVar4 - *(int *)(param_2 + 100);
+
+=== op 27	thunk 0x401B3B	handler 0x64FEE0 ===
+  iVar1 = *(int *)(param_1 + 100);
+  iVar2 = *(int *)(param_1 + 0x68);
+  *(int *)(param_1 + 0x68) = (iVar1 + 1 + iVar2) - *(int *)(param_1 + 100);
+
+=== op 28	thunk 0x40A0A6	handler 0x656EB0 ===
+  iVar1 = *(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68);
+  *(int *)(param_2 + 0x68) = iVar1 - *(int *)(param_2 + 100);
+  if (cVar2 != '\0') {
+  if (cVar2 != '\0') {
+  *(int *)(param_2 + 0x68) = iVar1 - *(int *)(param_2 + 100);
+
+=== op 29	thunk 0x40D869	handler 0x657340 ===
+  _Source = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  } while (*pcVar1 != '\0');
+  memcpy(&local_8,_Src,(int)pcVar1 - (int)_Src);
+  strncpy((char *)(iVar2 + 0x1cfc),_Source,0x2f);
+  strncpy((char *)(iVar2 + 0x2ec),_Source,0x2f);
+  *(int *)(param_1 + 0x68) = (int)pcVar1 - *(int *)(param_1 + 100);
+
+=== op 30	thunk 0x40AAAB	handler 0x657400 ===
+  pbVar1 = (byte *)(param_1[0x19] + 1 + param_1[0x1a]);
+  param_1[0x1a] = (int)pbVar4 - param_1[0x19];
+
+=== op 31	thunk 0x40254F	handler 0x6574E0 ===
+  _Src_00 = (char *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy((void *)((int)&local_c + 1),_Src_00,(int)pcVar8 - (int)_Src_00);
+  memcpy((void *)((int)&local_8 + 1),pcVar8,(int)_Src - (int)pcVar8);
+  memcpy(&local_c,_Src,(int)pcVar4 - (int)_Src);
+  memcpy(&local_10,pcVar4,(int)pcVar8 - (int)pcVar4);
+  if (cVar3 != '\0') {
+  } while (*pcVar8 != '\0');
+  memcpy(&local_c,pcVar4,(int)pcVar8 - (int)pcVar4);
+  (**(code **)(*piVar1 + 0x84))((int)(short)local_10,(int)local_8,local_c._1_1_ != '\0');
+  if (*(char *)(param_1 + 0xd0) != '\0') {
+  *(int *)(param_2 + 0x68) = (int)pcVar8 - *(int *)(param_2 + 100);
+
+=== op 32	thunk 0x401CAD	handler 0x657D20 ===
+  pbVar4 = (byte *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_5,pbVar4,(int)pbVar2 - (int)pbVar4);
+  memcpy(&local_14,pbVar2,(int)pbVar4 - (int)pbVar2);
+  memcpy(&local_5,pbVar3,(int)pbVar7 - (int)pbVar3);
+  (&DAT_00b4a976,CONCAT31((int3)((uint)pbVar2 >> 8),local_5 != '\0'),1);
+  thunk_FUN_00625070(pbVar2,local_5 != '\0');
+  (**(code **)(*piVar6 + 0x14))(pbVar2,local_5 != '\0',1);
+  (**(code **)(*(int *)piVar6[0x254] + 0x14))(pbVar2,local_5 != '\0',1);
+  (**(code **)(*piVar6 + 0x14))(pbVar2,local_5 != '\0',1);
+  memcpy(&local_18,pbVar3,(int)pbVar7 - (int)pbVar3);
+  memcpy(&local_18,pbVar3,(int)pbVar7 - (int)pbVar3);
+  *(int *)(param_1 + 0x68) = (int)local_c - *(int *)(param_1 + 100);
+
+=== op 33	thunk 0x40528B	handler 0x6633D0 ===
+  _Src = (void *)(param_1[0x19] + 1 + param_1[0x1a]);
+  memcpy((void *)((int)&local_10 + 1),_Src,(int)pvVar1 - (int)_Src);
+  memcpy(&local_14,pvVar1,(int)pvVar4 - (int)pvVar1);
+  memcpy((void *)((int)&local_c + 1),pvVar4,(int)pvVar1 - (int)pvVar4);
+  memcpy((void *)((int)&local_8 + 1),pvVar1,(int)pvVar4 - (int)pvVar1);
+  memcpy(&local_10,pvVar4,(int)pvVar1 - (int)pvVar4);
+  memcpy(&local_c,pvVar1,(int)pvVar4 - (int)pvVar1);
+  memcpy(&local_8,pvVar4,(int)pvVar1 - (int)pvVar4);
+  memcpy(&local_14,pvVar1,(int)pvVar4 - (int)pvVar1);
+  param_1[0x1a] = (int)pvVar4 - param_1[0x19];
+
+=== op 34	thunk 0x405A15	handler 0x658090 ===
+  pbVar4 = (byte *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_28,pbVar4,(int)pbVar7 - (int)pbVar4);
+  memcpy(&local_9,pbVar5,(int)pbVar9 - (int)pbVar5);
+  memcpy(&local_5,pbVar9,(int)pbVar7 - (int)pbVar9);
+  memcpy(&local_8,pbVar7,(int)pbVar5 - (int)pbVar7);
+  memcpy(&local_7,pbVar5,(int)pbVar7 - (int)pbVar5);
+  memcpy(&local_6,pbVar7,(int)pbVar5 - (int)pbVar7);
+  memcpy(&local_18,pbVar5,(int)pbVar7 - (int)pbVar5);
+  memcpy(&local_24,pbVar7,(int)pbVar5 - (int)pbVar7);
+  memcpy(&local_20,pbVar5,(int)pbVar7 - (int)pbVar5);
+  memcpy(&local_14,pbVar7,(int)pbVar4 - (int)pbVar7);
+  if (((*(char *)(iVar6 + 0x5ab2) != '\0') &&
+  *(int *)(param_1 + 0x68) = (int)pbVar4 - *(int *)(param_1 + 100);
+
+=== op 35	thunk 0x40C04A	handler 0x658420 ===
+  pvVar3 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_8,pvVar3,(int)_Src - (int)pvVar3);
+  memcpy(&local_c,_Src,(int)pvVar3 - (int)_Src);
+  *(int *)(param_2 + 0x68) = (int)pvVar3 - *(int *)(param_2 + 100);
+  *(int *)(param_2 + 0x68) = (int)pvVar3 - *(int *)(param_2 + 100);
+
+=== op 36	thunk 0x402C3E	handler 0x658510 ===
+  pcVar1 = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_5,pcVar1,(int)pcVar4 - (int)pcVar1);
+  memcpy(&local_c,pcVar4,(int)pcVar1 - (int)pcVar4);
+  } while (cVar2 != '\0');
+  } while (cVar2 != '\0');
+  *(int *)(param_1 + 0x68) = (int)pcVar4 - *(int *)(param_1 + 100);
+
+=== op 37	thunk 0x401785	handler 0x658690 ===
+  pcVar10 = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_5,pcVar10,(int)pcVar3 - (int)pcVar10);
+  memcpy(&local_a0,pcVar3,(int)pcVar10 - (int)pcVar3);
+  } while (cVar1 != '\0');
+  } while (*pcVar2 != '\0');
+  memcpy(&local_b4,pcVar3,(int)_Src - (int)pcVar3);
+  memcpy(&local_9c,_Src,(int)pcVar3 - (int)_Src);
+  memcpy(&local_14,pcVar3,(int)pcVar10 - (int)pcVar3);
+  memcpy(&local_a4,pcVar10,(int)pcVar3 - (int)pcVar10);
+  memcpy(&local_c0,pcVar3,(int)pcVar10 - (int)pcVar3);
+  memcpy(&local_ac,pcVar10,(int)pcVar3 - (int)pcVar10);
+  memcpy(&local_bc,pcVar3,(int)pcVar10 - (int)pcVar3);
+  memcpy(&local_a8,pcVar10,(int)pcVar3 - (int)pcVar10);
+  memcpy(&local_b8,pcVar3,(int)local_b0 - (int)pcVar3);
+  } while (cVar1 != '\0');
+  if (cVar1 != '\0') {
+  *(int *)(param_1 + 0x68) = (int)local_b0 - *(int *)(param_1 + 100);
+
+=== op 38	thunk 0x4042A5	handler 0x658B90 ===
+  _Src = (char *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy((void *)((int)&param_2 + 3),_Src,(int)pcVar5 - (int)_Src);
+  } while (cVar1 != '\0');
+  *(int *)(iVar2 + 0x68) = (int)pcVar3 - *(int *)(iVar2 + 100);
+  *(int *)(iVar2 + 0x68) = (int)pcVar3 - *(int *)(iVar2 + 100);
+  *(int *)(iVar2 + 0x68) = (int)pcVar3 - *(int *)(iVar2 + 100);
+  *(int *)(iVar2 + 0x68) = (int)pcVar3 - *(int *)(iVar2 + 100);
+  *(int *)(iVar2 + 0x68) = (int)pcVar3 - *(int *)(iVar2 + 100);
+
+=== op 39	thunk 0x4032BF	handler 0x658CC0 ===
+  pcVar5 = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy((void *)((int)&local_14 + 3),pcVar5,(int)pcVar3 - (int)pcVar5);
+  memcpy(&local_1c,pcVar3,(int)pcVar1 - (int)pcVar3);
+  memcpy((void *)((int)&local_14 + 3),pcVar1,(int)pcVar5 - (int)pcVar1);
+  } while (cVar2 != '\0');
+  memcpy(&local_1c,pcVar3,(int)pcVar1 - (int)pcVar3);
+  memcpy((void *)((int)&local_14 + 3),pcVar1,(int)pcVar3 - (int)pcVar1);
+  memcpy(&local_48,pcVar3,(int)pcVar1 - (int)pcVar3);
+  memcpy(&local_14,pcVar1,(int)pcVar3 - (int)pcVar1);
+  memcpy(&local_38,pcVar3,(int)pcVar1 - (int)pcVar3);
+  memcpy(local_30,pcVar1,(int)pcVar5 - (int)pcVar1);
+  } while (*pcVar3 != '\0');
+  memcpy(&local_44,_Src,(int)pcVar1 - (int)_Src);
+  memcpy(&local_50,pcVar1,(int)pcVar5 - (int)pcVar1);
+  memcpy(&local_4c,pcVar5,(int)pcVar1 - (int)pcVar5);
+  memcpy(&local_58,pcVar1,(int)pcVar5 - (int)pcVar1);
+  memcpy(&local_10,pcVar5,(int)pcVar1 - (int)pcVar5);
+  memcpy(&local_c,pcVar1,(int)pcVar5 - (int)pcVar1);
+  memcpy(&local_54,pcVar5,(int)pcVar1 - (int)pcVar5);
+  memcpy(&local_40,pcVar1,(int)pcVar5 - (int)pcVar1);
+  memcpy(&local_3c,pcVar5,(int)pcVar1 - (int)pcVar5);
+  memcpy(&local_5,pcVar1,(int)pcVar3 - (int)pcVar1);
+  } while (cVar2 != '\0');
+  (cVar2 = thunk_FUN_0058cb30(), cVar2 != '\0')) {
+  (cVar2 = thunk_FUN_0058cb30(), cVar2 != '\0')) {
+  if (cVar2 != '\0') {
+  } while (cVar2 != '\0');
+  memcpy(&local_c,pcVar3,(int)pcVar1 - (int)pcVar3);
+  memcpy(&local_5,pcVar1,(int)pcVar3 - (int)pcVar1);
+  *(int *)(param_1 + 0x68) = (int)pcVar3 - *(int *)(param_1 + 100);
+
+=== op 40	thunk 0x4092C3	handler 0x664960 ===
+  pCVar20 = (CPane *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_1b1,pCVar20,(int)pCVar18 - (int)pCVar20);
+  iVar16 = thunk_FUN_004b3430((uint)local_134 >> 0x18);
+  iVar14 = thunk_FUN_004b3430((uint)local_134 >> 0x18);
+  iVar16 = thunk_FUN_00670e80((uint)local_134 >> 0x18);
+  iVar14 = thunk_FUN_00670e80((uint)local_134 >> 0x18);
+  if ((cVar3 != '\0') && (cVar3 = thunk_FUN_004b6390(iVar14), cVar3 == '\0')) {
+  fVar22 = (float)((uint)local_134 >> 0x18);
+  cVar3 != '\0')) {
+  if (cVar3 != '\0') {
+  if ((local_134._3_1_ != '\0') && (iVar14 = *(int *)(iVar14 + 0x974), iVar14 != 0)) {
+  (uint)local_144 >> 0x18);
+  if (cVar3 != '\0') goto LAB_006694ba;
+  if (cVar3 != '\0') {
+  if (cVar3 != '\0') {
+  if (cVar3 != '\0') {
+  (uint)local_144 >> 0x18);
+  *(int *)(param_2 + 0x68) = (int)pCVar15 - *(int *)(param_2 + 100);
+  local_144._3_1_ = (char)((uint)local_144 >> 0x18);
+  switch((uint)local_134 >> 0x18) {
+  switch((uint)local_144 >> 0x18) {
+  switch((uint)local_144 >> 0x18) {
+  thunk_FUN_0053ae50(local_17c,local_178,local_174,local_170,local_158,(uint)local_144 >> 0x18);
+  thunk_FUN_0053b130(local_138,local_158,(uint)local_144 >> 0x18);
+  thunk_FUN_004cb250(*(undefined4 *)(iVar14 + 0x974),local_144._3_1_ != '\0');
+  *(uint *)(param_1 + 0xbc) = (uint)(*(char *)(*(int *)(iVar14 + 0x974) + 0x225) != '\0');
+  uVar12 = (uint)local_144 >> 0x18;
+  memcpy(&local_158,pCVar15,(int)pCVar18 - (int)pCVar15);
+  memcpy(&local_194,pCVar18,(int)pCVar20 - (int)pCVar18);
+  *(int *)(local_1c8 + 0x68) = (int)pCVar15 - *(int *)(local_1c8 + 100);
+  memcpy(&local_158,pCVar15,(int)pCVar18 - (int)pCVar15);
+  memcpy(&local_194,pCVar18,(int)pCVar15 - (int)pCVar18);
+  *(int *)(iVar14 + 0x68) = (int)pCVar15 - *(int *)(iVar14 + 100);
+
+=== op 41	thunk 0x40E093	handler 0x659750 ===
+  pvVar3 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy((void *)((int)&param_1 + 3),pvVar3,(int)pvVar1 - (int)pvVar3);
+  memcpy(&local_8,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_c,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_10,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_14,pvVar2,(int)pvVar3 - (int)pvVar2);
+  *(int *)(iVar5 + 0x68) = (int)pvVar3 - *(int *)(iVar5 + 100);
+  *(int *)(iVar5 + 0x68) = (int)pvVar3 - *(int *)(iVar5 + 100);
+  *(int *)(iVar5 + 0x68) = (int)pvVar3 - *(int *)(iVar5 + 100);
+
+=== op 42	thunk 0x405F83	handler 0x6598C0 ===
+  _Src = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&param_2,_Src,(int)pvVar1 - (int)_Src);
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+
+=== op 43	thunk 0x40B9F6	handler 0x663620 ===
+  _Src_00 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_1c,_Src_00,(int)_Src - (int)_Src_00);
+  memcpy(&local_14,_Src,(int)local_18 - (int)_Src);
+  *(int *)(param_1 + 0x68) = (int)local_18 - *(int *)(param_1 + 100);
+
+=== op 44	thunk 0x404E6C	handler 0x663880 ===
+  _Src_00 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_1c,_Src_00,(int)_Src - (int)_Src_00);
+  memcpy(&local_14,_Src,(int)local_18 - (int)_Src);
+  *(int *)(param_1 + 0x68) = (int)local_18 - *(int *)(param_1 + 100);
+
+=== op 45	thunk 0x408CBA	handler 0x662180 ===
+  pcVar7 = (char *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy((void *)((int)&local_34 + 3),pcVar7,(int)pcVar8 - (int)pcVar7);
+  switch((uint)local_34 >> 0x18) {
+  } while (*pcVar8 != '\0');
+  local_18._3_1_ != '\0',0);
+  if ((*(int *)(param_1 + 0xc0) != 1) && (cVar1 = thunk_FUN_0053b500(local_8), cVar1 != '\0')) {
+  *(int *)(iVar2 + 0x684) = iVar5;
+  *(float *)(iVar2 + 0x688) = local_4c;
+  *(char **)(iVar2 + 0x68c) = local_8;
+  *(undefined4 *)(iVar2 + 0x684) = 0;
+  *(undefined4 *)(iVar2 + 0x688) = 0;
+  *(undefined4 *)(iVar2 + 0x68c) = 0;
+  local_18._3_1_ != '\0',0);
+  local_18._3_1_ != '\0',0);
+  thunk_FUN_0053af80(0,local_40,0,local_38,local_c,local_34._3_1_,local_18._3_1_ != '\0',1);
+  *(int *)(param_2 + 0x68) = (int)pcVar8 - *(int *)(param_2 + 100);
+
+=== op 46	thunk 0x40E647	handler 0x659920 ===
+  pvVar3 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&param_1,pvVar3,(int)pvVar1 - (int)pvVar3);
+  memcpy(&local_8,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_c,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_10,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_18,pvVar2,(int)pvVar3 - (int)pvVar2);
+  *(int *)(iVar4 + 0x68) = (int)pvVar3 - *(int *)(iVar4 + 100);
+
+=== op 47	thunk 0x408003	handler 0x659B50 ===
+  _Src = (char *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_c,_Src,(int)pcVar8 - (int)_Src);
+  memcpy((void *)((int)&param_2 + 3),pcVar8,(int)pcVar1 - (int)pcVar8);
+  } while (cVar2 != '\0');
+  } while (cVar2 != '\0');
+  *(int *)(iVar4 + 0x68) = (int)pcVar6 - *(int *)(iVar4 + 100);
+  *(int *)(iVar4 + 0x68) = (int)pcVar6 - *(int *)(iVar4 + 100);
+
+=== op 48	thunk 0x406960	handler 0x659C60 ===
+  _Src = (void *)(*(int *)((int)param_2 + 100) + 1 + *(int *)((int)param_2 + 0x68));
+  memcpy((void *)((int)&param_2 + 3),_Src,(int)pvVar7 - (int)_Src);
+  switch((uint)param_2 >> 0x18) {
+  *(int *)(uVar1 + 0x68) = (int)pvVar7 - *(int *)(uVar1 + 100);
+  *(int *)(uVar1 + 0x68) = (int)_Src + (4 - *(int *)(uVar1 + 100));
+  *(int *)(uVar1 + 0x68) = (int)_Src + (4 - *(int *)(uVar1 + 100));
+  cVar3 = (**(code **)(**(int **)(DAT_00c7c598 + 0xd04) + 0x80))((uint)param_2 >> 0x18,0);
+  if (cVar3 != '\0') {
+  *(int *)(uVar1 + 0x68) = (int)pvVar7 - *(int *)(uVar1 + 100);
+  uVar5 = (uint)param_2 >> 0x18;
+  *(int *)(uVar1 + 0x68) = (int)_Src + (8 - *(int *)(uVar1 + 100));
+  *(int *)(uVar1 + 0x68) = (int)pvVar7 - *(int *)(uVar1 + 100);
+  *(int *)(uVar1 + 0x68) = (int)_Src + (5 - *(int *)(uVar1 + 100));
+  *(int *)(uVar1 + 0x68) = (int)_Src + (3 - *(int *)(uVar1 + 100));
+  *(int *)(uVar1 + 0x68) = (int)pvVar7 - *(int *)(uVar1 + 100);
+
+=== op 49	thunk 0x40F9D9	handler 0x65A160 ===
+  pcVar2 = (char *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_41,pcVar2,(int)pcVar5 - (int)pcVar2);
+  } while (cVar1 != '\0');
+  } while (cVar1 != '\0');
+  } while (cVar1 != '\0');
+  if (cVar1 != '\0') {
+  if (cVar1 != '\0') {
+  memcpy(local_4c,pcVar5,(int)pcVar6 - (int)pcVar5);
+  memcpy(&local_58,pcVar5,(int)local_40 - (int)pcVar5);
+  memcpy(&local_54,local_40,(int)pcVar5 - (int)local_40);
+  memcpy(&local_40,pcVar5,(int)pcVar6 - (int)pcVar5);
+  *(int *)(param_2 + 0x68) = (int)pcVar6 - *(int *)(param_2 + 100);
+
+=== op 50	thunk 0x403463	handler 0x65AB30 ===
+  pcVar4 = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_4d,pcVar4,(int)pcVar6 - (int)pcVar4);
+  memcpy(&local_4c,pcVar6,(int)pcVar10 - (int)pcVar6);
+  } while (cVar2 != '\0');
+  } while (cVar2 != '\0');
+  memcpy(&local_54,pcVar10,(int)pcVar6 - (int)pcVar10);
+  memcpy(&local_58,pcVar6,(int)pcVar10 - (int)pcVar6);
+  memcpy(&local_5c,pcVar10,(int)pcVar6 - (int)pcVar10);
+  memcpy(&local_64,pcVar6,(int)pcVar4 - (int)pcVar6);
+  } while (*pcVar5 != '\0');
+  } while (cVar2 != '\0');
+  } while (cVar2 != '\0');
+  } while (cVar2 != '\0');
+  } while (cVar2 != '\0');
+  } while (cVar2 != '\0');
+  } while (*pcVar10 != '\0');
+  *(int *)(local_60 + 0x68) = (int)pcVar4 - *(int *)(local_60 + 100);
+
+=== op 51	thunk 0x409F61	handler 0x65AF30 ===
+  pvVar2 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_14,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_18,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(&local_c,_Src,(int)pvVar1 - (int)_Src);
+  memcpy(&local_5,pvVar1,(int)pvVar2 - (int)pvVar1);
+  *(int *)(param_2 + 0x68) = (int)pvVar2 - *(int *)(param_2 + 100);
+
+=== op 52	thunk 0x40ECAF	handler 0x65B0D0 ===
+  pvVar6 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_20,pvVar6,(int)_Src - (int)pvVar6);
+  memcpy(&local_18,_Src,(int)_Src_00 - (int)_Src);
+  memcpy(&local_c,_Src_00,(int)local_1c - (int)_Src_00);
+  memcpy(&local_5,local_1c,(int)pvVar6 - (int)local_1c);
+  *(int *)(param_2 + 0x68) = (int)pvVar6 - *(int *)(param_2 + 100);
+  *(int *)(param_2 + 0x68) = (int)pvVar6 - *(int *)(param_2 + 100);
+
+=== op 53	thunk 0x407B3A	handler 0x65B580 ===
+  iVar4 = *(int *)(param_2 + 100);
+  _Src = (void *)(iVar4 + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&param_2,_Src,(int)pvVar1 - (int)_Src);
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - iVar4;
+  if (cVar3 != '\0') {
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+
+=== op 54	thunk 0x40C978	handler 0x65B610 ===
+  pvVar2 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_20,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_10,pvVar1,(int)pvVar6 - (int)pvVar1);
+  memcpy(&local_24,pvVar6,(int)pvVar1 - (int)pvVar6);
+  memcpy(&local_28,pvVar1,(int)pvVar6 - (int)pvVar1);
+  memcpy(&local_18,pvVar6,(int)pvVar1 - (int)pvVar6);
+  memcpy(&local_14,pvVar1,(int)pvVar6 - (int)pvVar1);
+  memcpy(&local_10,pvVar6,(int)pvVar1 - (int)pvVar6);
+  memcpy(&local_5,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(local_c,pvVar2,(int)local_2c - (int)pvVar2);
+  *(int *)(param_2 + 0x68) = (int)local_2c - *(int *)(param_2 + 100);
+
+=== op 55	thunk 0x401302	handler 0x65BA00 ===
+  pvVar1 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_8,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy((void *)((int)&param_2 + 3),_Src,(int)pvVar1 - (int)_Src);
+  switch(param_2 >> 0x18) {
+  if (cVar3 != '\0') {
+  if (cVar3 != '\0') {
+  if (cVar3 != '\0') {
+  if (cVar3 != '\0') {
+  *(int *)(uVar2 + 0x68) = (int)pvVar1 - *(int *)(uVar2 + 100);
+
+=== op 56	thunk 0x40AB7D	handler 0x65BB20 ===
+  pvVar3 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_1c,pvVar3,(int)pvVar1 - (int)pvVar3);
+  memcpy(&local_14,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_10,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_c,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_20,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_8,pvVar1,(int)pvVar3 - (int)pvVar1);
+  *(int *)(param_2 + 0x68) = (int)pvVar3 - *(int *)(param_2 + 100);
+
+=== op 57	thunk 0x40B0AF	handler 0x65C070 ===
+  _Src_00 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_5,_Src_00,(int)_Src - (int)_Src_00);
+  memcpy(local_c,_Src,(int)pvVar5 - (int)_Src);
+  if (cVar2 != '\0') {
+  *(int *)(param_2 + 0x68) = (int)pvVar5 - *(int *)(param_2 + 100);
+
+=== op 58	thunk 0x40AFAB	handler 0x65C330 ===
+  _Src_00 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_10,_Src_00,(int)pvVar1 - (int)_Src_00);
+  memcpy(&local_c,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(&local_8,_Src,(int)pvVar1 - (int)_Src);
+  memcpy(&local_18,pvVar1,(int)local_14 - (int)pvVar1);
+  *(int *)(param_2 + 0x68) = (int)local_14 - *(int *)(param_2 + 100);
+
+=== op 59	thunk 0x40D3FA	handler 0x65C590 ===
+  pvVar3 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_10,pvVar3,(int)pvVar1 - (int)pvVar3);
+  memcpy(&local_1c,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(local_18,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_20,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(local_c,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(local_8,pvVar1,(int)pvVar3 - (int)pvVar1);
+  *(int *)(param_1 + 0x68) = (int)pvVar3 - *(int *)(param_1 + 100);
+
+=== op 60	thunk 0x4047FA	handler 0x65C770 ===
+  pvVar3 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_10,pvVar3,(int)pvVar1 - (int)pvVar3);
+  memcpy(&local_14,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(local_8,pvVar2,(int)pvVar3 - (int)pvVar2);
+  memcpy(&local_1c,local_c,(int)pvVar3 - (int)local_c);
+  memcpy(&local_20,pvVar3,(int)pvVar2 - (int)pvVar3);
+  memcpy(&local_24,pvVar2,(int)pvVar1 - (int)pvVar2);
+  *(int *)(param_1 + 0x68) = (int)local_c - *(int *)(param_1 + 100);
+
+=== op 61	thunk 0x40E3A4	handler 0x6501C0 ===
+  pcVar2 = (char *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy((void *)((int)&param_2 + 3),pcVar2,(int)pcVar3 - (int)pcVar2);
+  } while (*pcVar2 != '\0');
+  memcpy(&local_8,_Src,(int)pcVar2 - (int)_Src);
+  if (param_2._3_1_ != '\0') {
+  *(int *)(iVar1 + 0x68) = (int)pcVar2 - *(int *)(iVar1 + 100);
+  *(int *)(iVar1 + 0x68) = (int)pcVar2 - *(int *)(iVar1 + 100);
+
+=== op 62	thunk 0x4019CE	handler 0x6632C0 ===
+  pvVar2 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_5,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_14,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(&local_10,_Src,(int)pvVar1 - (int)_Src);
+  memcpy(&local_c,pvVar1,(int)pvVar2 - (int)pvVar1);
+  *(int *)(param_1 + 0x68) = (int)pvVar2 - *(int *)(param_1 + 100);
+  *(int *)(param_1 + 0x68) = (int)pvVar2 - *(int *)(param_1 + 100);
+
+=== op 63	thunk 0x40A524	handler 0x663AE0 ===
+  _Src = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_5,_Src,(int)pvVar12 - (int)_Src);
+  *(int *)(iVar5 + 0x68) = (int)_Src + (3 - *(int *)(iVar5 + 100));
+  *(int *)(iVar5 + 0x68) = (int)_Src + (3 - *(int *)(iVar5 + 100));
+  *(int *)(iVar5 + 0x68) = (int)pvVar12 - *(int *)(iVar5 + 100);
+  *(int *)(iVar5 + 0x68) = (int)_Src + (3 - *(int *)(iVar5 + 100));
+  *(int *)(iVar5 + 0x68) = (int)_Src + (3 - *(int *)(iVar5 + 100));
+  *(int *)(iVar5 + 0x68) = (int)_Src + (3 - *(int *)(iVar5 + 100));
+  *(int *)(iVar5 + 0x68) = (int)pvVar12 - *(int *)(iVar5 + 100);
+  *(int *)(iVar5 + 0x68) = (int)_Src + (3 - *(int *)(iVar5 + 100));
+  *(int *)(iVar5 + 0x68) = (int)_Src + (3 - *(int *)(iVar5 + 100));
+  *(int *)(iVar5 + 0x68) = (int)_Src + (3 - *(int *)(iVar5 + 100));
+  *(int *)(iVar5 + 0x68) = (int)pvVar12 - *(int *)(iVar5 + 100);
+
+=== op 64	thunk 0x405CF4	handler 0x65DA10 ===
+  pvVar3 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_14,pvVar3,(int)pvVar1 - (int)pvVar3);
+  memcpy(&local_18,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_1c,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_20,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_c,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_5,pvVar1,(int)pvVar3 - (int)pvVar1);
+  *(int *)(param_2 + 0x68) = (int)pvVar3 - *(int *)(param_2 + 100);
+
+=== op 65	thunk 0x405DA3	handler 0x664070 ===
+  _Src = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_20,_Src,(int)pvVar1 - (int)_Src);
+  memcpy(&local_10,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_14,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_18,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_1c,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_c,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_5,pvVar2,(int)local_34 - (int)pvVar2);
+  *(int *)(param_2 + 0x68) = (int)local_34 - *(int *)(param_2 + 100);
+
+=== op 66	thunk 0x40CDAB	handler 0x65DB90 ===
+  pvVar1 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_c,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy((void *)((int)&param_1 + 3),_Src,(int)pvVar1 - (int)_Src);
+  (iVar4 = thunk_FUN_005a46c0(), *(int *)(iVar4 + 0x1418 + (param_1 >> 0x18) * 0x124) != 0)) {
+  (cVar3 = thunk_FUN_0055c160(param_1._3_1_), cVar3 != '\0')) {
+  if (local_5 != '\0') {
+  *(int *)(uVar2 + 0x68) = (int)pvVar1 - *(int *)(uVar2 + 100);
+
+=== op 67	thunk 0x40D67F	handler 0x650530 ===
+  iVar2 = *(int *)((int)param_2 + 100);
+  _Src = (void *)(iVar2 + 1 + *(int *)((int)param_2 + 0x68));
+  memcpy(&param_2,_Src,(int)pvVar1 - (int)_Src);
+  *(int *)((int)fVar3 + 0x68) = (int)pvVar1 - iVar2;
+  *(int *)((int)fVar3 + 0x68) = (int)pvVar1 - *(int *)((int)fVar3 + 100);
+
+=== op 68	thunk 0x4032D8	handler 0x65DC70 ===
+  _Src_00 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy((void *)((int)&local_8 + 3),_Src_00,(int)pvVar1 - (int)_Src_00);
+  memcpy(&local_c,pvVar1,(int)pvVar5 - (int)pvVar1);
+  memcpy(&local_14,pvVar5,(int)pvVar1 - (int)pvVar5);
+  memcpy(&local_1c,pvVar1,(int)pvVar5 - (int)pvVar1);
+  memcpy(&local_18,pvVar5,(int)pvVar1 - (int)pvVar5);
+  memcpy(&local_10,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(&local_8,_Src,(int)pvVar5 - (int)_Src);
+  memcpy(&local_14,pvVar5,(int)pvVar1 - (int)pvVar5);
+  memcpy(&local_18,pvVar1,(int)pvVar5 - (int)pvVar1);
+  memcpy(&local_1c,pvVar5,(int)pvVar1 - (int)pvVar5);
+  memcpy((void *)((int)&local_8 + 3),pvVar1,(int)pvVar5 - (int)pvVar1);
+  *(int *)(param_2 + 0x68) = (int)pvVar5 - *(int *)(param_2 + 100);
+
+=== op 69	thunk 0x40F295	handler 0x64FF30 ===
+  pcVar1 = (char *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  } while (cVar2 != '\0');
+  } while (cVar2 != '\0');
+  *(int *)(param_2 + 0x68) = (int)pcVar4 - *(int *)(param_2 + 100);
+  *(int *)(param_2 + 0x68) = (int)pcVar4 - *(int *)(param_2 + 100);
+
+=== op 70	thunk 0x40E688	handler 0x64F8F0 ===
+  _Src = (void *)(*(int *)((int)param_1 + 100) + 1 + *(int *)((int)param_1 + 0x68));
+  memcpy(&local_8,_Src,(int)pvVar1 - (int)_Src);
+  memcpy(&local_c,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_10,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_14,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_18,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&param_1,pvVar1,((int)_Src + 0x16) - (int)pvVar1);
+  *(int *)(iVar3 + 0x68) = (int)pvVar1 + (2 - *(int *)(iVar3 + 100));
+
+=== op 71	thunk 0x405466	handler 0x654300 ===
+  pvVar1 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy((void *)((int)&param_1 + 3),pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(&local_8,_Src,(int)pvVar1 - (int)_Src);
+  *(int *)(iVar3 + 0x68) = (int)pvVar1 - *(int *)(iVar3 + 100);
+  *(int *)(iVar3 + 0x68) = (int)pvVar1 - *(int *)(iVar3 + 100);
+  *(int *)(iVar3 + 0x68) = (int)pvVar1 - *(int *)(iVar3 + 100);
+  *(int *)(iVar3 + 0x68) = (int)pvVar1 - *(int *)(iVar3 + 100);
+
+=== op 72	thunk 0x401631	handler 0x64FA40 ===
+  _Src = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy((void *)((int)&param_1 + 3),_Src,(int)pvVar1 - (int)_Src);
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+  if (*(char *)(iVar4 + 0x5ac9) != '\0') {
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+
+=== op 73	thunk 0x4045F2	handler 0x654420 ===
+  pcVar8 = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_5,pcVar8,(int)pcVar13 - (int)pcVar8);
+  } while (cVar4 != '\0');
+  } while (*pcVar7 != '\0');
+  if (cVar4 != '\0') {
+  } while (cVar4 != '\0');
+  } while (*pcVar7 != '\0');
+  } while (cVar4 != '\0');
+  if (cVar4 != '\0') {
+  } while (cVar4 != '\0');
+  } while (cVar4 != '\0');
+  } while (*pcVar9 != '\0');
+  *(uint *)(local_c + 0xbc) = (uint)(*(char *)(iVar12 + 0x5aad) != '\0');
+  } while (cVar4 != '\0');
+  *(int *)(param_1 + 0x68) = (int)pcVar13 - *(int *)(param_1 + 100);
+
+=== op 74	thunk 0x40F849	handler 0x655580 ===
+  _Src = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_40,_Src,(int)pcVar4 - (int)_Src);
+  memcpy(&local_3c,pcVar4,(int)pcVar1 - (int)pcVar4);
+  memcpy(&local_38,pcVar1,(int)pcVar4 - (int)pcVar1);
+  memcpy(&local_34,pcVar4,(int)pcVar1 - (int)pcVar4);
+  memcpy(&local_30,pcVar1,(int)pcVar4 - (int)pcVar1);
+  memcpy(&local_2c,pcVar4,(int)pcVar1 - (int)pcVar4);
+  memcpy(&local_28,pcVar1,(int)pcVar4 - (int)pcVar1);
+  memcpy(&local_24,pcVar4,(int)pcVar1 - (int)pcVar4);
+  memcpy(&local_20,pcVar1,(int)pcVar4 - (int)pcVar1);
+  memcpy(&local_1c,pcVar4,(int)pcVar1 - (int)pcVar4);
+  memcpy(&local_18,pcVar1,(int)pcVar4 - (int)pcVar1);
+  memcpy(&param_1,pcVar4,(int)pcVar1 - (int)pcVar4);
+  memcpy(&local_8,pcVar1,(int)pcVar4 - (int)pcVar1);
+  memcpy(&local_c,pcVar4,(int)pcVar1 - (int)pcVar4);
+  memcpy(&local_10,pcVar1,(int)pcVar4 - (int)pcVar1);
+  memcpy(&local_14,pcVar4,(int)pcVar1 - (int)pcVar4);
+  } while (cVar2 != '\0');
+  *(char **)(iVar3 + 0x68) =
+  pcVar1 + (int)(pcVar4 + (-*(int *)(iVar3 + 100) - (int)(_Src + 0x27)) + 1);
+
+=== op 75	thunk 0x401EFB	handler 0x6557E0 ===
+  pvVar3 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_20,pvVar3,(int)pvVar1 - (int)pvVar3);
+  memcpy(&local_1c,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_10,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_18,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_c,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&param_2,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_14,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_8,pvVar1,(int)pvVar3 - (int)pvVar1);
+  *(int *)(iVar4 + 0x68) = (int)pvVar3 - *(int *)(iVar4 + 100);
+
+=== op 76	thunk 0x40D959	handler 0x655990 ===
+  _Src_00 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_8,_Src_00,(int)_Src - (int)_Src_00);
+  memcpy(&param_2,_Src,((int)_Src_00 + 2) - (int)_Src);
+  *(int *)(iVar1 + 0x68) = (int)_Src + (1 - *(int *)(iVar1 + 100));
+
+=== op 77	thunk 0x402C43	handler 0x655A10 ===
+  _Src = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&param_1,_Src,(int)((int)_Src + 1U) - (int)_Src);
+  *(int *)(iVar1 + 0x68) = (int)_Src + (1 - *(int *)(iVar1 + 100));
+
+=== op 78	thunk 0x40F48E	handler 0x64FBB0 ===
+  *(int *)(param_1 + 0x68) =
+  (*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68)) - *(int *)(param_1 + 100);
+
+=== op 79	thunk 0x40E7FA	handler 0x655A60 ===
+  pcVar1 = (char *)(*(int *)((int)param_2 + 100) + 1 + *(int *)((int)param_2 + 0x68));
+  memcpy(&local_18,pcVar1,(int)pcVar3 - (int)pcVar1);
+  memcpy(&local_14,pcVar3,(int)pcVar1 - (int)pcVar3);
+  } while (*pcVar3 != '\0');
+  memcpy(&local_c,_Src_00,(int)_Src - (int)_Src_00);
+  memcpy(&param_2,_Src,(int)pcVar3 - (int)_Src);
+  *(int *)(iVar2 + 0x68) = (int)pcVar3 - *(int *)(iVar2 + 100);
+
+=== op 80	thunk 0x4060B4	handler 0x655B50 ===
+  _Src = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&param_2,_Src,(int)pvVar1 - (int)_Src);
+  memcpy((void *)((int)pvVar1 + (int)&local_8 + (-2 - (int)local_8)),pvVar1,
+  *(int *)(iVar2 + 0x68) = *(int *)(iVar2 + 0x68) + 3;
+  uVar3 = thunk_FUN_00652c20(iVar2,uVar3);
+
+=== op 81	thunk 0x40DE4F	handler 0x65DFE0 ===
+  pcVar1 = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(local_54,pcVar1,(int)_Src - (int)pcVar1);
+  memcpy(&local_5,_Src,(int)pcVar1 - (int)_Src);
+  } while (cVar2 != '\0');
+  *(int *)(param_1 + 0x68) = (int)pcVar3 - *(int *)(param_1 + 100);
+
+=== op 82	thunk 0x40AC6D	handler 0x65E280 ===
+  pcVar3 = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&param_1,pcVar3,(int)pcVar1 - (int)pcVar3);
+  } while (*pcVar3 != '\0');
+  memcpy(&local_bc,pcVar4,(int)_Src - (int)pcVar4);
+  memcpy(&local_9c,_Src,(int)pcVar1 - (int)_Src);
+  memcpy(&local_a0,pcVar1,(int)pcVar4 - (int)pcVar1);
+  memcpy(&local_a4,pcVar4,(int)pcVar1 - (int)pcVar4);
+  memcpy(&local_c0,pcVar1,(int)pcVar4 - (int)pcVar1);
+  memcpy(&local_98,pcVar4,(int)pcVar1 - (int)pcVar4);
+  memcpy(local_b0,pcVar1,(int)pcVar4 - (int)pcVar1);
+  memcpy(&local_b8,pcVar4,(int)pcVar1 - (int)pcVar4);
+  memcpy(&local_b4,pcVar1,(int)pcVar3 - (int)pcVar1);
+  *(int *)(iVar2 + 0x68) = (int)pcVar3 - *(int *)(iVar2 + 100);
+
+=== op 83	thunk 0x4040B1	handler 0x6505D0 ===
+  pvVar2 = (void *)(*(int *)((int)param_1 + 100) + 1 + *(int *)((int)param_1 + 0x68));
+  memcpy((void *)((int)&param_1 + 3),pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_10,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(local_8,_Src,(int)pvVar1 - (int)_Src);
+  memcpy(&local_c,pvVar1,(int)pvVar2 - (int)pvVar1);
+  *(int *)(iVar3 + 0x68) = (int)pvVar2 - *(int *)(iVar3 + 100);
+  *(int *)(iVar3 + 0x68) = (int)pvVar2 - *(int *)(iVar3 + 100);
+
+=== op 84	thunk 0x4012A8	handler 0x6506E0 ===
+  pcVar1 = (char *)(*(int *)(param_1 + 100) + 5 + *(int *)(param_1 + 0x68));
+  } while (cVar2 != '\0');
+  *(int *)(param_1 + 0x68) = (int)pcVar3 - *(int *)(param_1 + 100);
+
+=== op 85	thunk 0x408189	handler 0x65E680 ===
+  pcVar1 = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_10,pcVar1,(int)pcVar5 - (int)pcVar1);
+  memcpy(&local_5,pcVar5,(int)pcVar1 - (int)pcVar5);
+  } while (cVar2 != '\0');
+  } while (cVar2 != '\0');
+  if (cVar2 != '\0') {
+  *(int *)(param_1 + 0x68) = (int)pcVar3 - *(int *)(param_1 + 100);
+
+=== op 86	thunk 0x402F9F	handler 0x65CB90 ===
+  pcVar6 = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  } while (*pcVar2 != '\0');
+  memcpy(&param_1,_Src,(int)pcVar2 - (int)_Src);
+  *(int *)(iVar1 + 0x68) = (int)pcVar2 - *(int *)(iVar1 + 100);
+
+=== op 87	thunk 0x406A05	handler 0x657190 ===
+  iVar1 = *(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68);
+  *(int *)(param_2 + 0x68) = iVar1 - *(int *)(param_2 + 100);
+  if ((cVar2 != '\0') && (_DAT_00b3a344 != *(float *)(iVar3 + 0x1ce4))) {
+  if (cVar2 != '\0') {
+  *(int *)(param_2 + 0x68) = iVar1 - *(int *)(param_2 + 100);
+
+=== op 88	thunk 0x405295	handler 0x656D70 ===
+  pvVar1 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_c,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(&local_5,_Src,(int)pvVar1 - (int)_Src);
+  if (cVar2 != '\0') {
+  if (cVar2 != '\0') {
+  *(int *)(param_1 + 0x68) = (int)pvVar1 - *(int *)(param_1 + 100);
+
+=== op 89	thunk 0x40E7B9	handler 0x64FBE0 ===
+  iVar1 = *(int *)(param_1 + 100);
+  _Src = (void *)(iVar1 + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&param_1,_Src,(int)((int)_Src + 2U) - (int)_Src);
+  *(int *)(iVar2 + 0x68) = (int)_Src + (2 - iVar1);
+
+=== op 90	thunk 0x40F5E7	handler 0x650110 ===
+  pcVar2 = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy((void *)((int)&param_1 + 3),pcVar2,(int)pcVar4 - (int)pcVar2);
+  } while (*pcVar2 != '\0');
+  memcpy(local_8,_Src,(int)pcVar2 - (int)_Src);
+  *(int *)(iVar1 + 0x68) = (int)pcVar2 - *(int *)(iVar1 + 100);
+  *(int *)(iVar1 + 0x68) = (int)pcVar2 - *(int *)(iVar1 + 100);
+
+=== op 91	thunk 0x40468D	handler 0x650730 ===
+  _Src_00 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_5,_Src_00,(int)pvVar4 - (int)_Src_00);
+  memcpy(&local_c,pvVar4,(int)_Src - (int)pvVar4);
+  memcpy(&local_c,_Src,(int)pvVar4 - (int)_Src);
+  *(int *)(param_1 + 0x68) = (int)pvVar4 - *(int *)(param_1 + 100);
+
+=== op 92	thunk 0x409D45	handler 0x6508E0 ===
+  pvVar1 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy((void *)((int)&param_2 + 3),pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(&local_8,_Src,(int)_Src_00 - (int)_Src);
+  switch(param_2 >> 0x18) {
+  memcpy(&param_2,_Src_00,(int)pvVar1 - (int)_Src_00);
+  *(int *)(uVar2 + 0x68) = (int)pvVar1 - *(int *)(uVar2 + 100);
+  memcpy(&param_2,_Src_00,(int)pvVar1 - (int)_Src_00);
+  *(int *)(uVar2 + 0x68) = (int)pvVar1 - *(int *)(uVar2 + 100);
+  *(int *)(uVar2 + 0x68) = (int)_Src_00 - *(int *)(uVar2 + 100);
+  *(int *)(uVar2 + 0x68) = (int)_Src_00 - *(int *)(uVar2 + 100);
+
+=== op 93	thunk 0x40C87E	handler 0x664500 ===
+  pcVar3 = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy((void *)((int)&local_2c + 3),pcVar3,(int)pcVar1 - (int)pcVar3);
+  } while (*pcVar3 != '\0');
+  memcpy(&local_2c,_Src_00,(int)pcVar3 - (int)_Src_00);
+  memcpy(&local_2c,_Src_00,(int)pcVar3 - (int)_Src_00);
+  memcpy(&local_30,_Src_00,(int)pcVar1 - (int)_Src_00);
+  memcpy(&local_2c,pcVar1,(int)_Src - (int)pcVar1);
+  memcpy(&local_38,_Src,(int)_Src_00 - (int)_Src);
+  strncpy(local_28,local_30,0x1f);
+  *(int *)(param_1 + 0x68) = (int)_Src_00 - *(int *)(param_1 + 100);
+
+=== op 94	thunk 0x40BDB6	handler 0x65E750 ===
+  _Src = (void *)(*(int *)(param_2 + 0x68) + 1 + *(int *)(param_2 + 100));
+  memcpy((void *)((int)&local_8 + 3),_Src,(int)pvVar4 - (int)_Src);
+  switch(local_8 >> 0x18) {
+  *(int *)(param_2 + 0x68) = (int)pvVar4 - *(int *)(param_2 + 100);
+
+=== op 95	thunk 0x406EAB	handler 0x65BE00 ===
+  _Src = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_10,_Src,(int)pvVar1 - (int)_Src);
+  memcpy(&local_5,pvVar1,(int)_Src_00 - (int)pvVar1);
+  memcpy(&local_10,_Src_00,(int)pvVar1 - (int)_Src_00);
+  memcpy(&local_6,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_c,pvVar2,(int)_Src_00 - (int)pvVar2);
+  memcpy(&local_14,_Src_00,(int)pvVar1 - (int)_Src_00);
+  memcpy(&local_10,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_c,pvVar2,(int)_Src_00 - (int)pvVar2);
+  *(int *)(param_1 + 0x68) = (int)_Src_00 - *(int *)(param_1 + 100);
+
+=== op 96	thunk 0x402B4E	handler 0x65EE30 ===
+  pvVar3 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_5,pvVar3,(int)pvVar1 - (int)pvVar3);
+  memcpy(local_c,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_10,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_14,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_18,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_1c,pvVar1,(int)pvVar3 - (int)pvVar1);
+  *(int *)(param_1 + 0x68) = (int)pvVar3 - *(int *)(param_1 + 100);
+
+=== op 97	thunk 0x40AB0A	handler 0x65F150 ===
+  pvVar1 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&param_2,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(&local_c,_Src,(int)pvVar1 - (int)_Src);
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+
+=== op 98	thunk 0x401636	handler 0x65F1E0 ===
+  local_c = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  } while (*pcVar2 != '\0');
+  memcpy(&local_10,_Src_00,(int)_Src - (int)_Src_00);
+  memcpy(local_8,_Src,(int)pcVar2 - (int)_Src);
+  *(int *)(param_1 + 0x68) = (int)pcVar2 - *(int *)(param_1 + 100);
+
+=== op 99	thunk 0x40FA06	handler 0x65B3A0 ===
+  pvVar5 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_18,pvVar5,(int)pvVar1 - (int)pvVar5);
+  memcpy(&local_1c,pvVar1,((int)pvVar5 + 6) - (int)pvVar1);
+  memcpy(&local_20,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(&local_10,_Src,(int)pvVar1 - (int)_Src);
+  memcpy(&local_5,pvVar1,(int)pvVar5 - (int)pvVar1);
+  *(int *)(param_2 + 0x68) = (int)pvVar5 - *(int *)(param_2 + 100);
+
+=== op 100	thunk 0x40440D	handler 0x650A20 ===
+  pvVar1 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_5,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(&local_10,_Src,(int)_Src_00 - (int)_Src);
+  memcpy(&local_c,_Src_00,(int)pvVar1 - (int)_Src_00);
+  if (cVar2 != '\0') {
+  if (cVar2 != '\0') goto LAB_00650b42;
+  *(int *)(param_2 + 0x68) = (int)pvVar1 - *(int *)(param_2 + 100);
+
+=== op 101	thunk 0x40335F	handler 0x65F2D0 ===
+  _Src = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_5,_Src,(int)pvVar7 - (int)_Src);
+  *(int *)(param_2 + 0x68) = (int)_Src + (6 - *(int *)(param_2 + 100));
+  *(int *)(param_2 + 0x68) = (int)_Src + (4 - *(int *)(param_2 + 100));
+  if (cVar1 != '\0') break;
+  *(int *)(uVar6 + 0x68) = (int)pvVar7 - *(int *)(uVar6 + 100);
+  uVar5 = param_2 >> 0x18;
+  *(int *)(uVar6 + 0x68) = (int)_Src + (6 - *(int *)(uVar6 + 100));
+  *(int *)(param_2 + 0x68) = (int)_Src + (4 - *(int *)(param_2 + 100));
+  *(int *)(param_2 + 0x68) = (int)_Src + (4 - *(int *)(param_2 + 100));
+  *(int *)(param_2 + 0x68) = (int)_Src + (4 - *(int *)(param_2 + 100));
+  if (cVar1 != '\0') {
+  *(int *)(param_2 + 0x68) = (int)pvVar7 - *(int *)(param_2 + 100);
+  *(int *)(param_2 + 0x68) = (int)pvVar7 - *(int *)(param_2 + 100);
+  if (cVar1 != '\0') {
+  *(int *)(uVar6 + 0x68) = (int)pvVar7 - *(int *)(uVar6 + 100);
+  *(int *)(param_2 + 0x68) = (int)_Src + (5 - *(int *)(param_2 + 100));
+  *(int *)(param_2 + 0x68) = (int)_Src + (5 - *(int *)(param_2 + 100));
+  uVar5 = param_2 >> 0x18;
+  *(int *)(uVar6 + 0x68) = (int)_Src + (4 - *(int *)(uVar6 + 100));
+  uVar5 = param_2 >> 0x18;
+  *(int *)(uVar6 + 0x68) = (int)pvVar7 - *(int *)(uVar6 + 100);
+  *(int *)(uVar6 + 0x68) = (int)pvVar7 - *(int *)(uVar6 + 100);
+
+=== op 102	thunk 0x40DC9C	handler 0x650C30 ===
+  *(int *)(param_1 + 0x68) = *(int *)(param_1 + 0x68) + 7;
+
+=== op 103	thunk 0x405FBA	handler 0x650C60 ===
+  _Src_00 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_14,_Src_00,(int)pvVar3 - (int)_Src_00);
+  memcpy(&local_5,pvVar3,(int)_Src - (int)pvVar3);
+  memcpy(&local_c,_Src,(int)pvVar3 - (int)_Src);
+  memcpy((void *)((int)&local_c + 1),_Src,(int)pvVar3 - (int)_Src);
+  *(int *)(param_1 + 0x68) = (int)pvVar3 - *(int *)(param_1 + 100);
+  *(int *)(param_1 + 0x68) = (int)pvVar3 - *(int *)(param_1 + 100);
+
+=== op 104	thunk 0x4062DF	handler 0x650E20 ===
+  _Src_00 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_8,_Src_00,(int)pvVar3 - (int)_Src_00);
+  memcpy((void *)((int)&param_2 + 3),pvVar3,(int)_Src - (int)pvVar3);
+  memcpy(&param_2,_Src,(int)pvVar3 - (int)_Src);
+  *(int *)(iVar1 + 0x68) = (int)pvVar3 - *(int *)(iVar1 + 100);
+  memcpy(&param_2,_Src,(int)pvVar3 - (int)_Src);
+  *(int *)(iVar1 + 0x68) = (int)pvVar3 - *(int *)(iVar1 + 100);
+
+=== op 105	thunk 0x40CD92	handler 0x6698F0 ===
+  pcVar4 = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_58,pcVar4,(int)pcVar5 - (int)pcVar4);
+  memcpy((void *)((int)&local_50 + 1),pcVar5,(int)pcVar1 - (int)pcVar5);
+  memcpy(&local_54,pcVar1,(int)pcVar5 - (int)pcVar1);
+  memcpy(&local_54,pcVar1,(int)pcVar5 - (int)pcVar1);
+  memcpy(&local_5c,pcVar5,(int)pcVar1 - (int)pcVar5);
+  memcpy(&local_58,pcVar1,(int)pcVar2 - (int)pcVar1);
+  memcpy(&local_50,pcVar2,(int)pcVar4 - (int)pcVar2);
+  } while (cVar3 != '\0');
+  } while (*pcVar4 != '\0');
+  memcpy(&local_5c,pcVar5,(int)pcVar2 - (int)pcVar5);
+  memcpy(&local_50,pcVar2,(int)_Src - (int)pcVar2);
+  memcpy(&local_58,_Src,(int)pcVar4 - (int)_Src);
+  } while (cVar3 != '\0');
+  *(int *)(param_1 + 0x68) = (int)pcVar5 - *(int *)(param_1 + 100);
+
+=== op 106	thunk 0x40B8FC	handler 0x657850 ===
+  _Src_00 = (char *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy((void *)((int)&local_c + 1),_Src_00,(int)pcVar8 - (int)_Src_00);
+  memcpy((void *)((int)&local_8 + 1),pcVar8,(int)_Src - (int)pcVar8);
+  memcpy(&local_c,_Src,(int)pcVar4 - (int)_Src);
+  memcpy(&local_10,pcVar4,(int)pcVar8 - (int)pcVar4);
+  if (cVar3 != '\0') {
+  } while (*pcVar8 != '\0');
+  memcpy(&local_c,pcVar4,(int)pcVar8 - (int)pcVar4);
+  (**(code **)(*piVar1 + 0x84))((int)(short)local_10,(int)local_8,local_c._1_1_ != '\0');
+  if (*(char *)(param_1 + 0xd0) != '\0') {
+  *(int *)(param_2 + 0x68) = (int)pcVar8 - *(int *)(param_2 + 100);
+
+=== op 107	thunk 0x4028F6	handler 0x657BC0 ===
+  pcVar4 = (char *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_10,pcVar4,(int)_Str2 - (int)pcVar4);
+  } while (cVar1 != '\0');
+  } while (*pcVar3 != '\0');
+  memcpy(&local_5,pcVar4,(int)pcVar3 - (int)pcVar4);
+  thunk_FUN_00635b50(pcVar2,0,local_5 != '\0',1,DAT_00b39d4c,DAT_00b39d4c,DAT_00b39d4c,0,0
+  *(int *)(param_2 + 0x68) = (int)pcVar3 - *(int *)(param_2 + 100);
+  *(int *)(param_2 + 0x68) = (int)pcVar3 - *(int *)(param_2 + 100);
+
+=== op 108	thunk 0x40A3FD	handler 0x64F890 ===
+  _Src = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&param_1,_Src,(int)((int)_Src + 2U) - (int)_Src);
+  *(int *)(iVar1 + 0x68) = (int)_Src + (2 - *(int *)(iVar1 + 100));
+
+=== op 109	thunk 0x402013	handler 0x65CC40 ===
+  _Src = (char *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy((void *)((int)&param_2 + 3),_Src,(int)_Str2 - (int)_Src);
+  } while (cVar1 != '\0');
+  *(int *)(iVar2 + 0x68) = (int)pcVar3 - *(int *)(iVar2 + 100);
+
+=== op 110	thunk 0x403571	handler 0x650270 ===
+  _Src_00 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy((void *)((int)&param_1 + 3),_Src_00,(int)_Src - (int)_Src_00);
+  memcpy(&local_8,_Src,(int)pvVar1 - (int)_Src);
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+  *(int *)(iVar2 + 0x68) = (int)_Src_00 + (9 - *(int *)(iVar2 + 100));
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+
+=== op 111	thunk 0x40A466	handler 0x65CCD0 ===
+  pbVar4 = (byte *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_5,pbVar4,(int)_Src - (int)pbVar4);
+  memcpy(&local_c,_Src,(int)pbVar4 - (int)_Src);
+  memcpy(&local_c,_Src,(int)pbVar4 - (int)_Src);
+  *(uint *)(param_1 + 0xbc) = (uint)(cVar2 != '\0');
+  *(int *)(param_2 + 0x68) = (int)_Src - *(int *)(param_2 + 100);
+
+=== op 112	thunk 0x40E7AF	handler 0x65CE80 ===
+  pcVar4 = (char *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy((void *)((int)&param_2 + 3),pcVar4,(int)pcVar1 - (int)pcVar4);
+  } while (*pcVar5 != '\0');
+  memcpy(&local_10,pcVar4,(int)_Src - (int)pcVar4);
+  memcpy(&local_5,_Src,(int)pcVar4 - (int)_Src);
+  memcpy((void *)((int)&param_2 + 3),pcVar4,(int)pcVar5 - (int)pcVar4);
+  thunk_FUN_0063f340(pcVar1,local_10,local_5 != '\0',param_2._3_1_ != '\0');
+  *(int *)(iVar2 + 0x68) = (int)pcVar1 - *(int *)(iVar2 + 100);
+  if ((param_2._3_1_ == '\t') && (cVar3 = thunk_FUN_0063eeb0(), cVar3 != '\0')) {
+  *(int *)(iVar2 + 0x68) = (int)pcVar5 - *(int *)(iVar2 + 100);
+
+=== op 113	thunk 0x403B4D	handler 0x65CFE0 ===
+  _Src_00 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy((void *)((int)&local_18 + 1),_Src_00,(int)pvVar2 - (int)_Src_00);
+  memcpy(&local_18,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(local_28,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(local_1c,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(local_24,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(local_20,_Src,(int)pvVar2 - (int)_Src);
+  if (*(char *)(param_1 + 0xd0) != '\0') {
+  *(int *)(param_2 + 0x68) = (int)pvVar2 - *(int *)(param_2 + 100);
+
+=== op 114	thunk 0x40A0C9	handler 0x6504E0 ===
+  _Src = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&param_1,_Src,(int)((int)_Src + 2U) - (int)_Src);
+  *(int *)(iVar1 + 0x68) = (int)_Src + (2 - *(int *)(iVar1 + 100));
+
+=== op 115	thunk 0x40BD7F	handler 0x65D290 ===
+  _Src = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy((void *)((int)&param_1 + 3),_Src,(int)pvVar5 - (int)_Src);
+  switch(param_1 >> 0x18) {
+  *(int *)(uVar1 + 0x68) = (int)pvVar5 - *(int *)(uVar1 + 100);
+  *(int *)(uVar1 + 0x68) = (int)pvVar5 - *(int *)(uVar1 + 100);
+  *(int *)(uVar1 + 0x68) = (int)_Src + (0xd - *(int *)(uVar1 + 100));
+  *(int *)(uVar1 + 0x68) = (int)pvVar5 - *(int *)(uVar1 + 100);
+  *(int *)(uVar1 + 0x68) = (int)_Src + (5 - *(int *)(uVar1 + 100));
+  *(int *)(uVar1 + 0x68) = (int)pvVar5 - *(int *)(uVar1 + 100);
+
+=== op 116	thunk 0x40B6C7	handler 0x65D160 ===
+  _Src = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy((void *)((int)&uStack_8 + 3),_Src,(int)pvVar1 - (int)_Src);
+  *(int *)(param_2 + 0x68) = (int)pvVar1 - *(int *)(param_2 + 100);
+  if (cVar2 != '\0') {
+  if (*(char *)(param_1 + 0xd0) != '\0') {
+  *(int *)(param_2 + 0x68) = (int)pvVar1 - *(int *)(param_2 + 100);
+  *(int *)(param_2 + 0x68) = (int)pvVar1 - *(int *)(param_2 + 100);
+
+=== op 117	thunk 0x401A32	handler 0x650C00 ===
+  iVar1 = *(int *)(param_1 + 100);
+  iVar2 = *(int *)(param_1 + 0x68);
+  *(int *)(param_1 + 0x68) = ((iVar1 + iVar2) - *(int *)(param_1 + 100)) + 2;
+
+=== op 118	thunk 0x40F592	handler 0x65D4B0 ===
+  pcVar2 = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy((void *)((int)&local_8 + 1),pcVar2,(int)_Str1 - (int)pcVar2);
+  } while (*pcVar4 != '\0');
+  memcpy(&local_8,pcVar2,(int)pcVar4 - (int)pcVar2);
+  } while (*pcVar4 != '\0');
+  memcpy(&local_8,pcVar2,(int)pcVar4 - (int)pcVar2);
+  *(int *)(param_1 + 0x68) = (int)pcVar4 - *(int *)(param_1 + 100);
+
+=== op 119	thunk 0x402009	handler 0x669710 ===
+  pvVar3 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&param_1,pvVar3,(int)pvVar1 - (int)pvVar3);
+  memcpy(&local_20,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_1c,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_24,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(local_c,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_10,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_14,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_18,pvVar1,(int)pvVar3 - (int)pvVar1);
+  *(int *)(iVar4 + 0x68) = (int)pvVar3 - *(int *)(iVar4 + 100);
+
+=== op 120	thunk 0x40E494	handler 0x65D650 ===
+  puVar2 = (undefined1 *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(local_8,puVar2,(int)puVar1 - (int)puVar2);
+  memcpy(&local_c,puVar1,(int)puVar4 - (int)puVar1);
+  memcpy(&local_10,puVar1,(int)puVar2 - (int)puVar1);
+  *(int *)(iVar3 + 0x68) = (int)puVar2 - *(int *)(iVar3 + 100);
+  *(int *)(iVar3 + 0x68) = (int)puVar2 - *(int *)(iVar3 + 100);
+
+=== op 121	thunk 0x403DCD	handler 0x650F40 ===
+  pvVar3 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy((void *)((int)&param_1 + 3),pvVar3,(int)pvVar1 - (int)pvVar3);
+  memcpy(&local_8,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_c,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_10,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_14,pvVar2,(int)pvVar3 - (int)pvVar2);
+  *(int *)(iVar5 + 0x68) = (int)pvVar3 - *(int *)(iVar5 + 100);
+  *(int *)(iVar5 + 0x68) = (int)pvVar3 - *(int *)(iVar5 + 100);
+  *(int *)(iVar5 + 0x68) = (int)pvVar3 - *(int *)(iVar5 + 100);
+  *(int *)(iVar5 + 0x68) = (int)pvVar3 - *(int *)(iVar5 + 100);
+
+=== op 122	thunk 0x4080F8	handler 0x6511D0 ===
+  pvVar1 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy((void *)((int)&uStack_8 + 3),pvVar1,(int)_Src - (int)pvVar1);
+  memcpy((void *)((int)&param_2 + 3),_Src,(int)pvVar1 - (int)_Src);
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+
+=== op 123	thunk 0x4071EE	handler 0x651260 ===
+  pcVar7 = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy((void *)((int)&param_1 + 3),pcVar7,(int)pcVar4 - (int)pcVar7);
+  memcpy(&local_c,pcVar4,(int)pcVar1 - (int)pcVar4);
+  memcpy(&local_24,pcVar1,(int)pcVar4 - (int)pcVar1);
+  memcpy(&local_20,pcVar4,(int)pcVar1 - (int)pcVar4);
+  memcpy(&local_1c,pcVar1,(int)pcVar4 - (int)pcVar1);
+  memcpy(&local_8,pcVar4,(int)pcVar1 - (int)pcVar4);
+  memcpy(&local_10,pcVar1,(int)pcVar4 - (int)pcVar1);
+  memcpy(&local_14,pcVar4,(int)pcVar1 - (int)pcVar4);
+  memcpy(&local_18,pcVar1,(int)pcVar7 - (int)pcVar1);
+  } while (cVar2 != '\0');
+  *(int *)(iVar3 + 0x68) = (int)pcVar4 - *(int *)(iVar3 + 100);
+  *(int *)(iVar3 + 0x68) = (int)pcVar4 - *(int *)(iVar3 + 100);
+
+=== op 124	thunk 0x40894F	handler 0x65FA10 ===
+  _Src = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_28,_Src,(int)pvVar1 - (int)_Src);
+  memcpy(local_8,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_10,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_30,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_20,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_24,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_2c,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_1c,pvVar1,((int)_Src + 0x1a) - (int)pvVar1);
+  *(int *)(param_1 + 0x68) = iVar4 - *(int *)(param_1 + 100);
+
+=== op 125	thunk 0x401B95	handler 0x651420 ===
+  _Src_00 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&param_1,_Src_00,(int)_Src - (int)_Src_00);
+  memcpy(&local_8,_Src,((int)_Src_00 + 4) - (int)_Src);
+  *(int *)(iVar1 + 0x68) = (int)_Src + (2 - *(int *)(iVar1 + 100));
+
+=== op 126	thunk 0x408DAF	handler 0x6514F0 ===
+  _Src = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&param_1,_Src,(int)((int)_Src + 2U) - (int)_Src);
+  *(int *)(iVar1 + 0x68) = (int)_Src + (2 - *(int *)(iVar1 + 100));
+
+=== op 127	thunk 0x4044F3	handler 0x65FE80 ===
+  pcVar1 = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_5,pcVar1,(int)pcVar3 - (int)pcVar1);
+  memcpy(&local_c,pcVar3,(int)pcVar6 - (int)pcVar3);
+  memcpy(&local_10,pcVar6,(int)pcVar1 - (int)pcVar6);
+  } while (cVar2 != '\0');
+  } while (cVar2 != '\0');
+  memcpy(&local_18,pcVar3,(int)pcVar6 - (int)pcVar3);
+  memcpy(&local_14,pcVar6,(int)pcVar3 - (int)pcVar6);
+  } while (cVar2 != '\0');
+  } while (cVar2 != '\0');
+  memcpy(&local_18,pcVar3,(int)pcVar1 - (int)pcVar3);
+  } while (*pcVar3 != '\0');
+  memcpy(&local_c,pcVar6,(int)pcVar3 - (int)pcVar6);
+  } while (*pcVar3 != '\0');
+  *(int *)(param_1 + 0x68) = (int)pcVar3 - *(int *)(param_1 + 100);
+
+=== op 128	thunk 0x40D233	handler 0x651600 ===
+  pvVar3 = (void *)(*(int *)((int)param_1 + 100) + 1 + *(int *)((int)param_1 + 0x68));
+  memcpy(&local_8,pvVar3,(int)pvVar1 - (int)pvVar3);
+  memcpy(&local_c,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_10,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_14,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_18,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy((void *)((int)&param_1 + 3),pvVar1,(int)pvVar3 - (int)pvVar1);
+  uVar4 = (uint)param_1 >> 0x18;
+  *(int *)(uVar5 + 0x68) = (int)pvVar3 - *(int *)(uVar5 + 100);
+
+=== op 129	thunk 0x401E1A	handler 0x651730 ===
+  iVar2 = *(int *)(param_2 + 100);
+  _Src = (void *)(iVar2 + 1 + *(int *)(param_2 + 0x68));
+  memcpy((void *)((int)&param_2 + 3),_Src,(int)pvVar1 - (int)_Src);
+  *(int *)(iVar3 + 0x68) = (int)pvVar1 - iVar2;
+  *(int *)(iVar3 + 0x68) = (int)_Src + (3 - *(int *)(iVar3 + 100));
+  *(int *)(iVar3 + 0x68) = (int)pvVar1 - *(int *)(iVar3 + 100);
+
+=== op 130	thunk 0x406D9D	handler 0x660160 ===
+  pvVar1 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_10,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(&param_2,_Src,(int)_Src_00 - (int)_Src);
+  memcpy(local_8,_Src_00,(int)pvVar1 - (int)_Src_00);
+  *(int *)(uVar5 + 0x68) = (int)pvVar1 - *(int *)(uVar5 + 100);
+
+=== op 131	thunk 0x407626	handler 0x6517D0 ===
+  pvVar3 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_10,pvVar3,(int)pvVar1 - (int)pvVar3);
+  memcpy(&local_c,pvVar1,((int)pvVar3 + 4) - (int)pvVar1);
+  memcpy(&local_20,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_1c,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_18,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_14,pvVar2,(int)pvVar3 - (int)pvVar2);
+  *(int *)(param_2 + 0x68) = (int)pvVar3 - *(int *)(param_2 + 100);
+  *(int *)(param_2 + 0x68) = (int)pvVar3 - *(int *)(param_2 + 100);
+
+=== op 132	thunk 0x40439F	handler 0x651910 ===
+  iVar1 = *(int *)(param_1 + 100);
+  iVar2 = *(int *)(param_1 + 0x68);
+  if (*(char *)(iVar3 + 0x5bc0) != '\0') {
+  *(int *)(param_1 + 0x68) = (iVar1 + 1 + iVar2) - *(int *)(param_1 + 100);
+
+=== op 133	thunk 0x40DE04	handler 0x651950 ===
+  pbVar8 = (byte *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&param_1,pbVar4,(int)pbVar3 - (int)pbVar4);
+  *(int *)(iVar2 + 0x68) = (int)pbVar3 - *(int *)(iVar2 + 100);
+  *(int *)(iVar2 + 0x68) = (int)pbVar3 - *(int *)(iVar2 + 100);
+
+=== op 134	thunk 0x403206	handler 0x660260 ===
+  pvVar2 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy((void *)((int)&local_8 + 3),pvVar2,(int)_Src - (int)pvVar2);
+  memcpy(&local_8,_Src,(int)pvVar1 - (int)_Src);
+  memcpy(&local_c,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(&param_1,_Src,(int)pvVar1 - (int)_Src);
+  memcpy(&local_8,pvVar1,(int)pvVar2 - (int)pvVar1);
+  *(int *)(uVar9 + 0x68) = (int)pvVar2 - *(int *)(uVar9 + 100);
+  *(int *)(uVar9 + 0x68) = (int)_Src - *(int *)(uVar9 + 100);
+
+=== op 135	thunk 0x4020A9	handler 0x6643A0 ===
+  pvVar1 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_11,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(local_18,_Src,(int)pvVar1 - (int)_Src);
+  *(int *)(param_1 + 0x68) = (int)pvVar1 - *(int *)(param_1 + 100);
+
+=== op 136	thunk 0x40A5B5	handler 0x651A10 ===
+  _Src_00 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy((void *)((int)&param_1 + 3),_Src_00,(int)_Src - (int)_Src_00);
+  memcpy(&param_1,_Src,(int)pvVar4 - (int)_Src);
+  if (cVar2 != '\0') {
+  *(int *)(iVar1 + 0x68) = (int)pvVar4 - *(int *)(iVar1 + 100);
+
+=== op 137	thunk 0x40D611	handler 0x651B20 ===
+  _Src_00 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy((void *)((int)&param_2 + 3),_Src_00,(int)_Src - (int)_Src_00);
+  memcpy(&param_2,_Src,(int)pvVar5 - (int)_Src);
+  if (cVar2 != '\0') {
+  if (*(char *)(param_1 + 0xd0) != '\0') {
+  *(int *)(uVar1 + 0x68) = (int)_Src - *(int *)(uVar1 + 100);
+  *(int *)(uVar1 + 0x68) = (int)pvVar5 - *(int *)(uVar1 + 100);
+
+=== op 138	thunk 0x40BE79	handler 0x651C10 ===
+  pcVar5 = (char *)(*(int *)((int)param_2 + 100) + 1 + *(int *)((int)param_2 + 0x68));
+  memcpy((void *)((int)&param_2 + 3),pcVar5,(int)pcVar6 - (int)pcVar5);
+  } while (cVar2 != '\0');
+  } while (cVar2 != '\0');
+  if (cVar2 != '\0') {
+  *(int *)(iVar1 + 0x68) = (int)pcVar5 - *(int *)(iVar1 + 100);
+
+=== op 139	thunk 0x40DF5D	handler 0x660400 ===
+  _Src = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy((void *)((int)_Src +
+  (int)&param_1 + (-*(int *)(param_1 + 0x68) - *(int *)(param_1 + 100)) + -1),_Src,
+  strncpy((char *)(iVar4 + 0x13d8),param_1,0x2f);
+
+=== op 140	thunk 0x409CEB	handler 0x651CE0 ===
+  _Src = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&param_1,_Src,(int)pvVar1 - (int)_Src);
+  *(int *)(uVar3 + 0x68) = (int)pvVar1 - *(int *)(uVar3 + 100);
+
+=== op 141	thunk 0x40D148	handler 0x651E10 ===
+  _Src_00 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_8,_Src_00,(int)_Src - (int)_Src_00);
+  memcpy(&local_8,_Src,(int)pvVar2 - (int)_Src);
+  *(int *)(param_1 + 0x68) = (int)pvVar2 - *(int *)(param_1 + 100);
+
+=== op 142	thunk 0x4043FE	handler 0x651E90 ===
+  _Src = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&param_1,_Src,(int)((int)_Src + 2U) - (int)_Src);
+  *(int *)(uVar2 + 0x68) = (int)_Src + (2 - *(int *)(uVar2 + 100));
+
+=== op 143	thunk 0x404C6E	handler 0x651EF0 ===
+  pvVar2 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&param_1,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_8,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(&local_c,_Src,(int)pvVar1 - (int)_Src);
+  memcpy(&local_10,pvVar1,(int)pvVar2 - (int)pvVar1);
+  *(int *)(iVar3 + 0x68) = (int)pvVar2 - *(int *)(iVar3 + 100);
+  *(int *)(iVar3 + 0x68) = (int)pvVar2 - *(int *)(iVar3 + 100);
+  *(int *)(iVar3 + 0x68) = (int)pvVar2 - *(int *)(iVar3 + 100);
+
+=== op 144	thunk 0x407739	handler 0x660540 ===
+  _Src_00 = (void *)(*(int *)((int)param_1 + 100) + 1 + *(int *)((int)param_1 + 0x68));
+  memcpy((void *)((int)&param_1 + 3),_Src_00,(int)_Src - (int)_Src_00);
+  memcpy(&local_8,_Src,(int)param_1 - (int)_Src);
+  (cVar2 = thunk_FUN_0055c290(), cVar2 != '\0')) {
+  *(int *)(iVar1 + 0x68) = (int)param_1 - *(int *)(iVar1 + 100);
+  *(int *)(iVar1 + 0x68) = (int)param_1 - *(int *)(iVar1 + 100);
+  if ((*(int *)(iVar4 + 0x5b0c) != 0) && (cVar2 = thunk_FUN_0049e7d0(), cVar2 != '\0')) {
+  *(int *)(iVar1 + 0x68) = (int)_Src - *(int *)(iVar1 + 100);
+  *(int *)(iVar1 + 0x68) = (int)_Src - *(int *)(iVar1 + 100);
+  if ((*(int *)(iVar4 + 0x5b0c) != 0) && (cVar2 = thunk_FUN_0049e7d0(), cVar2 != '\0')) {
+  *(int *)(iVar1 + 0x68) = (int)_Src - *(int *)(iVar1 + 100);
+  *(int *)(iVar1 + 0x68) = (int)_Src - *(int *)(iVar1 + 100);
+
+=== op 145	thunk 0x40C1F8	handler 0x652050 ===
+  _Src_00 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy((void *)((int)&param_1 + 3),_Src_00,(int)pvVar3 - (int)_Src_00);
+  memcpy(&local_14,pvVar3,(int)pvVar1 - (int)pvVar3);
+  memcpy(&local_10,pvVar1,(int)pvVar3 - (int)pvVar1);
+  memcpy(&local_c,pvVar3,(int)pvVar1 - (int)pvVar3);
+  memcpy(&local_8,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(&param_1,_Src,(int)pvVar3 - (int)_Src);
+  *(int *)(iVar2 + 0x68) = (int)pvVar3 - *(int *)(iVar2 + 100);
+
+=== op 146	thunk 0x4023D8	handler 0x652170 ===
+  pvVar1 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy((void *)((int)&param_2 + 3),pvVar1,(int)_Src - (int)pvVar1);
+  memcpy((void *)((int)&uStack_8 + 3),_Src,(int)pvVar1 - (int)_Src);
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+  thunk_FUN_005ecae0(uStack_8 >> 0x18);
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+
+=== op 147	thunk 0x401438	handler 0x652210 ===
+  _Src = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy((void *)((int)&uStack_8 + 3),_Src,(int)pvVar1 - (int)_Src);
+  if (((uStack_8._3_1_ != '\0') ||
+  *(int *)(param_2 + 0x68) = (int)pvVar1 - *(int *)(param_2 + 100);
+
+=== op 148	thunk 0x40E1CE	handler 0x6522C0 ===
+  pvVar2 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&param_1,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(&local_8,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(&local_c,_Src,(int)pvVar1 - (int)_Src);
+  memcpy(&local_10,pvVar1,(int)pvVar2 - (int)pvVar1);
+  *(int *)(iVar4 + 0x68) = (int)pvVar2 - *(int *)(iVar4 + 100);
+
+=== op 149	thunk 0x40D201	handler 0x651570 ===
+  iVar1 = *(int *)(param_1 + 0x68);
+  iVar2 = *(int *)(param_1 + 100);
+  *(int *)(param_1 + 0x68) = (iVar2 + 1 + iVar1) - *(int *)(param_1 + 100);
+
+=== op 150	thunk 0x401CB2	handler 0x6523A0 ===
+  _Src = (void *)(*(int *)((int)param_1 + 100) + 1 + *(int *)((int)param_1 + 0x68));
+  memcpy(&local_14,_Src,(int)pvVar1 - (int)_Src);
+  memcpy(&local_10,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_c,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(local_8,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&param_1,pvVar2,((int)_Src + 0x10) - (int)pvVar2);
+  *(int *)(uVar3 + 0x68) = (int)pvVar2 + (2 - *(int *)(uVar3 + 100));
+
+=== op 151	thunk 0x40F4CA	handler 0x651D60 ===
+  _Src = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&param_2,_Src,(int)pvVar1 - (int)_Src);
+  *(int *)(uVar3 + 0x68) = (int)pvVar1 - *(int *)(uVar3 + 100);
+  *(int *)(uVar3 + 0x68) = (int)pvVar1 - *(int *)(uVar3 + 100);
+  *(int *)(uVar3 + 0x68) = (int)pvVar1 - *(int *)(uVar3 + 100);
+
+=== op 152	thunk 0x405DDF	handler 0x6524A0 ===
+  _Src_00 = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_8,_Src_00,(int)_Src - (int)_Src_00);
+  memcpy(&param_2,_Src,((int)_Src_00 + 4) - (int)_Src);
+  *(int *)(iVar1 + 0x68) = (int)_Src + (2 - *(int *)(iVar1 + 100));
+
+=== op 153	thunk 0x406A28	handler 0x652520 ===
+  iVar1 = *(int *)(param_1 + 100);
+  iVar2 = *(int *)(param_1 + 0x68);
+  *(int *)(param_1 + 0x68) = (iVar1 + 1 + iVar2) - *(int *)(param_1 + 100);
+
+=== op 154	thunk 0x4065EB	handler 0x6607D0 ===
+  _Src = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_5,_Src,(int)pvVar7 - (int)_Src);
+  memcpy(&local_1c,pvVar7,(int)pvVar1 - (int)pvVar7);
+  memcpy(&local_18,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_20,pvVar2,(int)pvVar7 - (int)pvVar2);
+  memcpy(&local_c,pvVar7,(int)pvVar1 - (int)pvVar7);
+  memcpy(&local_10,pvVar1,(int)pvVar7 - (int)pvVar1);
+  memcpy(&local_14,pvVar7,(int)pvVar1 - (int)pvVar7);
+  memcpy(&local_18,pvVar1,(int)pvVar2 - (int)pvVar1);
+  memcpy(&local_1c,pvVar2,(int)pvVar7 - (int)pvVar2);
+  *(int *)(param_2 + 0x68) = (int)pvVar7 - *(int *)(param_2 + 100);
+
+=== op 155	thunk 0x40B5BE	handler 0x660B40 ===
+  pvVar2 = (void *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&param_1,pvVar2,(int)pvVar1 - (int)pvVar2);
+  memcpy(local_c,pvVar1,(int)_Src - (int)pvVar1);
+  memcpy(&local_10,_Src,(int)pvVar1 - (int)_Src);
+  memcpy(&local_14,pvVar1,(int)pvVar2 - (int)pvVar1);
+  *(int *)(iVar4 + 0x68) = (int)pvVar2 - *(int *)(iVar4 + 100);
+
+=== op 156	thunk 0x406EF1	handler 0x652660 ===
+  _Src = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy((void *)((int)&param_2 + 3),_Src,(int)pvVar1 - (int)_Src);
+  *(int *)(iVar2 + 0x68) = (int)pvVar1 - *(int *)(iVar2 + 100);
+
+=== op 157	thunk 0x404F8E	handler 0x6526D0 ===
+  _Src = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&param_2,_Src,(int)((int)_Src + 4U) - (int)_Src);
+  *(int *)(uVar1 + 0x68) = (int)_Src + (4 - *(int *)(uVar1 + 100));
+
+=== op 158	thunk 0x40776B	handler 0x660C60 ===
+  _Src = (void *)(*(int *)(param_2 + 100) + 1 + *(int *)(param_2 + 0x68));
+  memcpy(&local_5,_Src,(int)pvVar1 - (int)_Src);
+  *(int *)(param_2 + 0x68) = (int)pvVar1 - *(int *)(param_2 + 100);
+  if (local_5 != '\0') goto LAB_00660d33;
+  *(int *)(param_2 + 0x68) = (int)pvVar1 - *(int *)(param_2 + 100);
+  *(int *)(param_2 + 0x68) = (int)pvVar1 - *(int *)(param_2 + 100);
+
+=== op 159	thunk 0x4013F7	handler 0x652730 ===
+  pcVar1 = (char *)(*(int *)(param_1 + 100) + 1 + *(int *)(param_1 + 0x68));
+  memcpy(&local_44,pcVar1,(int)pcVar4 - (int)pcVar1);
+  memcpy(&local_40,pcVar4,(int)pcVar3 - (int)pcVar4);
+  memcpy(&local_3c,pcVar3,(int)pcVar4 - (int)pcVar3);
+  memcpy(&local_38,pcVar4,(int)pcVar3 - (int)pcVar4);
+  memcpy(&local_34,pcVar3,(int)pcVar4 - (int)pcVar3);
+  memcpy(&local_30,pcVar4,(int)pcVar3 - (int)pcVar4);
+  memcpy(&local_2c,pcVar3,(int)pcVar4 - (int)pcVar3);
+  memcpy(&local_28,pcVar4,(int)pcVar3 - (int)pcVar4);
+  memcpy(&local_24,pcVar3,(int)pcVar4 - (int)pcVar3);
+  memcpy(&local_20,pcVar4,(int)pcVar3 - (int)pcVar4);
+  memcpy(&local_1c,pcVar3,(int)pcVar4 - (int)pcVar3);
+  memcpy(&local_8,pcVar4,(int)pcVar3 - (int)pcVar4);
+  memcpy(&local_c,pcVar3,(int)pcVar4 - (int)pcVar3);
+  memcpy(&local_10,pcVar4,(int)pcVar3 - (int)pcVar4);
+  memcpy(&local_14,pcVar3,(int)pcVar4 - (int)pcVar3);
+  memcpy(&local_18,pcVar4,(int)pcVar1 - (int)pcVar4);
+  } while (cVar2 != '\0');
+  } while (cVar2 != '\0');
+  *(int *)(param_1 + 0x68) = (int)pcVar4 - *(int *)(param_1 + 100);
+

@@ -1,0 +1,76 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <EnableUnmanagedDebugging>true</EnableUnmanagedDebugging>
+    <Platforms>AnyCPU;x64;x86</Platforms>
+    <Authors>Sewer56</Authors>
+    <Description>A simple compression and decompression library for Sen no Kiseki files inside PKG archives.</Description>
+    <Version>1.0.4</Version>
+    <RepositoryType>git</RepositoryType>
+    <RepositoryUrl>https://github.com/sewer56lol/Sen-no-Kiseki-PKG-Sharp</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/sewer56lol/Sen-no-Kiseki-PKG-Sharp</PackageProjectUrl>
+    <PackageLicenseUrl></PackageLicenseUrl>
+    <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+    <OutputPath></OutputPath>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DocumentationFile>E:\Users\Desktop\Github\Sen-no-Kiseki-PKG-Tool\CSharp\SenCompressSharp\SenCompressSharp.xml</DocumentationFile>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x86'">
+    <OutputPath />
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DocumentationFile>obj\SenCompressSharp.xml</DocumentationFile>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutputPath />
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <OutputPath></OutputPath>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x86'">
+    <OutputPath />
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <DocumentationFile>obj\SenCompressSharp.xml</DocumentationFile>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutputPath />
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="SenCompress32.dll" />
+    <None Remove="SenCompress32.exp" />
+    <None Remove="SenCompress32.lib" />
+    <None Remove="SenCompress64.dll" />
+    <None Remove="SenCompress64.exp" />
+    <None Remove="SenCompress64.lib" />
+    <None Include="..\..\LICENSE.md">
+      <Pack>True</Pack>
+      <PackagePath></PackagePath>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="SenCompressSharp.targets" Pack="true" PackagePath="build"/>
+    <None Include="..\..\build\SenCompress32.dll" Link="SenCompress32.dll" Pack="true" PackagePath="build">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Include="..\..\build\SenCompress64.dll" Link="SenCompress64.dll" Pack="true" PackagePath="build">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+</Project>
