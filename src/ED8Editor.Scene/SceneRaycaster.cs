@@ -61,6 +61,7 @@ public sealed class SceneRaycaster
                                 primitiveIndex,
                                 triangleIndex,
                                 ray.Origin + ray.Direction * distance,
+                                Vector3.Normalize(Vector3.Cross(b - a, c - a)),
                                 distance);
                         }
                         triangleIndex++;

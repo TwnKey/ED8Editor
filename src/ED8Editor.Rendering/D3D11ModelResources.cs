@@ -27,7 +27,8 @@ public sealed record D3D11SceneInstance(
     int SceneInstanceId,
     D3D11ModelResources Model,
     Matrix4x4 Transform,
-    bool IsSelected);
+    bool IsSelected,
+    bool IsPreview = false);
 
 public sealed record D3D11TextureResources(
     CpuTexture Source,

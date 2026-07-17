@@ -151,6 +151,11 @@ Delete removes it. Addition, duplication, deletion, and transforms share the
 same undo/redo history, and `OpsWriter` persists the resulting `AssetObject`
 collection.
 
+Adding an asset enters surface-placement mode instead of modifying the document
+immediately. A green preview follows the nearest exact triangle hit under the
+cursor; left-click confirms the new prop and `Esc` cancels without creating an
+undo entry or changing the OPS snapshot.
+
 Selecting a prop also populates a generic OPS attribute grid. Transform and
 asset identity fields are read-only there because they are controlled by the
 gizmos and asset loader; flags, clipping, material values, and previously

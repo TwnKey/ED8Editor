@@ -37,6 +37,7 @@ public sealed record ScenePickHit(
     int PrimitiveIndex,
     int TriangleIndex,
     Vector3 Position,
+    Vector3 Normal,
     float Distance);
 
 public sealed record SceneGeometryIssue(

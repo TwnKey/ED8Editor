@@ -779,6 +779,7 @@ static void RaycastsTransformedSceneTriangles()
     Equal(7, result.Hit!.Instance.Id);
     Near(2f, result.Hit.Distance);
     Near(5f, result.Hit.Position.X);
+    Near(1f, result.Hit.Normal.Z);
 }
 
 static void ReportsUnsupportedPickingGeometry()

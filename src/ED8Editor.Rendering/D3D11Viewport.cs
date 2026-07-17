@@ -212,7 +212,7 @@ public sealed class D3D11Viewport : IDisposable
             {
                 var world = mesh.LocalTransform * instance.Transform;
                 var matrix = world * camera.View * camera.Projection;
-                UpdateConstants(matrix, instance.IsSelected);
+                UpdateConstants(matrix, instance.IsSelected, instance.IsPreview);
                 foreach (var primitive in mesh.Primitives)
                 {
                     DrawPrimitive(instance.Model, primitive);
@@ -247,7 +247,7 @@ public sealed class D3D11Viewport : IDisposable
     private void DrawDebugLines(ViewportCamera camera)
     {
         if (debugLineBuffer is null || debugLineVertexCount == 0) return;
-        UpdateConstants(camera.View * camera.Projection, false);
+        UpdateConstants(camera.View * camera.Projection, false, false);
         var context = graphics.Context;
         context.IASetInputLayout(coloredInputLayout);
         context.IASetVertexBuffer(0, debugLineBuffer, Marshal.SizeOf<DebugLineVertex>(), 0);
@@ -302,13 +302,15 @@ public sealed class D3D11Viewport : IDisposable
         context.DrawIndexed(primitive.IndexCount, 0, 0);
     }
 
-    private unsafe void UpdateConstants(Matrix4x4 matrix, bool selected)
+    private unsafe void UpdateConstants(Matrix4x4 matrix, bool selected, bool preview)
     {
         var mapped = graphics.Context.Map(perDrawBuffer, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
         *(PerDrawConstants*)mapped.DataPointer = new PerDrawConstants
         {
             WorldViewProjection = matrix,
-            SelectionColor = selected ? new Vector4(1f, 0.32f, 0.04f, 0.68f) : Vector4.Zero,
+            SelectionColor = preview
+                ? new Vector4(0.1f, 1f, 0.35f, 0.62f)
+                : selected ? new Vector4(1f, 0.32f, 0.04f, 0.68f) : Vector4.Zero,
         };
         graphics.Context.Unmap(perDrawBuffer, 0);
     }

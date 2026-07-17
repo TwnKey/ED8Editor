@@ -19,6 +19,7 @@ public sealed class ViewerForm : Form
     private readonly bool smokeTest;
     private readonly string baseTitle;
     private readonly SceneElementPicker elementPicker = new();
+    private readonly SceneRaycaster surfaceRaycaster = new();
     private readonly EditorOrbitCamera cameraNavigation = new();
     private readonly SceneTranslationGizmo translationGizmo = new();
     private readonly SceneRotationGizmo rotationGizmo = new();
@@ -60,6 +61,7 @@ public sealed class ViewerForm : Form
     private GizmoDragState? gizmoDrag;
     private GizmoMode gizmoMode = GizmoMode.Translate;
     private string? savedOpsPath;
+    private PlacementState? placement;
 
     public ViewerForm(EditorSession session, bool smokeTest, EditorProjectLoader? projectLoader = null)
     {
@@ -107,6 +109,12 @@ public sealed class ViewerForm : Form
                 RefreshOverlay();
                 return;
             }
+            if (eventArgs.KeyCode == Keys.Escape && placement is not null)
+            {
+                CancelPlacement();
+                eventArgs.SuppressKeyPress = true;
+                return;
+            }
             if (eventArgs.Control && eventArgs.KeyCode == Keys.Z)
             {
                 document.Undo();
@@ -146,6 +154,11 @@ public sealed class ViewerForm : Form
             viewportHost.Focus();
             if (eventArgs.Button == MouseButtons.Left)
             {
+                if (placement is not null)
+                {
+                    ConfirmPlacement();
+                    return;
+                }
                 if (BeginGizmoDrag(eventArgs.Location)) return;
                 SelectAt(eventArgs.Location);
                 return;
@@ -174,7 +187,8 @@ public sealed class ViewerForm : Form
         };
         viewportHost.MouseMove += (_, eventArgs) =>
         {
-            if (gizmoDrag is not null) UpdateGizmoDrag(eventArgs.Location);
+            if (placement is not null) UpdatePlacement(eventArgs.Location);
+            else if (gizmoDrag is not null) UpdateGizmoDrag(eventArgs.Location);
             else MoveCamera(eventArgs.Location);
         };
         viewportHost.MouseWheel += (_, eventArgs) => ZoomCamera(eventArgs.Delta);
@@ -361,7 +375,7 @@ public sealed class ViewerForm : Form
 
     private void RefreshRenderInstances(IReadOnlyDictionary<string, D3D11ModelResources> resourcesByAsset)
     {
-        instances = sceneInstances
+        var rendered = sceneInstances
             .Where(value => resourcesByAsset.ContainsKey(value.AssetId))
             .Select(value => new D3D11SceneInstance(
                 value.Id,
@@ -369,7 +383,16 @@ public sealed class ViewerForm : Form
                 value.Transform,
                 selection is { Kind: SceneElementKind.Prop }
                     && value.Id == selection.SourceIndex))
-            .ToArray();
+            .ToList();
+        if (placement is { Position: { } position } preview
+            && resourcesByAsset.TryGetValue(preview.AssetId, out var previewResources))
+        {
+            var transform = Matrix4x4.CreateFromQuaternion(
+                    Quaternion.CreateFromAxisAngle(Vector3.UnitX, -MathF.PI / 2f))
+                * Matrix4x4.CreateTranslation(position);
+            rendered.Add(new D3D11SceneInstance(-1, previewResources, transform, false, true));
+        }
+        instances = rendered;
     }
 
     private void RefreshOverlay()
@@ -586,13 +609,10 @@ public sealed class ViewerForm : Form
             {
                 uploadedModels.Add(new D3D11ModelUploader(graphics.Device).Upload(model));
             }
-            selection = document.AddProp(
-                catalogEntry.AssetId,
-                catalogEntry.AssetId,
-                model,
-                cameraNavigation.Target);
-            RefreshSceneFromDocument();
-            Text = $"{baseTitle} — added: {catalogEntry.AssetId}";
+            placement = new PlacementState(catalogEntry.AssetId, catalogEntry.AssetId, model, null, Vector3.UnitY);
+            var pointer = viewportHost.PointToClient(Cursor.Position);
+            if (viewportHost.ClientRectangle.Contains(pointer)) UpdatePlacement(pointer);
+            Text = $"{baseTitle} — place {catalogEntry.AssetId}: click surface, Esc cancel";
         }
         catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException)
         {
@@ -618,6 +638,33 @@ public sealed class ViewerForm : Form
         if (selection is not { Kind: SceneElementKind.Prop } selected) return;
         selection = null;
         if (document.DeleteProp(selected)) RefreshSceneFromDocument();
+    }
+
+    private void UpdatePlacement(Point location)
+    {
+        if (placement is null || viewportHost.ClientSize.Width <= 0 || viewportHost.ClientSize.Height <= 0) return;
+        var result = surfaceRaycaster.Cast(CreatePointerRay(location), sceneInstances);
+        placement = result.Hit is null
+            ? placement with { Position = null }
+            : placement with { Position = result.Hit.Position, SurfaceNormal = result.Hit.Normal };
+        var resourcesByAsset = uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase);
+        RefreshRenderInstances(resourcesByAsset);
+    }
+
+    private void ConfirmPlacement()
+    {
+        if (placement is not { Position: { } position } pending) return;
+        selection = document.AddProp(pending.AssetId, pending.Name, pending.Model, position);
+        placement = null;
+        RefreshSceneFromDocument();
+        Text = $"{baseTitle} — added: {pending.AssetId}";
+    }
+
+    private void CancelPlacement()
+    {
+        placement = null;
+        RefreshSceneFromDocument();
+        Text = baseTitle;
     }
 
     private void RefreshPropProperties()
@@ -734,5 +781,12 @@ public sealed class ViewerForm : Form
         Rotate,
         Scale,
     }
+
+    private sealed record PlacementState(
+        string AssetId,
+        string Name,
+        CpuModel Model,
+        Vector3? Position,
+        Vector3 SurfaceNormal);
 
 }
