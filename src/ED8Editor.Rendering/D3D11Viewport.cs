@@ -84,6 +84,7 @@ public sealed class D3D11Viewport : IDisposable
     private int debugLineVertexCount;
     private int width;
     private int height;
+    private Vector4 clearColor = new(0.035f, 0.045f, 0.065f, 1f);
 
     public D3D11Viewport(D3D11GraphicsDevice graphics, IntPtr windowHandle, int width, int height)
     {
@@ -192,6 +193,16 @@ public sealed class D3D11Viewport : IDisposable
         debugLineVertexCount = vertices.Length;
     }
 
+    public void SetClearColor(Vector4 color)
+    {
+        if (!float.IsFinite(color.X) || !float.IsFinite(color.Y)
+            || !float.IsFinite(color.Z) || !float.IsFinite(color.W))
+        {
+            throw new ArgumentOutOfRangeException(nameof(color));
+        }
+        clearColor = Vector4.Clamp(color, Vector4.Zero, Vector4.One);
+    }
+
     public void Render(IReadOnlyList<D3D11SceneInstance> instances, ViewportCamera camera, bool verticalSync = true)
     {
         ArgumentNullException.ThrowIfNull(instances);
@@ -201,7 +212,7 @@ public sealed class D3D11Viewport : IDisposable
         context.OMSetRenderTargets(renderTarget, depthView);
         context.RSSetViewport(new Viewport(0, 0, width, height));
         context.RSSetState(rasterizer);
-        context.ClearRenderTargetView(renderTarget, new Color4(0.035f, 0.045f, 0.065f, 1.0f));
+        context.ClearRenderTargetView(renderTarget, new Color4(clearColor.X, clearColor.Y, clearColor.Z, clearColor.W));
         context.ClearDepthStencilView(depthView, DepthStencilClearFlags.Depth | DepthStencilClearFlags.Stencil, 1.0f, 0);
         context.VSSetConstantBuffer(0, perDrawBuffer);
         context.PSSetSampler(0, sampler);

@@ -50,7 +50,7 @@ internal static class Program
                 new PhyreD3D11ModelReader(),
                 new PhyreD3D11TextureReader());
             var session = loader.OpenScript(scriptPath, installation?.DataPath);
-            System.Windows.Forms.Application.Run(new ViewerForm(session, smokeTest, loader));
+            System.Windows.Forms.Application.Run(new ViewerForm(session, smokeTest, loader, settingsStore));
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
         {
@@ -63,7 +63,7 @@ internal static class Program
         if (!string.IsNullOrWhiteSpace(explicitPath))
         {
             var installation = RequireInstallation(explicitPath);
-            store.Save(new EditorUserSettings(1, installation.RootPath));
+            store.Save(store.Load() with { GameDirectory = installation.RootPath });
             return installation;
         }
 
@@ -80,7 +80,7 @@ internal static class Program
             if (dialog.ShowDialog() != DialogResult.OK) return null;
             if (GameInstallation.TryOpen(dialog.SelectedPath, out var selected, out var reason))
             {
-                store.Save(new EditorUserSettings(1, selected!.RootPath));
+                store.Save(settings with { GameDirectory = selected!.RootPath });
                 return selected;
             }
             MessageBox.Show(reason, "Invalid game directory", MessageBoxButtons.OK, MessageBoxIcon.Warning);

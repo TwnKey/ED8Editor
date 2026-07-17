@@ -9,6 +9,12 @@ namespace ED8Editor.Ops;
 
 public sealed class OpsWriter
 {
+    private static readonly string[] CanonicalSectionOrder =
+    {
+        "MapSetting", "MapCameras", "MapObjects", "Entrys", "LookPoints",
+        "Occluders", "GroupBoxes", "Lights", "MapSounds", "MapEffects",
+    };
+
     public byte[] Serialize(MapScene source, MapScene edited)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -80,16 +86,7 @@ public sealed class OpsWriter
                 continue;
             }
             var element = elements[original.SourceIndex];
-            if (!original.SourceAttributes.OrderBy(value => value.Key).SequenceEqual(
-                changed.SourceAttributes.OrderBy(value => value.Key)))
-            {
-                var changedNames = changed.SourceAttributes.Keys.ToHashSet(StringComparer.Ordinal);
-                foreach (var attribute in element.Attributes().Where(value => !changedNames.Contains(value.Name.LocalName)).ToArray())
-                {
-                    attribute.Remove();
-                }
-                foreach (var attribute in changed.SourceAttributes) element.SetAttributeValue(attribute.Key, attribute.Value);
-            }
+            UpdateAttributes(element, original.SourceAttributes, changed.SourceAttributes);
             if (SameTransform(original.Transform, changed.Transform)) continue;
             SetPropAttributes(element, changed);
         }
@@ -118,29 +115,38 @@ public sealed class OpsWriter
     private static void UpdateVolumes(
         XDocument document, MapScene source, MapScene edited, MapVolumeKind kind, string section, string elementName)
     {
-        if (!source.Volumes.Any(value => value.Kind == kind)) return;
-        var elements = Elements(document, section, elementName);
-        foreach (var original in source.Volumes.Where(value => value.Kind == kind))
-        {
-            var changed = edited.Volumes.Single(value => value.Kind == kind && value.SourceIndex == original.SourceIndex);
-            if (SameTransform(original.Transform, changed.Transform)) continue;
-            var converted = OpsCoordinateConverter.ToSourceTransform(changed.Transform, assetObject: false);
-            elements[original.SourceIndex].SetAttributeValue(
-                "pos", $"{Vector(converted.Position)},  {Vector(converted.EulerRadians)},  {Vector(converted.Scale)}");
-        }
+        var originals = source.Volumes.Where(value => value.Kind == kind).ToArray();
+        var changes = edited.Volumes.Where(value => value.Kind == kind).ToArray();
+        SynchronizeElements(
+            document, section, elementName, originals, changes,
+            value => value.SourceIndex,
+            (element, original, changed) =>
+            {
+                UpdateAttributes(element, original.SourceAttributes, changed.SourceAttributes);
+                if (!SameTransform(original.Transform, changed.Transform)) SetVolumeAttributes(element, changed);
+            },
+            (element, added) =>
+            {
+                CopyAttributes(element, added.SourceAttributes);
+                SetVolumeAttributes(element, added);
+            });
     }
 
     private static void UpdateCameras(XDocument document, MapScene source, MapScene edited)
     {
-        if (source.Cameras.Count == 0) return;
-        var elements = Elements(document, "MapCameras", "MapCamera");
-        foreach (var original in source.Cameras)
-        {
-            var changed = edited.Cameras.Single(value => value.SourceIndex == original.SourceIndex);
-            if (original.Eye == changed.Eye && original.LookAt == changed.LookAt) continue;
-            elements[original.SourceIndex].SetAttributeValue("eye", Vector(ToSourcePosition(changed.Eye)));
-            elements[original.SourceIndex].SetAttributeValue("lookat", Vector(ToSourcePosition(changed.LookAt)));
-        }
+        SynchronizeElements(
+            document, "MapCameras", "MapCamera", source.Cameras, edited.Cameras,
+            value => value.SourceIndex,
+            (element, original, changed) =>
+            {
+                UpdateAttributes(element, original.SourceAttributes, changed.SourceAttributes);
+                if (original.Eye != changed.Eye || original.LookAt != changed.LookAt) SetCameraAttributes(element, changed);
+            },
+            (element, added) =>
+            {
+                CopyAttributes(element, added.SourceAttributes);
+                SetCameraAttributes(element, added);
+            });
     }
 
     private static void UpdatePositions<T>(
@@ -153,14 +159,166 @@ public sealed class OpsWriter
         Func<T, Vector3> position,
         string attribute)
     {
-        if (source.Count == 0) return;
-        var elements = Elements(document, section, elementName);
-        for (var index = 0; index < source.Count; index++)
+        SynchronizeElements(
+            document, section, elementName, source, edited,
+            SourceIndex,
+            (element, original, changed) =>
+            {
+                UpdateAttributes(element, SourceAttributes(original), SourceAttributes(changed));
+                if (!equal(original, changed)) element.SetAttributeValue(attribute, Vector(ToSourcePosition(position(changed))));
+            },
+            (element, added) =>
+            {
+                CopyAttributes(element, SourceAttributes(added));
+                SetAddedPositionAttributes(element, added);
+            });
+
+        static int SourceIndex(T value) => value switch
         {
-            if (equal(source[index], edited[index])) continue;
-            elements[index].SetAttributeValue(attribute, Vector(ToSourcePosition(position(edited[index]))));
+            MapPoint point => point.SourceIndex,
+            MapSoundMarker sound => sound.SourceIndex,
+            MapLightMarker light => light.SourceIndex,
+            _ => throw new InvalidOperationException($"Unsupported positioned OPS type {typeof(T).Name}."),
+        };
+
+        static IReadOnlyDictionary<string, string> SourceAttributes(T value) => value switch
+        {
+            MapPoint point => point.SourceAttributes,
+            MapSoundMarker sound => sound.SourceAttributes,
+            MapLightMarker light => light.SourceAttributes,
+            _ => throw new InvalidOperationException($"Unsupported positioned OPS type {typeof(T).Name}."),
+        };
+
+        static void SetAddedPositionAttributes(XElement element, T value)
+        {
+            switch (value)
+            {
+                case MapPoint point:
+                    element.SetAttributeValue("name", point.Name);
+                    element.SetAttributeValue("pos", Vector(ToSourcePosition(point.Position)));
+                    if (point.Radius is not null) element.SetAttributeValue("radius", Number(point.Radius.Value));
+                    break;
+                case MapSoundMarker sound:
+                    element.SetAttributeValue("seName", sound.SoundName);
+                    element.SetAttributeValue("seType", sound.SourceKind);
+                    element.SetAttributeValue("sePosition", Vector(ToSourcePosition(sound.Position)));
+                    element.SetAttributeValue("seRange", Number(sound.Range));
+                    element.SetAttributeValue("seRotation", Number(sound.SourceRotation));
+                    element.SetAttributeValue("seScale", Vector(sound.SourceScale));
+                    break;
+                case MapLightMarker light:
+                    element.SetAttributeValue("group", light.Group);
+                    element.SetAttributeValue("type", light.Type);
+                    element.SetAttributeValue("pos", Vector(ToSourcePosition(light.Position)));
+                    element.SetAttributeValue("color", Vector(light.Color));
+                    element.SetAttributeValue("colorPower", Number(light.ColorPower));
+                    element.SetAttributeValue("innerRange", Number(light.InnerRange));
+                    element.SetAttributeValue("outerRange", Number(light.OuterRange));
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unsupported positioned OPS type {typeof(T).Name}.");
+            }
         }
     }
+
+    private static void SynchronizeElements<T>(
+        XDocument document,
+        string section,
+        string elementName,
+        IReadOnlyList<T> source,
+        IReadOnlyList<T> edited,
+        Func<T, int> sourceIndex,
+        Action<XElement, T, T> updateExisting,
+        Action<XElement, T> initializeAdded)
+    {
+        if (source.Count == 0 && edited.Count == 0) return;
+        var container = GetOrCreateSection(document, section);
+        var sourceElements = container.Elements().Where(element => element.Name.LocalName == elementName).ToArray();
+        if (sourceElements.Length != source.Count)
+        {
+            throw new InvalidDataException($"OPS section '{section}' changed while it was being edited.");
+        }
+        var elementsById = source.Select((value, index) => (Id: sourceIndex(value), Element: sourceElements[index]))
+            .ToDictionary(value => value.Id, value => value.Element);
+        var editedById = edited.ToDictionary(sourceIndex);
+        foreach (var original in source)
+        {
+            var id = sourceIndex(original);
+            if (!editedById.TryGetValue(id, out var changed))
+            {
+                elementsById[id].Remove();
+                continue;
+            }
+            updateExisting(elementsById[id], original, changed);
+        }
+        var sourceIds = elementsById.Keys.ToHashSet();
+        foreach (var added in edited.Where(value => !sourceIds.Contains(sourceIndex(value))).OrderBy(sourceIndex))
+        {
+            var element = new XElement(elementName);
+            initializeAdded(element, added);
+            container.Add(element);
+        }
+    }
+
+    private static XElement GetOrCreateSection(XDocument document, string sectionName)
+    {
+        var root = document.Root ?? throw new InvalidDataException("OPS document has no root element.");
+        var existing = root.Elements().FirstOrDefault(element => element.Name.LocalName == sectionName);
+        if (existing is not null) return existing;
+        var section = new XElement(sectionName);
+        var requestedIndex = Array.IndexOf(CanonicalSectionOrder, sectionName);
+        var following = requestedIndex < 0
+            ? null
+            : root.Elements().FirstOrDefault(element =>
+            {
+                var index = Array.IndexOf(CanonicalSectionOrder, element.Name.LocalName);
+                return index > requestedIndex;
+            });
+        if (following is null) root.Add(section);
+        else following.AddBeforeSelf(section);
+        return section;
+    }
+
+    private static void SetVolumeAttributes(XElement element, MapVolume volume)
+    {
+        element.SetAttributeValue("name", volume.Name);
+        var converted = OpsCoordinateConverter.ToSourceTransform(volume.Transform, assetObject: false);
+        element.SetAttributeValue("pos", $"{Vector(converted.Position)},  {Vector(converted.EulerRadians)},  {Vector(converted.Scale)}");
+        element.SetAttributeValue("next", volume.DestinationMap);
+        element.SetAttributeValue("entry", volume.DestinationEntry);
+    }
+
+    private static void SetCameraAttributes(XElement element, MapCameraMarker camera)
+    {
+        element.SetAttributeValue("no", camera.Name);
+        element.SetAttributeValue("eye", Vector(ToSourcePosition(camera.Eye)));
+        element.SetAttributeValue("lookat", Vector(ToSourcePosition(camera.LookAt)));
+    }
+
+    private static void CopyAttributes(XElement element, IReadOnlyDictionary<string, string> attributes)
+    {
+        foreach (var attribute in attributes) element.SetAttributeValue(attribute.Key, attribute.Value);
+    }
+
+    private static void UpdateAttributes(
+        XElement element,
+        IReadOnlyDictionary<string, string> original,
+        IReadOnlyDictionary<string, string> changed)
+    {
+        if (AttributesEqual(original, changed)) return;
+        var changedNames = changed.Keys.ToHashSet(StringComparer.Ordinal);
+        foreach (var attribute in element.Attributes().Where(value => !changedNames.Contains(value.Name.LocalName)).ToArray())
+        {
+            attribute.Remove();
+        }
+        CopyAttributes(element, changed);
+    }
+
+    private static bool AttributesEqual(
+        IReadOnlyDictionary<string, string> left,
+        IReadOnlyDictionary<string, string> right)
+        => left.Count == right.Count
+            && left.All(pair => right.TryGetValue(pair.Key, out var value) && value == pair.Value);
 
     private static IReadOnlyList<XElement> Elements(XDocument document, string section, string elementName)
         => document.Root!.Elements().First(element => element.Name.LocalName == section)
@@ -172,21 +330,21 @@ public sealed class OpsWriter
     private static string Vector(Vector3 value)
         => $"{Number(value.X)}, {Number(value.Y)}, {Number(value.Z)}";
 
+    private static string Vector(Vector4 value)
+        => $"{Number(value.X)}, {Number(value.Y)}, {Number(value.Z)}, {Number(value.W)}";
+
     private static string Number(float value) => value.ToString("R", CultureInfo.InvariantCulture);
 
     private static bool SameTransform(MapTransform left, MapTransform right)
         => left.Position == right.Position && left.Rotation == right.Rotation && left.Scale == right.Scale;
 
     private static bool SpatiallyEqual(MapScene left, MapScene right)
-        => left.Props.Select(value => value.Transform).SequenceEqual(right.Props.Select(value => value.Transform))
-            && left.Props.Select(value => value.SourceAttributes.OrderBy(pair => pair.Key).ToArray())
-                .Zip(right.Props.Select(value => value.SourceAttributes.OrderBy(pair => pair.Key).ToArray()))
-                .All(pair => pair.First.SequenceEqual(pair.Second))
-            && left.Volumes.Select(value => value.Transform).SequenceEqual(right.Volumes.Select(value => value.Transform))
-            && left.Points.Select(value => value.Position).SequenceEqual(right.Points.Select(value => value.Position))
-            && left.Cameras.Select(value => (value.Eye, value.LookAt)).SequenceEqual(right.Cameras.Select(value => (value.Eye, value.LookAt)))
-            && left.Sounds.Select(value => value.Position).SequenceEqual(right.Sounds.Select(value => value.Position))
-            && left.Lights.Select(value => value.Position).SequenceEqual(right.Lights.Select(value => value.Position));
+        => left.Props.SequenceEqual(right.Props)
+            && left.Volumes.SequenceEqual(right.Volumes)
+            && left.Points.SequenceEqual(right.Points)
+            && left.Cameras.SequenceEqual(right.Cameras)
+            && left.Sounds.SequenceEqual(right.Sounds)
+            && left.Lights.SequenceEqual(right.Lights);
 
     private static void ValidateShape(MapScene expected, MapScene actual)
     {
@@ -200,11 +358,20 @@ public sealed class OpsWriter
 
     private static void ValidateEditableShape(MapScene source, MapScene edited)
     {
-        if (source.Volumes.Count != edited.Volumes.Count || source.Points.Count != edited.Points.Count
-            || source.Cameras.Count != edited.Cameras.Count || source.Sounds.Count != edited.Sounds.Count
-            || source.Lights.Count != edited.Lights.Count)
+        ValidateUniqueIds(edited.Props.Select(value => value.SourceIndex), "props");
+        ValidateUniqueIds(edited.Volumes.Where(value => value.Kind == MapVolumeKind.Entry).Select(value => value.SourceIndex), "entry volumes");
+        ValidateUniqueIds(edited.Volumes.Where(value => value.Kind == MapVolumeKind.Group).Select(value => value.SourceIndex), "group volumes");
+        ValidateUniqueIds(edited.Points.Select(value => value.SourceIndex), "points");
+        ValidateUniqueIds(edited.Cameras.Select(value => value.SourceIndex), "cameras");
+        ValidateUniqueIds(edited.Sounds.Select(value => value.SourceIndex), "sounds");
+        ValidateUniqueIds(edited.Lights.Select(value => value.SourceIndex), "lights");
+
+        static void ValidateUniqueIds(IEnumerable<int> ids, string collectionName)
         {
-            throw new InvalidDataException("Only the prop collection can currently change the OPS document structure.");
+            if (ids.GroupBy(value => value).Any(group => group.Count() != 1))
+            {
+                throw new InvalidDataException($"Edited OPS {collectionName} contain duplicate source IDs.");
+            }
         }
     }
 }

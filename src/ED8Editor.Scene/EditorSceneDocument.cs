@@ -1,6 +1,7 @@
 using System.Numerics;
 using System.Globalization;
 using ED8Editor.Core;
+using ED8Editor.Ops;
 
 namespace ED8Editor.Scene;
 
@@ -33,20 +34,41 @@ public sealed record EditableSceneElement(
     SceneTransformCapabilities Capabilities,
     SceneTransform Transform);
 
+public sealed record SceneElementAttributes(
+    IReadOnlyDictionary<string, string> Values,
+    IReadOnlySet<string> ProtectedNames);
+
 public sealed class EditorSceneDocument
 {
     private readonly EditorSession session;
     private readonly Dictionary<SceneElementKey, ElementState> elements = new();
     private readonly Dictionary<int, SceneModelInstance> modelInstances;
     private readonly Dictionary<int, MapProp> props;
+    private readonly Dictionary<SceneElementKey, MapVolume> volumes;
+    private readonly Dictionary<int, MapPoint> points;
+    private readonly Dictionary<int, MapCameraMarker> cameras;
+    private readonly Dictionary<int, MapSoundMarker> sounds;
+    private readonly Dictionary<int, MapLightMarker> lights;
     private readonly Stack<EditCommand> undoCommands = new();
     private readonly Stack<EditCommand> redoCommands = new();
+    private readonly OpsSpatialAttributeCodec spatialAttributeCodec = new();
+    private long nextStateId;
+    private long currentStateId;
+    private long savedStateId;
 
     public EditorSceneDocument(EditorSession session)
     {
         this.session = session ?? throw new ArgumentNullException(nameof(session));
         modelInstances = new EditorSceneFactory().Create(session).ToDictionary(value => value.Id);
         props = session.Map?.Props.ToDictionary(value => value.SourceIndex) ?? new Dictionary<int, MapProp>();
+        volumes = session.Map?.Volumes.ToDictionary(
+            value => new SceneElementKey(
+                value.Kind == MapVolumeKind.Entry ? SceneElementKind.EntryVolume : SceneElementKind.GroupVolume,
+                value.SourceIndex)) ?? new Dictionary<SceneElementKey, MapVolume>();
+        points = session.Map?.Points.ToDictionary(value => value.SourceIndex) ?? new Dictionary<int, MapPoint>();
+        cameras = session.Map?.Cameras.ToDictionary(value => value.SourceIndex) ?? new Dictionary<int, MapCameraMarker>();
+        sounds = session.Map?.Sounds.ToDictionary(value => value.SourceIndex) ?? new Dictionary<int, MapSoundMarker>();
+        lights = session.Map?.Lights.ToDictionary(value => value.SourceIndex) ?? new Dictionary<int, MapLightMarker>();
         foreach (var instance in modelInstances.Values)
         {
             var sourceProp = session.Map?.Props.FirstOrDefault(value => value.SourceIndex == instance.Id);
@@ -110,6 +132,13 @@ public sealed class EditorSceneDocument
 
     public bool CanUndo => undoCommands.Count != 0;
     public bool CanRedo => redoCommands.Count != 0;
+    public bool IsDirty => currentStateId != savedStateId;
+
+    public void MarkSaved()
+    {
+        savedStateId = currentStateId;
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
 
     public EditableSceneElement? Find(SceneElementSelection selection)
         => elements.TryGetValue(SceneElementKey.From(selection), out var state) ? state.ToPublic() : null;
@@ -117,9 +146,130 @@ public sealed class EditorSceneDocument
     public MapProp? FindProp(SceneElementSelection selection)
         => selection.Kind == SceneElementKind.Prop && props.TryGetValue(selection.SourceIndex, out var prop) ? prop : null;
 
+    public MapCameraMarker? FindCamera(SceneElementSelection selection)
+    {
+        if (selection.Kind != SceneElementKind.Camera
+            || !cameras.TryGetValue(selection.SourceIndex, out var camera)
+            || !elements.TryGetValue(SceneElementKey.From(selection), out var element)) return null;
+        var translation = element.Transform.Position - camera.Eye;
+        return camera with { Eye = element.Transform.Position, LookAt = camera.LookAt + translation };
+    }
+
+    public bool PreviewCameraLookAt(SceneElementSelection selection, Vector3 lookAt)
+    {
+        if (selection.Kind != SceneElementKind.Camera || !IsFinite(lookAt)
+            || !cameras.TryGetValue(selection.SourceIndex, out var camera)
+            || !elements.TryGetValue(SceneElementKey.From(selection), out var element)) return false;
+        var translation = element.Transform.Position - camera.Eye;
+        cameras[selection.SourceIndex] = camera with { LookAt = lookAt - translation };
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public bool CommitCameraLookAtPreview(SceneElementSelection selection, Vector3 originalLookAt)
+    {
+        if (selection.Kind != SceneElementKind.Camera || !IsFinite(originalLookAt)
+            || !cameras.TryGetValue(selection.SourceIndex, out var after)
+            || !elements.TryGetValue(SceneElementKey.From(selection), out var element)) return false;
+        var translation = element.Transform.Position - after.Eye;
+        var currentLookAt = after.LookAt + translation;
+        if (currentLookAt == originalLookAt) return false;
+        var before = after with { LookAt = originalLookAt - translation };
+        PushCommand(
+            () => cameras[selection.SourceIndex] = before,
+            () => cameras[selection.SourceIndex] = after);
+        return true;
+    }
+
+    public SceneElementAttributes? FindElementAttributes(SceneElementSelection selection)
+    {
+        var key = SceneElementKey.From(selection);
+        return selection.Kind switch
+        {
+            SceneElementKind.Prop when props.TryGetValue(selection.SourceIndex, out var prop)
+                => AttributeSet(prop.SourceAttributes, "asset", "name", "pos", "rot", "scl"),
+            SceneElementKind.EntryVolume or SceneElementKind.GroupVolume when volumes.TryGetValue(key, out var volume)
+                => AttributeSet(volume.SourceAttributes, "name", "pos"),
+            SceneElementKind.LookPoint when points.TryGetValue(selection.SourceIndex, out var point)
+                => AttributeSet(point.SourceAttributes, "name", "pos"),
+            SceneElementKind.Camera when cameras.TryGetValue(selection.SourceIndex, out var camera)
+                => AttributeSet(camera.SourceAttributes, "no", "eye", "lookat"),
+            SceneElementKind.Sound when sounds.TryGetValue(selection.SourceIndex, out var sound)
+                => AttributeSet(sound.SourceAttributes, "seName", "sePosition"),
+            SceneElementKind.Light when lights.TryGetValue(selection.SourceIndex, out var light)
+                => AttributeSet(light.SourceAttributes, "pos"),
+            _ => null,
+        };
+    }
+
+    public bool ApplyElementAttributes(
+        SceneElementSelection selection,
+        IReadOnlyDictionary<string, string> attributes)
+    {
+        ArgumentNullException.ThrowIfNull(attributes);
+        if (selection.Kind == SceneElementKind.Prop) return ApplyPropAttributes(selection, attributes);
+        var key = SceneElementKey.From(selection);
+        Action undo;
+        Action redo;
+        IReadOnlyDictionary<string, string> beforeAttributes;
+        IReadOnlyDictionary<string, string> afterAttributes;
+        switch (selection.Kind)
+        {
+            case SceneElementKind.EntryVolume:
+            case SceneElementKind.GroupVolume:
+                if (!volumes.TryGetValue(key, out var beforeVolume)) return false;
+                var afterVolume = spatialAttributeCodec.Apply(beforeVolume, attributes);
+                beforeAttributes = beforeVolume.SourceAttributes;
+                afterAttributes = afterVolume.SourceAttributes;
+                undo = () => volumes[key] = beforeVolume;
+                redo = () => volumes[key] = afterVolume;
+                break;
+            case SceneElementKind.LookPoint:
+                if (!points.TryGetValue(selection.SourceIndex, out var beforePoint)) return false;
+                var afterPoint = spatialAttributeCodec.Apply(beforePoint, attributes);
+                beforeAttributes = beforePoint.SourceAttributes;
+                afterAttributes = afterPoint.SourceAttributes;
+                undo = () => points[selection.SourceIndex] = beforePoint;
+                redo = () => points[selection.SourceIndex] = afterPoint;
+                break;
+            case SceneElementKind.Camera:
+                if (!cameras.TryGetValue(selection.SourceIndex, out var beforeCamera)) return false;
+                var afterCamera = spatialAttributeCodec.Apply(beforeCamera, attributes);
+                beforeAttributes = beforeCamera.SourceAttributes;
+                afterAttributes = afterCamera.SourceAttributes;
+                undo = () => cameras[selection.SourceIndex] = beforeCamera;
+                redo = () => cameras[selection.SourceIndex] = afterCamera;
+                break;
+            case SceneElementKind.Sound:
+                if (!sounds.TryGetValue(selection.SourceIndex, out var beforeSound)) return false;
+                var afterSound = spatialAttributeCodec.Apply(beforeSound, attributes);
+                beforeAttributes = beforeSound.SourceAttributes;
+                afterAttributes = afterSound.SourceAttributes;
+                undo = () => sounds[selection.SourceIndex] = beforeSound;
+                redo = () => sounds[selection.SourceIndex] = afterSound;
+                break;
+            case SceneElementKind.Light:
+                if (!lights.TryGetValue(selection.SourceIndex, out var beforeLight)) return false;
+                var afterLight = spatialAttributeCodec.Apply(beforeLight, attributes);
+                beforeAttributes = beforeLight.SourceAttributes;
+                afterAttributes = afterLight.SourceAttributes;
+                undo = () => lights[selection.SourceIndex] = beforeLight;
+                redo = () => lights[selection.SourceIndex] = afterLight;
+                break;
+            default:
+                return false;
+        }
+        if (AttributesEqual(beforeAttributes, afterAttributes)) return true;
+        redo();
+        PushCommand(undo, redo);
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
     public bool ApplyPropAttributes(SceneElementSelection selection, IReadOnlyDictionary<string, string> attributes)
     {
         ArgumentNullException.ThrowIfNull(attributes);
+        OpsSpatialAttributeCodec.ValidateAttributeNames(attributes);
         if (selection.Kind != SceneElementKind.Prop || !props.TryGetValue(selection.SourceIndex, out var before)) return false;
         var updated = new Dictionary<string, string>(attributes, StringComparer.Ordinal);
         foreach (var protectedName in new[] { "asset", "name", "pos", "rot", "scl" })
@@ -128,12 +278,11 @@ public sealed class EditorSceneDocument
         }
         var flags = ParseOptionalFlags(updated.GetValueOrDefault("flag"));
         var after = before with { Flags = flags, SourceAttributes = updated };
-        if (before == after) return true;
+        if (before.Flags == after.Flags && AttributesEqual(before.SourceAttributes, after.SourceAttributes)) return true;
         props[selection.SourceIndex] = after;
-        undoCommands.Push(new EditCommand(
+        PushCommand(
             () => props[selection.SourceIndex] = before,
-            () => props[selection.SourceIndex] = after));
-        redoCommands.Clear();
+            () => props[selection.SourceIndex] = after);
         Changed?.Invoke(this, EventArgs.Empty);
         return true;
     }
@@ -145,10 +294,9 @@ public sealed class EditorSceneDocument
         var key = SceneElementKey.From(selection);
         var before = state.Transform;
         state.Transform = transform;
-        undoCommands.Push(new EditCommand(
+        PushCommand(
             () => elements[key].Transform = before,
-            () => elements[key].Transform = transform));
-        redoCommands.Clear();
+            () => elements[key].Transform = transform);
         Changed?.Invoke(this, EventArgs.Empty);
         return true;
     }
@@ -167,10 +315,9 @@ public sealed class EditorSceneDocument
         if (!elements.TryGetValue(key, out var state) || state.Transform == originalTransform) return false;
         ValidateTransform(originalTransform);
         var after = state.Transform;
-        undoCommands.Push(new EditCommand(
+        PushCommand(
             () => elements[key].Transform = originalTransform,
-            () => elements[key].Transform = after));
-        redoCommands.Clear();
+            () => elements[key].Transform = after);
         return true;
     }
 
@@ -178,6 +325,7 @@ public sealed class EditorSceneDocument
     {
         if (!undoCommands.TryPop(out var command)) return false;
         command.Undo();
+        currentStateId = command.BeforeStateId;
         redoCommands.Push(command);
         Changed?.Invoke(this, EventArgs.Empty);
         return true;
@@ -187,6 +335,7 @@ public sealed class EditorSceneDocument
     {
         if (!redoCommands.TryPop(out var command)) return false;
         command.Redo();
+        currentStateId = command.AfterStateId;
         undoCommands.Push(command);
         Changed?.Invoke(this, EventArgs.Empty);
         return true;
@@ -212,6 +361,7 @@ public sealed class EditorSceneDocument
         ArgumentNullException.ThrowIfNull(model);
         var id = props.Count == 0 ? 0 : props.Keys.Max() + 1;
         var transform = elements[SceneElementKey.From(templateSelection)].Transform;
+        name = CreateUniquePropName(name);
         var sourceAttributes = new Dictionary<string, string>(template.SourceAttributes, StringComparer.Ordinal)
         {
             ["asset"] = assetId,
@@ -229,10 +379,9 @@ public sealed class EditorSceneDocument
         var element = new ElementState(selection, SceneTransformCapabilities.All, transform);
         var instance = new SceneModelInstance(id, assetId, name, model, transform.ToMatrix());
         AddPropState(prop, element, instance);
-        undoCommands.Push(new EditCommand(
+        PushCommand(
             () => RemovePropState(id),
-            () => AddPropState(prop, element, instance)));
-        redoCommands.Clear();
+            () => AddPropState(prop, element, instance));
         Changed?.Invoke(this, EventArgs.Empty);
         return selection;
     }
@@ -245,6 +394,7 @@ public sealed class EditorSceneDocument
         OpsNewPropProfile? profile = null)
     {
         profile ??= OpsNewPropProfile.Neutral;
+        name = CreateUniquePropName(name);
         var id = props.Count == 0 ? 0 : props.Keys.Max() + 1;
         var prop = profile.Create(id, assetId, name, model, position);
         var selection = new SceneElementSelection(SceneElementKind.Prop, id, name);
@@ -252,10 +402,9 @@ public sealed class EditorSceneDocument
         var element = new ElementState(selection, SceneTransformCapabilities.All, transform);
         var instance = new SceneModelInstance(id, assetId, name, model, transform.ToMatrix());
         AddPropState(prop, element, instance);
-        undoCommands.Push(new EditCommand(
+        PushCommand(
             () => RemovePropState(id),
-            () => AddPropState(prop, element, instance)));
-        redoCommands.Clear();
+            () => AddPropState(prop, element, instance));
         Changed?.Invoke(this, EventArgs.Empty);
         return selection;
     }
@@ -267,10 +416,177 @@ public sealed class EditorSceneDocument
             || !elements.TryGetValue(SceneElementKey.From(selection), out var element)) return false;
         modelInstances.TryGetValue(selection.SourceIndex, out var instance);
         RemovePropState(selection.SourceIndex);
-        undoCommands.Push(new EditCommand(
+        PushCommand(
             () => AddPropState(prop, element, instance),
-            () => RemovePropState(selection.SourceIndex)));
-        redoCommands.Clear();
+            () => RemovePropState(selection.SourceIndex));
+        Changed?.Invoke(this, EventArgs.Empty);
+        return true;
+    }
+
+    public SceneElementSelection DuplicateElement(SceneElementSelection selection)
+    {
+        if (selection.Kind == SceneElementKind.Prop)
+        {
+            throw new ArgumentException("Props require their loaded model when duplicated.", nameof(selection));
+        }
+        var sourceKey = SceneElementKey.From(selection);
+        if (!elements.TryGetValue(sourceKey, out var sourceElement))
+        {
+            throw new ArgumentException("Scene element does not exist.", nameof(selection));
+        }
+        var id = NextSourceIndex(selection.Kind);
+        var displayName = CreateUniqueElementName(selection.Kind, selection.Name);
+        var duplicatedSelection = new SceneElementSelection(selection.Kind, id, displayName);
+        var duplicatedElement = new ElementState(duplicatedSelection, sourceElement.Capabilities, sourceElement.Transform);
+        Action addState;
+        Action removeState;
+        switch (selection.Kind)
+        {
+            case SceneElementKind.EntryVolume:
+            case SceneElementKind.GroupVolume:
+            {
+                var source = volumes[sourceKey];
+                var attributes = WithAttribute(source.SourceAttributes, "name", displayName);
+                var duplicate = source with { SourceIndex = id, Name = displayName, SourceAttributes = attributes };
+                var key = SceneElementKey.From(duplicatedSelection);
+                addState = () => { volumes.Add(key, duplicate); elements.Add(key, duplicatedElement); };
+                removeState = () => { volumes.Remove(key); elements.Remove(key); };
+                break;
+            }
+            case SceneElementKind.LookPoint:
+            {
+                var source = points[selection.SourceIndex];
+                var attributes = WithAttribute(source.SourceAttributes, "name", displayName);
+                var duplicate = source with { SourceIndex = id, Name = displayName, SourceAttributes = attributes };
+                addState = () => { points.Add(id, duplicate); elements.Add(SceneElementKey.From(duplicatedSelection), duplicatedElement); };
+                removeState = () => { points.Remove(id); elements.Remove(SceneElementKey.From(duplicatedSelection)); };
+                break;
+            }
+            case SceneElementKind.Camera:
+            {
+                var source = cameras[selection.SourceIndex];
+                var duplicate = source with { SourceIndex = id };
+                addState = () => { cameras.Add(id, duplicate); elements.Add(SceneElementKey.From(duplicatedSelection), duplicatedElement); };
+                removeState = () => { cameras.Remove(id); elements.Remove(SceneElementKey.From(duplicatedSelection)); };
+                break;
+            }
+            case SceneElementKind.Sound:
+            {
+                var duplicate = sounds[selection.SourceIndex] with { SourceIndex = id };
+                addState = () => { sounds.Add(id, duplicate); elements.Add(SceneElementKey.From(duplicatedSelection), duplicatedElement); };
+                removeState = () => { sounds.Remove(id); elements.Remove(SceneElementKey.From(duplicatedSelection)); };
+                break;
+            }
+            case SceneElementKind.Light:
+            {
+                var duplicate = lights[selection.SourceIndex] with { SourceIndex = id };
+                addState = () => { lights.Add(id, duplicate); elements.Add(SceneElementKey.From(duplicatedSelection), duplicatedElement); };
+                removeState = () => { lights.Remove(id); elements.Remove(SceneElementKey.From(duplicatedSelection)); };
+                break;
+            }
+            default:
+                throw new ArgumentOutOfRangeException(nameof(selection));
+        }
+        addState();
+        PushCommand(removeState, addState);
+        Changed?.Invoke(this, EventArgs.Empty);
+        return duplicatedSelection;
+    }
+
+    public SceneElementSelection AddSpatialElement(
+        OpsSpatialCreationProfile profile,
+        Vector3 position,
+        IReadOnlyDictionary<string, string> inputs)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        if (!IsFinite(position)) throw new ArgumentOutOfRangeException(nameof(position));
+        ArgumentNullException.ThrowIfNull(inputs);
+        var id = NextSourceIndex(profile.Kind);
+        var name = CreateUniqueElementName(profile.Kind, profile.CreateBaseName(inputs));
+        var draft = profile.Create(id, name, position, inputs);
+        if (draft.Selection.Kind != profile.Kind || draft.Selection.SourceIndex != id)
+        {
+            throw new InvalidDataException($"OPS creation profile '{profile.Id}' returned an inconsistent element.");
+        }
+        var key = SceneElementKey.From(draft.Selection);
+        var element = new ElementState(draft.Selection, draft.Capabilities, draft.Transform);
+        Action addState;
+        Action removeState;
+        if (draft.Volume is not null)
+        {
+            addState = () => { volumes.Add(key, draft.Volume); elements.Add(key, element); };
+            removeState = () => { volumes.Remove(key); elements.Remove(key); };
+        }
+        else if (draft.Point is not null)
+        {
+            addState = () => { points.Add(id, draft.Point); elements.Add(key, element); };
+            removeState = () => { points.Remove(id); elements.Remove(key); };
+        }
+        else if (draft.Camera is not null)
+        {
+            addState = () => { cameras.Add(id, draft.Camera); elements.Add(key, element); };
+            removeState = () => { cameras.Remove(id); elements.Remove(key); };
+        }
+        else if (draft.Sound is not null)
+        {
+            addState = () => { sounds.Add(id, draft.Sound); elements.Add(key, element); };
+            removeState = () => { sounds.Remove(id); elements.Remove(key); };
+        }
+        else if (draft.Light is not null)
+        {
+            addState = () => { lights.Add(id, draft.Light); elements.Add(key, element); };
+            removeState = () => { lights.Remove(id); elements.Remove(key); };
+        }
+        else
+        {
+            throw new InvalidDataException($"OPS creation profile '{profile.Id}' returned no spatial entity.");
+        }
+        addState();
+        PushCommand(removeState, addState);
+        Changed?.Invoke(this, EventArgs.Empty);
+        return draft.Selection;
+    }
+
+    public bool DeleteElement(SceneElementSelection selection)
+    {
+        if (selection.Kind == SceneElementKind.Prop) return DeleteProp(selection);
+        var key = SceneElementKey.From(selection);
+        if (!elements.TryGetValue(key, out var element)) return false;
+        Action addState;
+        Action removeState;
+        switch (selection.Kind)
+        {
+            case SceneElementKind.EntryVolume:
+            case SceneElementKind.GroupVolume:
+                if (!volumes.TryGetValue(key, out var volume)) return false;
+                addState = () => { volumes.Add(key, volume); elements.Add(key, element); };
+                removeState = () => { volumes.Remove(key); elements.Remove(key); };
+                break;
+            case SceneElementKind.LookPoint:
+                if (!points.TryGetValue(selection.SourceIndex, out var point)) return false;
+                addState = () => { points.Add(selection.SourceIndex, point); elements.Add(key, element); };
+                removeState = () => { points.Remove(selection.SourceIndex); elements.Remove(key); };
+                break;
+            case SceneElementKind.Camera:
+                if (!cameras.TryGetValue(selection.SourceIndex, out var camera)) return false;
+                addState = () => { cameras.Add(selection.SourceIndex, camera); elements.Add(key, element); };
+                removeState = () => { cameras.Remove(selection.SourceIndex); elements.Remove(key); };
+                break;
+            case SceneElementKind.Sound:
+                if (!sounds.TryGetValue(selection.SourceIndex, out var sound)) return false;
+                addState = () => { sounds.Add(selection.SourceIndex, sound); elements.Add(key, element); };
+                removeState = () => { sounds.Remove(selection.SourceIndex); elements.Remove(key); };
+                break;
+            case SceneElementKind.Light:
+                if (!lights.TryGetValue(selection.SourceIndex, out var light)) return false;
+                addState = () => { lights.Add(selection.SourceIndex, light); elements.Add(key, element); };
+                removeState = () => { lights.Remove(selection.SourceIndex); elements.Remove(key); };
+                break;
+            default:
+                return false;
+        }
+        removeState();
+        PushCommand(addState, removeState);
         Changed?.Invoke(this, EventArgs.Empty);
         return true;
     }
@@ -285,7 +601,7 @@ public sealed class EditorSceneDocument
             {
                 Transform = ToMapTransform(prop.Transform, GetTransform(SceneElementKind.Prop, prop.SourceIndex)),
             }).ToArray(),
-            Volumes = map.Volumes.Select(volume => volume with
+            Volumes = volumes.Values.OrderBy(volume => volume.Kind).ThenBy(volume => volume.SourceIndex).Select(volume => volume with
             {
                 Transform = ToMapTransform(
                     volume.Transform,
@@ -293,21 +609,21 @@ public sealed class EditorSceneDocument
                         volume.Kind == MapVolumeKind.Entry ? SceneElementKind.EntryVolume : SceneElementKind.GroupVolume,
                         volume.SourceIndex)),
             }).ToArray(),
-            Points = map.Points.Select(point => point with
+            Points = points.Values.OrderBy(point => point.SourceIndex).Select(point => point with
             {
                 Position = GetTransform(SceneElementKind.LookPoint, point.SourceIndex).Position,
             }).ToArray(),
-            Cameras = map.Cameras.Select(camera =>
+            Cameras = cameras.Values.OrderBy(camera => camera.SourceIndex).Select(camera =>
             {
                 var position = GetTransform(SceneElementKind.Camera, camera.SourceIndex).Position;
                 var translation = position - camera.Eye;
                 return camera with { Eye = position, LookAt = camera.LookAt + translation };
             }).ToArray(),
-            Sounds = map.Sounds.Select(sound => sound with
+            Sounds = sounds.Values.OrderBy(sound => sound.SourceIndex).Select(sound => sound with
             {
                 Position = GetTransform(SceneElementKind.Sound, sound.SourceIndex).Position,
             }).ToArray(),
-            Lights = map.Lights.Select(light => light with
+            Lights = lights.Values.OrderBy(light => light.SourceIndex).Select(light => light with
             {
                 Position = GetTransform(SceneElementKind.Light, light.SourceIndex).Position,
             }).ToArray(),
@@ -332,6 +648,58 @@ public sealed class EditorSceneDocument
         props.Remove(id);
         elements.Remove(new SceneElementKey(SceneElementKind.Prop, id));
         modelInstances.Remove(id);
+    }
+
+    private void PushCommand(Action undo, Action redo)
+    {
+        var beforeStateId = currentStateId;
+        var afterStateId = ++nextStateId;
+        undoCommands.Push(new EditCommand(undo, redo, beforeStateId, afterStateId));
+        redoCommands.Clear();
+        currentStateId = afterStateId;
+    }
+
+    private string CreateUniquePropName(string requestedName)
+    {
+        if (string.IsNullOrWhiteSpace(requestedName)) throw new ArgumentException("Value cannot be null or whitespace.", nameof(requestedName));
+        var existingNames = props.Values.Select(prop => prop.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!existingNames.Contains(requestedName)) return requestedName;
+        for (var suffix = 1; suffix < int.MaxValue; suffix++)
+        {
+            var candidate = $"{requestedName}_{suffix:000}";
+            if (!existingNames.Contains(candidate)) return candidate;
+        }
+        throw new InvalidOperationException($"Cannot create a unique prop name from '{requestedName}'.");
+    }
+
+    private int NextSourceIndex(SceneElementKind kind)
+    {
+        var ids = elements.Keys.Where(key => key.Kind == kind).Select(key => key.SourceIndex);
+        return ids.Any() ? ids.Max() + 1 : 0;
+    }
+
+    private string CreateUniqueElementName(SceneElementKind kind, string requestedName)
+    {
+        var names = elements.Values
+            .Where(element => element.Selection.Kind == kind)
+            .Select(element => element.Selection.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!names.Contains(requestedName)) return requestedName;
+        for (var suffix = 1; suffix < int.MaxValue; suffix++)
+        {
+            var candidate = $"{requestedName}_{suffix:000}";
+            if (!names.Contains(candidate)) return candidate;
+        }
+        throw new InvalidOperationException($"Cannot create a unique element name from '{requestedName}'.");
+    }
+
+    private static IReadOnlyDictionary<string, string> WithAttribute(
+        IReadOnlyDictionary<string, string> source,
+        string name,
+        string value)
+    {
+        var attributes = new Dictionary<string, string>(source, StringComparer.Ordinal) { [name] = value };
+        return attributes;
     }
 
     private SceneTransform GetTransform(SceneElementKind kind, int sourceIndex)
@@ -390,6 +758,17 @@ public sealed class EditorSceneDocument
         return flags;
     }
 
+    private static bool AttributesEqual(
+        IReadOnlyDictionary<string, string> left,
+        IReadOnlyDictionary<string, string> right)
+        => left.Count == right.Count
+            && left.All(pair => right.TryGetValue(pair.Key, out var value) && value == pair.Value);
+
+    private static SceneElementAttributes AttributeSet(
+        IReadOnlyDictionary<string, string> attributes,
+        params string[] protectedNames)
+        => new(attributes, protectedNames.ToHashSet(StringComparer.Ordinal));
+
     private readonly record struct SceneElementKey(SceneElementKind Kind, int SourceIndex)
     {
         public static SceneElementKey From(SceneElementSelection selection)
@@ -412,5 +791,5 @@ public sealed class EditorSceneDocument
         public EditableSceneElement ToPublic() => new(Selection, Capabilities, Transform);
     }
 
-    private sealed record EditCommand(Action Undo, Action Redo);
+    private sealed record EditCommand(Action Undo, Action Redo, long BeforeStateId, long AfterStateId);
 }

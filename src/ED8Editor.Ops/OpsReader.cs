@@ -64,6 +64,7 @@ public sealed class OpsReader : IMapSceneReader
         var lights = ReadElements(document, "Lights", "Light")
             .Select(ReadLight)
             .ToArray();
+        var defaultEnvironment = ReadDefaultEnvironment(document);
 
         return new MapScene(
             fullPath,
@@ -73,7 +74,29 @@ public sealed class OpsReader : IMapSceneReader
             points,
             cameras,
             sounds,
-            lights);
+            lights,
+            defaultEnvironment);
+    }
+
+    private static MapEnvironment? ReadDefaultEnvironment(XDocument document)
+    {
+        var mapSetting = document.Root!.Elements()
+            .FirstOrDefault(element => element.Name.LocalName == "MapSetting");
+        var mapColor = mapSetting?.Elements()
+            .Where(element => element.Name.LocalName == "MapColor")
+            .FirstOrDefault(element => element.Elements()
+                .Any(child => child.Name.LocalName == "Type"
+                    && child.Attribute("type")?.Value == "default"));
+        var fog = mapColor?.Elements().FirstOrDefault(element => element.Name.LocalName == "Fog");
+        if (fog is null) return null;
+
+        var location = ElementLocation(fog);
+        return new MapEnvironment(
+            "default",
+            ParseVector3(RequiredAttribute(fog, "color", location), "color", location),
+            ParseFloat(RequiredAttribute(fog, "near", location), "near", location),
+            ParseFloat(RequiredAttribute(fog, "far", location), "far", location),
+            ReadAttributes(fog));
     }
 
     private static IEnumerable<XElement> ReadElements(XDocument document, string sectionName, string elementName)

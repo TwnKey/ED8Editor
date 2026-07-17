@@ -8,4 +8,5 @@ public sealed record MapScene(
     IReadOnlyList<MapPoint> Points,
     IReadOnlyList<MapCameraMarker> Cameras,
     IReadOnlyList<MapSoundMarker> Sounds,
-    IReadOnlyList<MapLightMarker> Lights);
+    IReadOnlyList<MapLightMarker> Lights,
+    MapEnvironment? DefaultEnvironment = null);

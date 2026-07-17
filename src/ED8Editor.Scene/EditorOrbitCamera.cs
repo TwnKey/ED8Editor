@@ -4,6 +4,8 @@ namespace ED8Editor.Scene;
 
 public sealed class EditorOrbitCamera
 {
+    private static readonly float PitchLimit = MathF.PI * 0.5f - 0.01f;
+
     public Vector3 Position { get; private set; }
     public Vector3 Target { get; private set; }
     public float Distance { get; private set; }
@@ -22,6 +24,16 @@ public sealed class EditorOrbitCamera
         }
     }
 
+    private Vector3 GroundRight
+        => Vector3.Normalize(new Vector3(MathF.Cos(Yaw), 0f, -MathF.Sin(Yaw)));
+
+    public Vector3 ScreenRight => -GroundRight;
+
+    public Vector3 WorldUp => Vector3.UnitY;
+
+    public Vector3 ScreenUp
+        => Vector3.Normalize(Vector3.Cross(Forward, GroundRight));
+
     public void Initialize(Vector3 target, Vector3 position)
     {
         ValidateFinite(target, nameof(target));
@@ -38,9 +50,24 @@ public sealed class EditorOrbitCamera
     {
         if (!float.IsFinite(deltaX) || !float.IsFinite(deltaY)) throw new ArgumentOutOfRangeException(nameof(deltaX));
         if (!float.IsFinite(radiansPerPixel) || radiansPerPixel <= 0) throw new ArgumentOutOfRangeException(nameof(radiansPerPixel));
-        Yaw += deltaX * radiansPerPixel;
-        Pitch = Math.Clamp(Pitch - deltaY * radiansPerPixel, -1.5f, 1.5f);
+        Yaw = WrapAngle(Yaw + deltaX * radiansPerPixel);
+        Pitch = Math.Clamp(Pitch - deltaY * radiansPerPixel, -PitchLimit, PitchLimit);
         Position = Target - Forward * Distance;
+    }
+
+    public void Look(float deltaX, float deltaY, float radiansPerPixel = 0.004f)
+    {
+        if (!float.IsFinite(deltaX) || !float.IsFinite(deltaY)) throw new ArgumentOutOfRangeException(nameof(deltaX));
+        if (!float.IsFinite(radiansPerPixel) || radiansPerPixel <= 0) throw new ArgumentOutOfRangeException(nameof(radiansPerPixel));
+        Yaw = WrapAngle(Yaw - deltaX * radiansPerPixel);
+        Pitch = Math.Clamp(Pitch - deltaY * radiansPerPixel, -PitchLimit, PitchLimit);
+        Target = Position + Forward * Distance;
+    }
+
+    public void Dolly(float distance)
+    {
+        if (!float.IsFinite(distance)) throw new ArgumentOutOfRangeException(nameof(distance));
+        Translate(Forward * distance);
     }
 
     public void Pan(float deltaX, float deltaY, float viewportHeight, float verticalFieldOfView)
@@ -50,10 +77,8 @@ public sealed class EditorOrbitCamera
         {
             throw new ArgumentOutOfRangeException(nameof(verticalFieldOfView));
         }
-        var right = Vector3.Normalize(Vector3.Cross(Vector3.UnitY, Forward));
-        var up = Vector3.Normalize(Vector3.Cross(Forward, right));
         var worldUnitsPerPixel = 2f * Distance * MathF.Tan(verticalFieldOfView * 0.5f) / viewportHeight;
-        Translate((-right * deltaX + up * deltaY) * worldUnitsPerPixel);
+        Translate((ScreenRight * deltaX + ScreenUp * deltaY) * worldUnitsPerPixel);
     }
 
     public void Zoom(float wheelSteps, float minimumDistance, float maximumDistance, float rate = 0.18f)
@@ -84,9 +109,12 @@ public sealed class EditorOrbitCamera
 
     private void SetDirection(Vector3 direction)
     {
-        Pitch = MathF.Asin(Math.Clamp(direction.Y, -1f, 1f));
-        Yaw = MathF.Atan2(direction.X, direction.Z);
+        Pitch = Math.Clamp(MathF.Asin(Math.Clamp(direction.Y, -1f, 1f)), -PitchLimit, PitchLimit);
+        Yaw = WrapAngle(MathF.Atan2(direction.X, direction.Z));
     }
+
+    private static float WrapAngle(float radians)
+        => MathF.IEEERemainder(radians, MathF.Tau);
 
     private static void ValidateFinite(Vector3 value, string parameterName)
     {

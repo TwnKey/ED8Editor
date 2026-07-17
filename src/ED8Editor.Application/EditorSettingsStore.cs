@@ -2,9 +2,18 @@ using System.Text.Json;
 
 namespace ED8Editor.Application;
 
-public sealed record EditorUserSettings(int Version, string? GameDirectory)
+public enum EditorKeyboardLayout
 {
-    public static EditorUserSettings Default { get; } = new(1, null);
+    Azerty,
+    Qwerty,
+}
+
+public sealed record EditorUserSettings(
+    int Version,
+    string? GameDirectory,
+    EditorKeyboardLayout KeyboardLayout = EditorKeyboardLayout.Azerty)
+{
+    public static EditorUserSettings Default { get; } = new(1, null, EditorKeyboardLayout.Azerty);
 }
 
 public sealed class EditorSettingsStore
@@ -27,7 +36,10 @@ public sealed class EditorSettingsStore
         try
         {
             var settings = JsonSerializer.Deserialize<EditorUserSettings>(File.ReadAllBytes(Path), JsonOptions);
-            return settings is { Version: 1 } ? settings : EditorUserSettings.Default;
+            return settings is { Version: 1 }
+                && Enum.IsDefined(settings.KeyboardLayout)
+                ? settings
+                : EditorUserSettings.Default;
         }
         catch (JsonException)
         {

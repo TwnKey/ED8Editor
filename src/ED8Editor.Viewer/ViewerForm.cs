@@ -15,6 +15,7 @@ public sealed class ViewerForm : Form
 {
     private readonly EditorSession session;
     private readonly EditorProjectLoader projectLoader;
+    private readonly EditorSettingsStore settingsStore;
     private readonly EditorSceneDocument document;
     private readonly bool smokeTest;
     private readonly string baseTitle;
@@ -23,6 +24,7 @@ public sealed class ViewerForm : Form
     private readonly EditorOrbitCamera cameraNavigation = new();
     private readonly SceneTranslationGizmo translationGizmo = new();
     private readonly SceneRotationGizmo rotationGizmo = new();
+    private readonly SceneCameraGizmo cameraGizmo = new();
     private readonly OpsWriter opsWriter = new();
     private readonly HashSet<Keys> pressedKeys = new();
     private readonly System.Windows.Forms.Timer renderTimer = new() { Interval = 16 };
@@ -30,13 +32,37 @@ public sealed class ViewerForm : Form
     private readonly List<D3D11ModelResources> uploadedModels = new();
     private readonly Dictionary<string, CpuModel> loadedModelsByAsset = new(StringComparer.OrdinalIgnoreCase);
     private readonly Panel viewportHost = new() { Dock = DockStyle.Fill, TabStop = true };
+    private readonly Panel scenePanel = new() { Dock = DockStyle.Left, Width = 340, Padding = new Padding(8) };
+    private readonly GroupBox sceneOutlinerGroup = new()
+    {
+        Dock = DockStyle.Fill,
+        Text = "Map objects (grouped by category)",
+    };
+    private readonly TreeView sceneOutliner = new()
+    {
+        Dock = DockStyle.Fill,
+        HideSelection = false,
+        FullRowSelect = true,
+    };
     private readonly Panel assetPanel = new() { Dock = DockStyle.Right, Width = 300, Padding = new Padding(8) };
     private readonly TextBox assetSearch = new() { Dock = DockStyle.Top, PlaceholderText = "Search PKG assets..." };
+    private readonly CheckBox snapCheckBox = new()
+    {
+        Dock = DockStyle.Top,
+        Height = 28,
+        Text = "Snap: 0.25 units / 15 degrees / 0.1 scale",
+    };
+    private readonly ComboBox keyboardLayoutList = new()
+    {
+        Dock = DockStyle.Top,
+        Height = 28,
+        DropDownStyle = ComboBoxStyle.DropDownList,
+    };
     private readonly ListBox assetList = new() { Dock = DockStyle.Fill, IntegralHeight = false };
     private readonly Button addAssetButton = new() { Dock = DockStyle.Bottom, Height = 34, Text = "Add selected asset" };
-    private readonly Button duplicateButton = new() { Dock = DockStyle.Bottom, Height = 30, Text = "Duplicate selected prop" };
-    private readonly Button deleteButton = new() { Dock = DockStyle.Bottom, Height = 30, Text = "Delete selected prop" };
-    private readonly GroupBox propertyGroup = new() { Dock = DockStyle.Bottom, Height = 250, Text = "Selected prop OPS attributes" };
+    private readonly Button duplicateButton = new() { Dock = DockStyle.Bottom, Height = 30, Text = "Duplicate selected element" };
+    private readonly Button deleteButton = new() { Dock = DockStyle.Bottom, Height = 30, Text = "Delete selected element" };
+    private readonly GroupBox propertyGroup = new() { Dock = DockStyle.Bottom, Height = 300, Text = "Selected OPS attributes" };
     private readonly DataGridView propertyGrid = new()
     {
         Dock = DockStyle.Fill,
@@ -46,6 +72,20 @@ public sealed class ViewerForm : Form
         AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
     };
     private readonly Button applyPropertiesButton = new() { Dock = DockStyle.Bottom, Height = 30, Text = "Apply attributes" };
+    private readonly GroupBox opsCreationGroup = new() { Dock = DockStyle.Bottom, Height = 170, Text = "Create OPS element" };
+    private readonly ComboBox opsProfileList = new() { Dock = DockStyle.Top, DropDownStyle = ComboBoxStyle.DropDownList };
+    private readonly Label opsProfileEvidence = new() { Dock = DockStyle.Top, Height = 34, AutoEllipsis = true };
+    private readonly FlowLayoutPanel opsInputPanel = new()
+    {
+        Dock = DockStyle.Fill,
+        FlowDirection = FlowDirection.TopDown,
+        WrapContents = false,
+        AutoScroll = true,
+    };
+    private readonly Button addOpsElementButton = new() { Dock = DockStyle.Bottom, Height = 30, Text = "Place OPS element" };
+    private readonly SceneSnapSettings snapSettings = new(0.25f, MathF.PI / 12f, 0.1f);
+    private readonly SceneOutlinerBuilder outlinerBuilder = new();
+    private readonly Dictionary<string, TextBox> opsInputFields = new(StringComparer.Ordinal);
     private IReadOnlyList<AssetCatalogEntry> assetCatalog = Array.Empty<AssetCatalogEntry>();
     private D3D11GraphicsDevice? graphics;
     private D3D11Viewport? viewport;
@@ -55,6 +95,10 @@ public sealed class ViewerForm : Form
     private float sceneRadius = 10f;
     private float overlayMarkerSize = 0.3f;
     private Point previousMouse;
+    private Point leftMouseDown;
+    private bool pendingLeftClick;
+    private bool lookCursorLocked;
+    private Point lookCursorRestoreScreen;
     private CameraDragMode cameraDrag;
     private long previousFrameTicks;
     private SceneElementSelection? selection;
@@ -62,10 +106,20 @@ public sealed class ViewerForm : Form
     private GizmoMode gizmoMode = GizmoMode.Translate;
     private string? savedOpsPath;
     private PlacementState? placement;
+    private SceneCameraHandle cameraHandle = SceneCameraHandle.Eye;
+    private IReadOnlyList<SceneElementSelection> outlinerSelections = Array.Empty<SceneElementSelection>();
+    private bool refreshingOutliner;
+    private EditorKeyboardLayout keyboardLayout;
 
-    public ViewerForm(EditorSession session, bool smokeTest, EditorProjectLoader? projectLoader = null)
+    public ViewerForm(
+        EditorSession session,
+        bool smokeTest,
+        EditorProjectLoader? projectLoader = null,
+        EditorSettingsStore? settingsStore = null)
     {
         this.session = session ?? throw new ArgumentNullException(nameof(session));
+        this.settingsStore = settingsStore ?? new EditorSettingsStore();
+        keyboardLayout = this.settingsStore.Load().KeyboardLayout;
         this.projectLoader = projectLoader ?? new EditorProjectLoader(
             new OpsReader(), new GameAssetResolverFactory(), new PkgArchiveReader(),
             new AssetManifestReader(), new PhyreD3D11ModelReader(), new PhyreD3D11TextureReader());
@@ -76,24 +130,49 @@ public sealed class ViewerForm : Form
         Text = baseTitle;
         ClientSize = new Size(1280, 720);
         MinimumSize = new Size(640, 360);
+        WindowState = FormWindowState.Maximized;
         KeyPreview = true;
         assetPanel.Controls.Add(assetList);
+        assetPanel.Controls.Add(snapCheckBox);
+        assetPanel.Controls.Add(keyboardLayoutList);
         assetPanel.Controls.Add(assetSearch);
         propertyGroup.Controls.Add(propertyGrid);
         propertyGroup.Controls.Add(applyPropertiesButton);
-        assetPanel.Controls.Add(propertyGroup);
+        sceneOutlinerGroup.Controls.Add(sceneOutliner);
+        scenePanel.Controls.Add(sceneOutlinerGroup);
+        scenePanel.Controls.Add(propertyGroup);
+        opsCreationGroup.Controls.Add(opsInputPanel);
+        opsCreationGroup.Controls.Add(opsProfileEvidence);
+        opsCreationGroup.Controls.Add(opsProfileList);
+        opsCreationGroup.Controls.Add(addOpsElementButton);
         assetPanel.Controls.Add(deleteButton);
         assetPanel.Controls.Add(duplicateButton);
         assetPanel.Controls.Add(addAssetButton);
+        assetPanel.Controls.Add(opsCreationGroup);
         Controls.Add(viewportHost);
         Controls.Add(assetPanel);
+        Controls.Add(scenePanel);
         assetSearch.TextChanged += (_, _) => FilterAssetCatalog();
         addAssetButton.Click += async (_, _) => await AddSelectedAssetAsync();
-        duplicateButton.Click += (_, _) => DuplicateSelectedProp();
-        deleteButton.Click += (_, _) => DeleteSelectedProp();
+        duplicateButton.Click += (_, _) => DuplicateSelectedElement();
+        deleteButton.Click += (_, _) => DeleteSelectedElement();
         propertyGrid.Columns.Add("Attribute", "Attribute");
         propertyGrid.Columns.Add("Value", "Value");
-        applyPropertiesButton.Click += (_, _) => ApplyPropProperties();
+        applyPropertiesButton.Click += (_, _) => ApplyElementProperties();
+        sceneOutliner.AfterSelect += (_, _) => SelectFromOutliner();
+        sceneOutliner.NodeMouseDoubleClick += (_, eventArgs) => FocusOutlinerNode(eventArgs.Node);
+        opsProfileList.DisplayMember = nameof(OpsSpatialCreationProfile.DisplayName);
+        opsProfileList.DataSource = OpsSpatialCreationCatalog.Profiles.ToArray();
+        opsProfileList.SelectedIndexChanged += (_, _) => RefreshOpsCreationInputs();
+        addOpsElementButton.Click += (_, _) => BeginOpsPlacement();
+        keyboardLayoutList.Items.AddRange(new object[]
+        {
+            "Navigation: AZERTY (ZQSD)",
+            "Navigation: QWERTY (WASD)",
+        });
+        keyboardLayoutList.SelectedIndex = keyboardLayout == EditorKeyboardLayout.Azerty ? 0 : 1;
+        keyboardLayoutList.SelectedIndexChanged += (_, _) => ChangeKeyboardLayout();
+        RefreshOpsCreationInputs();
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.Opaque, true);
         renderTimer.Tick += (_, _) => RenderFrame();
         KeyDown += (_, eventArgs) =>
@@ -129,13 +208,13 @@ public sealed class ViewerForm : Form
             }
             if (eventArgs.Control && eventArgs.KeyCode == Keys.D)
             {
-                DuplicateSelectedProp();
+                DuplicateSelectedElement();
                 eventArgs.SuppressKeyPress = true;
                 return;
             }
             if (eventArgs.KeyCode == Keys.Delete)
             {
-                DeleteSelectedProp();
+                DeleteSelectedElement();
                 eventArgs.SuppressKeyPress = true;
                 return;
             }
@@ -159,39 +238,85 @@ public sealed class ViewerForm : Form
                     ConfirmPlacement();
                     return;
                 }
-                if (BeginGizmoDrag(eventArgs.Location)) return;
-                SelectAt(eventArgs.Location);
+                if (SelectCameraHandleAt(eventArgs.Location)) return;
+                if (BeginGizmoDrag(eventArgs.Location))
+                {
+                    viewportHost.Capture = true;
+                    return;
+                }
+                pendingLeftClick = true;
+                leftMouseDown = eventArgs.Location;
+                previousMouse = eventArgs.Location;
+                viewportHost.Capture = true;
                 return;
             }
             if (eventArgs.Button is not (MouseButtons.Right or MouseButtons.Middle)) return;
-            cameraDrag = eventArgs.Button == MouseButtons.Right ? CameraDragMode.Orbit : CameraDragMode.Pan;
-            previousMouse = eventArgs.Location;
-            Capture = true;
-            Cursor.Hide();
+            if (eventArgs.Button == MouseButtons.Right) BeginLookDrag(eventArgs.Location);
+            else
+            {
+                cameraDrag = CameraDragMode.Pan;
+                previousMouse = eventArgs.Location;
+            }
+            viewportHost.Capture = true;
         };
         viewportHost.MouseUp += (_, eventArgs) =>
         {
             if (eventArgs.Button == MouseButtons.Left && gizmoDrag is not null)
             {
-                document.CommitPreview(gizmoDrag.Selection, gizmoDrag.OriginalTransform);
+                if (gizmoDrag.CameraHandle == SceneCameraHandle.LookAt)
+                {
+                    document.CommitCameraLookAtPreview(gizmoDrag.Selection, gizmoDrag.OriginalTransform.Position);
+                }
+                else
+                {
+                    document.CommitPreview(gizmoDrag.Selection, gizmoDrag.OriginalTransform);
+                }
                 gizmoDrag = null;
+                viewportHost.Capture = false;
                 RefreshOverlay();
                 return;
             }
+            if (eventArgs.Button == MouseButtons.Left)
+            {
+                if (pendingLeftClick)
+                {
+                    pendingLeftClick = false;
+                    viewportHost.Capture = false;
+                    SelectAt(eventArgs.Location);
+                }
+                else if (cameraDrag == CameraDragMode.Look)
+                {
+                    EndCameraDrag();
+                }
+                return;
+            }
             if (eventArgs.Button is not (MouseButtons.Right or MouseButtons.Middle)) return;
-            if ((eventArgs.Button == MouseButtons.Right && cameraDrag != CameraDragMode.Orbit)
+            if ((eventArgs.Button == MouseButtons.Right && cameraDrag != CameraDragMode.Look)
                 || (eventArgs.Button == MouseButtons.Middle && cameraDrag != CameraDragMode.Pan)) return;
-            cameraDrag = CameraDragMode.None;
-            Capture = false;
-            Cursor.Show();
+            EndCameraDrag();
         };
         viewportHost.MouseMove += (_, eventArgs) =>
         {
+            if (UpdateLeftMouseGesture(eventArgs.Location)) return;
             if (placement is not null) UpdatePlacement(eventArgs.Location);
             else if (gizmoDrag is not null) UpdateGizmoDrag(eventArgs.Location);
             else MoveCamera(eventArgs.Location);
         };
+        viewportHost.MouseCaptureChanged += (_, _) =>
+        {
+            if (!viewportHost.Capture)
+            {
+                pendingLeftClick = false;
+                cameraDrag = CameraDragMode.None;
+                ReleaseLookCursor();
+            }
+        };
         viewportHost.MouseWheel += (_, eventArgs) => ZoomCamera(eventArgs.Delta);
+        Deactivate += (_, _) =>
+        {
+            pressedKeys.Clear();
+            EndCameraDrag();
+        };
     }
 
     protected override void OnShown(EventArgs eventArgs)
@@ -227,6 +352,24 @@ public sealed class ViewerForm : Form
         }
     }
 
+    protected override void OnFormClosing(FormClosingEventArgs eventArgs)
+    {
+        if (!smokeTest && document.IsDirty)
+        {
+            var result = MessageBox.Show(
+                "Save the OPS changes before closing?",
+                "Unsaved OPS changes",
+                MessageBoxButtons.YesNoCancel,
+                MessageBoxIcon.Warning);
+            if (result == DialogResult.Cancel || result == DialogResult.Yes && !SaveOps(saveAs: false))
+            {
+                eventArgs.Cancel = true;
+                return;
+            }
+        }
+        base.OnFormClosing(eventArgs);
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
@@ -236,7 +379,8 @@ public sealed class ViewerForm : Form
             viewport?.Dispose();
             foreach (var model in uploadedModels) model.Dispose();
             graphics?.Dispose();
-            if (cameraDrag != CameraDragMode.None) Cursor.Show();
+            viewportHost.Capture = false;
+            ReleaseLookCursor();
         }
         base.Dispose(disposing);
     }
@@ -269,8 +413,13 @@ public sealed class ViewerForm : Form
         var initialPosition = center + new Vector3(0, sceneRadius * 0.35f, -sceneRadius * 1.6f);
         cameraNavigation.Initialize(center, initialPosition);
         viewport = new D3D11Viewport(graphics, viewportHost.Handle, viewportHost.ClientSize.Width, viewportHost.ClientSize.Height);
+        if (currentMap?.DefaultEnvironment is { } environment)
+        {
+            viewport.SetClearColor(new Vector4(environment.FogColor, 1f));
+        }
         overlayMarkerSize = Math.Clamp(sceneRadius * 0.008f, 0.08f, 1.5f);
         RefreshOverlay();
+        RefreshOutliner();
         previousFrameTicks = frameClock.ElapsedTicks;
     }
 
@@ -293,51 +442,116 @@ public sealed class ViewerForm : Form
             Math.Max(0.01f, sceneRadius / 10000f),
             Math.Max(1000f, sceneRadius * 20f));
         var forward = cameraNavigation.Forward;
-        var view = Matrix4x4.CreateLookAt(cameraNavigation.Position, cameraNavigation.Position + forward, Vector3.UnitY);
+        var view = Matrix4x4.CreateLookAt(
+            cameraNavigation.Position,
+            cameraNavigation.Position + forward,
+            cameraNavigation.WorldUp);
         return new ViewportCamera(view, projection);
     }
 
     private void UpdateCamera(float elapsed)
     {
         var forward = cameraNavigation.Forward;
-        var flatForward = Vector3.Normalize(new Vector3(forward.X, 0, forward.Z));
-        var right = Vector3.Normalize(Vector3.Cross(Vector3.UnitY, flatForward));
+        var right = cameraNavigation.ScreenRight;
         var movement = Vector3.Zero;
-        if (pressedKeys.Contains(Keys.W)) movement += flatForward;
-        if (pressedKeys.Contains(Keys.S)) movement -= flatForward;
+        if (pressedKeys.Contains(keyboardLayout == EditorKeyboardLayout.Azerty ? Keys.Z : Keys.W)) movement += forward;
+        if (pressedKeys.Contains(Keys.S)) movement -= forward;
         if (pressedKeys.Contains(Keys.D)) movement += right;
-        if (pressedKeys.Contains(Keys.A)) movement -= right;
-        if (pressedKeys.Contains(Keys.E)) movement += Vector3.UnitY;
-        if (pressedKeys.Contains(Keys.Q)) movement -= Vector3.UnitY;
+        if (pressedKeys.Contains(keyboardLayout == EditorKeyboardLayout.Azerty ? Keys.Q : Keys.A)) movement -= right;
+        if (pressedKeys.Contains(Keys.E) || pressedKeys.Contains(Keys.Space)) movement += Vector3.UnitY;
+        if (pressedKeys.Contains(Keys.C)) movement -= Vector3.UnitY;
         if (movement != Vector3.Zero)
         {
             var fast = pressedKeys.Contains(Keys.ShiftKey) ? 4f : 1f;
-            var translation = Vector3.Normalize(movement) * sceneRadius * 0.8f * fast * elapsed;
+            var speed = Math.Max(sceneRadius * 0.12f, 2f);
+            var translation = Vector3.Normalize(movement) * speed * fast * elapsed;
             cameraNavigation.Translate(translation);
         }
+    }
+
+    private void ChangeKeyboardLayout()
+    {
+        keyboardLayout = keyboardLayoutList.SelectedIndex == 0
+            ? EditorKeyboardLayout.Azerty
+            : EditorKeyboardLayout.Qwerty;
+        settingsStore.Save(settingsStore.Load() with { KeyboardLayout = keyboardLayout });
+        pressedKeys.Clear();
+    }
+
+    private bool UpdateLeftMouseGesture(Point current)
+    {
+        if (!pendingLeftClick) return false;
+        var dragSize = SystemInformation.DragSize;
+        if (Math.Abs(current.X - leftMouseDown.X) < Math.Max(2, dragSize.Width / 2)
+            && Math.Abs(current.Y - leftMouseDown.Y) < Math.Max(2, dragSize.Height / 2)) return false;
+        pendingLeftClick = false;
+        BeginLookDrag(leftMouseDown);
+        return true;
     }
 
     private void MoveCamera(Point current)
     {
         if (cameraDrag == CameraDragMode.None) return;
+        if (cameraDrag == CameraDragMode.Look)
+        {
+            var center = new Point(viewportHost.ClientSize.Width / 2, viewportHost.ClientSize.Height / 2);
+            var lookDeltaX = current.X - center.X;
+            var lookDeltaY = current.Y - center.Y;
+            if (lookDeltaX == 0 && lookDeltaY == 0) return;
+            cameraNavigation.Look(lookDeltaX, lookDeltaY);
+            CenterLookCursor();
+            return;
+        }
         var deltaX = current.X - previousMouse.X;
         var deltaY = current.Y - previousMouse.Y;
         previousMouse = current;
-        if (cameraDrag == CameraDragMode.Orbit)
-        {
-            cameraNavigation.Orbit(deltaX, deltaY);
-            return;
-        }
         cameraNavigation.Pan(deltaX, deltaY, viewportHost.ClientSize.Height, MathF.PI / 3f);
+    }
+
+    private void BeginLookDrag(Point restoreLocation)
+    {
+        cameraDrag = CameraDragMode.Look;
+        if (lookCursorLocked) return;
+        lookCursorRestoreScreen = viewportHost.PointToScreen(restoreLocation);
+        lookCursorLocked = true;
+        Cursor.Hide();
+        CenterLookCursor();
+    }
+
+    private void CenterLookCursor()
+    {
+        if (!lookCursorLocked || viewportHost.ClientSize.Width <= 0 || viewportHost.ClientSize.Height <= 0) return;
+        var center = new Point(viewportHost.ClientSize.Width / 2, viewportHost.ClientSize.Height / 2);
+        Cursor.Position = viewportHost.PointToScreen(center);
+    }
+
+    private void ReleaseLookCursor()
+    {
+        if (!lookCursorLocked) return;
+        lookCursorLocked = false;
+        Cursor.Position = lookCursorRestoreScreen;
+        Cursor.Show();
+    }
+
+    private void EndCameraDrag()
+    {
+        pendingLeftClick = false;
+        cameraDrag = CameraDragMode.None;
+        if (viewportHost.Capture) viewportHost.Capture = false;
+        ReleaseLookCursor();
     }
 
     private void ZoomCamera(int wheelDelta)
     {
         if (wheelDelta == 0) return;
-        cameraNavigation.Zoom(
-            wheelDelta / 120f,
-            Math.Max(sceneRadius * 0.0005f, 0.01f),
-            sceneRadius * 100f);
+        var hit = surfaceRaycaster.Cast(
+            new SceneRay(cameraNavigation.Position, cameraNavigation.Forward),
+            sceneInstances).Hit;
+        var referenceDistance = hit?.Distance ?? sceneRadius * 0.25f;
+        var minimumStep = Math.Max(sceneRadius * 0.002f, 0.05f);
+        var maximumStep = Math.Max(sceneRadius * 0.25f, 1f);
+        var step = Math.Clamp(referenceDistance * 0.2f, minimumStep, maximumStep);
+        cameraNavigation.Dolly(wheelDelta / 120f * step);
     }
 
     private void SelectAt(Point location)
@@ -346,10 +560,12 @@ public sealed class ViewerForm : Form
         var ray = CreatePointerRay(location);
         var hit = elementPicker.Pick(ray, sceneInstances, currentMap, overlayMarkerSize);
         selection = hit?.Selection;
+        cameraHandle = SceneCameraHandle.Eye;
         var resourcesByAsset = uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase);
         RefreshRenderInstances(resourcesByAsset);
         RefreshOverlay();
-        RefreshPropProperties();
+        RefreshElementProperties();
+        SyncOutlinerSelection();
         Text = hit is null
             ? $"{baseTitle} — no selection"
             : $"{baseTitle} — selected: {hit.Selection.Name} [{hit.Selection.Kind}]";
@@ -361,11 +577,18 @@ public sealed class ViewerForm : Form
         if (selection.Kind == SceneElementKind.Prop)
         {
             var selected = sceneInstances.FirstOrDefault(value => value.Id == selection.SourceIndex);
-            if (selected is null) return;
-            var bounds = new SceneBoundsCalculator().Calculate(new[] { selected });
-            if (bounds.HasGeometry)
+            if (selected is not null)
             {
-                cameraNavigation.Focus(bounds.Center, Math.Max(bounds.Radius * 2.5f, sceneRadius * 0.01f));
+                var bounds = new SceneBoundsCalculator().Calculate(new[] { selected });
+                if (bounds.HasGeometry)
+                {
+                    cameraNavigation.Focus(bounds.Center, Math.Max(bounds.Radius * 2.5f, sceneRadius * 0.01f));
+                    return;
+                }
+            }
+            if (document.Find(selection) is { } propElement)
+            {
+                cameraNavigation.Focus(propElement.Transform.Position, Math.Max(sceneRadius * 0.025f, 1f));
             }
             return;
         }
@@ -384,7 +607,7 @@ public sealed class ViewerForm : Form
                 selection is { Kind: SceneElementKind.Prop }
                     && value.Id == selection.SourceIndex))
             .ToList();
-        if (placement is { Position: { } position } preview
+        if (placement is { Position: { } position, Model: not null, AssetId: not null } preview
             && resourcesByAsset.TryGetValue(preview.AssetId, out var previewResources))
         {
             var transform = Matrix4x4.CreateFromQuaternion(
@@ -404,19 +627,52 @@ public sealed class ViewerForm : Form
         var selectedElement = selection is null ? null : document.Find(selection);
         if (selectedElement is not null && SupportsMode(selectedElement, gizmoMode))
         {
-            var length = GetGizmoLength(selectedElement.Transform.Position);
+            var gizmoTransform = selectedElement.Transform;
+            if (selection is { Kind: SceneElementKind.Camera }
+                && cameraHandle == SceneCameraHandle.LookAt
+                && document.FindCamera(selection) is { } selectedCamera)
+            {
+                gizmoTransform = gizmoTransform with { Position = selectedCamera.LookAt };
+            }
+            var length = GetGizmoLength(gizmoTransform.Position);
             if (gizmoMode == GizmoMode.Rotate)
             {
-                overlayLines.AddRange(rotationGizmo.Build(selectedElement.Transform.Position, length, gizmoDrag?.Axis));
+                overlayLines.AddRange(rotationGizmo.Build(gizmoTransform.Position, length, gizmoDrag?.Axis));
             }
             else
             {
-                overlayLines.AddRange(translationGizmo.Build(selectedElement.Transform.Position, length, gizmoDrag?.Axis));
+                overlayLines.AddRange(translationGizmo.Build(gizmoTransform.Position, length, gizmoDrag?.Axis));
             }
+        }
+        if (selection is { Kind: SceneElementKind.Camera } cameraSelection
+            && document.FindCamera(cameraSelection) is { } camera)
+        {
+            overlayLines.AddRange(cameraGizmo.Build(camera, overlayMarkerSize * 1.5f, cameraHandle));
+        }
+        if (placement is { Position: { } previewPosition, OpsProfile: not null })
+        {
+            var size = overlayMarkerSize * 2f;
+            var color = new Vector4(0.25f, 1f, 0.35f, 1f);
+            overlayLines.Add(new SceneOverlayLine(previewPosition - Vector3.UnitX * size, previewPosition + Vector3.UnitX * size, color));
+            overlayLines.Add(new SceneOverlayLine(previewPosition - Vector3.UnitY * size, previewPosition + Vector3.UnitY * size, color));
+            overlayLines.Add(new SceneOverlayLine(previewPosition - Vector3.UnitZ * size, previewPosition + Vector3.UnitZ * size, color));
         }
         viewport.SetDebugLines(overlayLines
             .Select(line => new D3D11DebugLine(line.Start, line.End, line.Color))
             .ToArray());
+    }
+
+    private bool SelectCameraHandleAt(Point location)
+    {
+        if (selection is not { Kind: SceneElementKind.Camera } selected
+            || document.FindCamera(selected) is not { } camera) return false;
+        var ray = CreatePointerRay(location);
+        if (!cameraGizmo.TryPickHandle(ray, camera, overlayMarkerSize * 2f, out var handle)) return false;
+        cameraHandle = handle;
+        gizmoMode = GizmoMode.Translate;
+        RefreshOverlay();
+        Text = $"{baseTitle} - camera handle: {handle}";
+        return true;
     }
 
     private bool BeginGizmoDrag(Point location)
@@ -424,28 +680,37 @@ public sealed class ViewerForm : Form
         if (selection is null) return false;
         var element = document.Find(selection);
         if (element is null || !SupportsMode(element, gizmoMode)) return false;
+        var dragTransform = element.Transform;
+        SceneCameraHandle? dragCameraHandle = null;
+        if (selection.Kind == SceneElementKind.Camera && cameraHandle == SceneCameraHandle.LookAt)
+        {
+            var camera = document.FindCamera(selection);
+            if (camera is null) return false;
+            dragTransform = dragTransform with { Position = camera.LookAt };
+            dragCameraHandle = SceneCameraHandle.LookAt;
+        }
         var ray = CreatePointerRay(location);
-        var length = GetGizmoLength(element.Transform.Position);
+        var length = GetGizmoLength(dragTransform.Position);
         if (gizmoMode == GizmoMode.Rotate)
         {
             if (!rotationGizmo.TryPickAxis(
-                ray, element.Transform.Position, length, length * 0.08f, out var rotationAxis, out var ringVector))
+                ray, dragTransform.Position, length, length * 0.08f, out var rotationAxis, out var ringVector))
             {
                 return false;
             }
-            gizmoDrag = new GizmoDragState(selection, gizmoMode, rotationAxis, element.Transform, 0f, ringVector, length);
+            gizmoDrag = new GizmoDragState(selection, gizmoMode, rotationAxis, dragTransform, 0f, ringVector, length, dragCameraHandle);
         }
         else
         {
             if (!translationGizmo.TryPickAxis(
-                ray, element.Transform.Position, length, length * 0.08f, out var linearAxis)
+                ray, dragTransform.Position, length, length * 0.08f, out var linearAxis)
                 || !translationGizmo.TryGetAxisParameter(
-                    ray, element.Transform.Position, linearAxis, out var parameter))
+                    ray, dragTransform.Position, linearAxis, out var parameter))
             {
                 return false;
             }
             gizmoDrag = new GizmoDragState(
-                selection, gizmoMode, linearAxis, element.Transform, parameter, Vector3.Zero, length);
+                selection, gizmoMode, linearAxis, dragTransform, parameter, Vector3.Zero, length, dragCameraHandle);
         }
         RefreshOverlay();
         return true;
@@ -460,6 +725,7 @@ public sealed class ViewerForm : Form
             if (!rotationGizmo.TryGetRingVector(
                 ray, drag.OriginalTransform.Position, drag.Axis, out var currentVector)) return;
             var angle = SceneRotationGizmo.SignedAngle(drag.Axis, drag.StartVector, currentVector);
+            if (snapCheckBox.Checked) angle = snapSettings.SnapRotation(angle);
             var delta = Quaternion.CreateFromAxisAngle(SceneTranslationGizmo.AxisDirection(drag.Axis), angle);
             document.PreviewTransform(
                 drag.Selection,
@@ -478,9 +744,16 @@ public sealed class ViewerForm : Form
         var deltaParameter = parameter - drag.StartParameter;
         if (drag.Mode == GizmoMode.Translate)
         {
-            document.PreviewTransform(
-                drag.Selection,
-                drag.OriginalTransform with { Position = drag.OriginalTransform.Position + direction * deltaParameter });
+            if (snapCheckBox.Checked) deltaParameter = snapSettings.SnapTranslation(deltaParameter);
+            var position = drag.OriginalTransform.Position + direction * deltaParameter;
+            if (drag.CameraHandle == SceneCameraHandle.LookAt)
+            {
+                document.PreviewCameraLookAt(drag.Selection, position);
+            }
+            else
+            {
+                document.PreviewTransform(drag.Selection, drag.OriginalTransform with { Position = position });
+            }
             return;
         }
         var factor = MathF.Exp(deltaParameter / drag.GizmoLength);
@@ -492,6 +765,16 @@ public sealed class ViewerForm : Form
             SceneGizmoAxis.Z => scale with { Z = scale.Z * factor },
             _ => scale,
         };
+        if (snapCheckBox.Checked)
+        {
+            scale = drag.Axis switch
+            {
+                SceneGizmoAxis.X => scale with { X = snapSettings.SnapScale(scale.X) },
+                SceneGizmoAxis.Y => scale with { Y = snapSettings.SnapScale(scale.Y) },
+                SceneGizmoAxis.Z => scale with { Z = snapSettings.SnapScale(scale.Z) },
+                _ => scale,
+            };
+        }
         document.PreviewTransform(drag.Selection, drag.OriginalTransform with { Scale = scale });
     }
 
@@ -530,12 +813,86 @@ public sealed class ViewerForm : Form
         var resourcesByAsset = uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase);
         RefreshRenderInstances(resourcesByAsset);
         RefreshOverlay();
-        RefreshPropProperties();
+        RefreshElementProperties();
+        RefreshOutliner();
     }
 
-    private void SaveOps(bool saveAs)
+    private void RefreshOutliner()
     {
-        if (session.Map is null || currentMap is null) return;
+        var groups = outlinerBuilder.Build(document.Elements);
+        var selections = groups.SelectMany(group => group.Elements).ToArray();
+        if (selections.SequenceEqual(outlinerSelections))
+        {
+            SyncOutlinerSelection();
+            return;
+        }
+
+        refreshingOutliner = true;
+        try
+        {
+            sceneOutliner.BeginUpdate();
+            sceneOutliner.Nodes.Clear();
+            foreach (var group in groups)
+            {
+                var groupNode = sceneOutliner.Nodes.Add(group.Name);
+                foreach (var element in group.Elements)
+                {
+                    groupNode.Nodes.Add(new TreeNode(
+                        $"{element.Name} — {group.ElementTypeName} [{element.SourceIndex}]") { Tag = element });
+                }
+                groupNode.Expand();
+            }
+            outlinerSelections = selections;
+            SyncOutlinerSelection();
+        }
+        finally
+        {
+            sceneOutliner.EndUpdate();
+            refreshingOutliner = false;
+        }
+    }
+
+    private void SelectFromOutliner()
+    {
+        if (refreshingOutliner || sceneOutliner.SelectedNode?.Tag is not SceneElementSelection selected) return;
+        selection = selected;
+        cameraHandle = SceneCameraHandle.Eye;
+        var resourcesByAsset = uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase);
+        RefreshRenderInstances(resourcesByAsset);
+        RefreshOverlay();
+        RefreshElementProperties();
+        Text = $"{baseTitle} - selected: {selected.Name} [{selected.Kind}]";
+    }
+
+    private void FocusOutlinerNode(TreeNode node)
+    {
+        if (node.Tag is not SceneElementSelection selected) return;
+        if (selection != selected)
+        {
+            sceneOutliner.SelectedNode = node;
+        }
+        FocusSelection();
+    }
+
+    private void SyncOutlinerSelection()
+    {
+        refreshingOutliner = true;
+        try
+        {
+            sceneOutliner.SelectedNode = sceneOutliner.Nodes
+                .Cast<TreeNode>()
+                .SelectMany(group => group.Nodes.Cast<TreeNode>())
+                .FirstOrDefault(node => node.Tag is SceneElementSelection candidate && candidate == selection);
+        }
+        finally
+        {
+            refreshingOutliner = false;
+        }
+    }
+
+    private bool SaveOps(bool saveAs)
+    {
+        if (session.Map is null || currentMap is null) return false;
         var targetPath = savedOpsPath;
         if (saveAs || string.IsNullOrEmpty(targetPath))
         {
@@ -549,18 +906,21 @@ public sealed class ViewerForm : Form
                 DefaultExt = "ops",
                 OverwritePrompt = true,
             };
-            if (dialog.ShowDialog() != DialogResult.OK) return;
+            if (dialog.ShowDialog() != DialogResult.OK) return false;
             targetPath = dialog.FileName;
         }
         try
         {
             opsWriter.Write(targetPath!, session.Map, currentMap);
             savedOpsPath = targetPath;
+            document.MarkSaved();
             Text = $"{baseTitle} — saved: {targetPath}";
+            return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
         {
             MessageBox.Show(exception.Message, "Cannot save OPS", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return false;
         }
     }
 
@@ -568,7 +928,9 @@ public sealed class ViewerForm : Form
     {
         if (session.Script.GameDataPath is null)
         {
-            assetPanel.Enabled = false;
+            assetSearch.Enabled = false;
+            assetList.Enabled = false;
+            addAssetButton.Enabled = false;
             return;
         }
         assetCatalog = new GameAssetCatalog(session.Script.GameDataPath).Entries;
@@ -609,7 +971,9 @@ public sealed class ViewerForm : Form
             {
                 uploadedModels.Add(new D3D11ModelUploader(graphics.Device).Upload(model));
             }
-            placement = new PlacementState(catalogEntry.AssetId, catalogEntry.AssetId, model, null, Vector3.UnitY);
+            placement = new PlacementState(
+                catalogEntry.AssetId, catalogEntry.AssetId, model, null,
+                new Dictionary<string, string>(), null, Vector3.UnitY);
             var pointer = viewportHost.PointToClient(Cursor.Position);
             if (viewportHost.ClientRectangle.Contains(pointer)) UpdatePlacement(pointer);
             Text = $"{baseTitle} — place {catalogEntry.AssetId}: click surface, Esc cancel";
@@ -624,20 +988,27 @@ public sealed class ViewerForm : Form
         }
     }
 
-    private void DuplicateSelectedProp()
+    private void DuplicateSelectedElement()
     {
-        if (selection is not { Kind: SceneElementKind.Prop } templateSelection) return;
-        var source = sceneInstances.FirstOrDefault(value => value.Id == templateSelection.SourceIndex);
-        if (source is null || !loadedModelsByAsset.TryGetValue(source.AssetId, out var model)) return;
-        selection = document.AddPropFromTemplate(templateSelection, source.AssetId, $"{source.Name}_copy", model);
+        if (selection is null) return;
+        if (selection.Kind == SceneElementKind.Prop)
+        {
+            var source = sceneInstances.FirstOrDefault(value => value.Id == selection.SourceIndex);
+            if (source is null || !loadedModelsByAsset.TryGetValue(source.AssetId, out var model)) return;
+            selection = document.AddPropFromTemplate(selection, source.AssetId, $"{source.Name}_copy", model);
+        }
+        else
+        {
+            selection = document.DuplicateElement(selection);
+        }
         RefreshSceneFromDocument();
     }
 
-    private void DeleteSelectedProp()
+    private void DeleteSelectedElement()
     {
-        if (selection is not { Kind: SceneElementKind.Prop } selected) return;
+        if (selection is not { } selected) return;
         selection = null;
-        if (document.DeleteProp(selected)) RefreshSceneFromDocument();
+        if (document.DeleteElement(selected)) RefreshSceneFromDocument();
     }
 
     private void UpdatePlacement(Point location)
@@ -649,15 +1020,18 @@ public sealed class ViewerForm : Form
             : placement with { Position = result.Hit.Position, SurfaceNormal = result.Hit.Normal };
         var resourcesByAsset = uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase);
         RefreshRenderInstances(resourcesByAsset);
+        RefreshOverlay();
     }
 
     private void ConfirmPlacement()
     {
         if (placement is not { Position: { } position } pending) return;
-        selection = document.AddProp(pending.AssetId, pending.Name, pending.Model, position);
+        selection = pending.OpsProfile is not null
+            ? document.AddSpatialElement(pending.OpsProfile, position, pending.Inputs)
+            : document.AddProp(pending.AssetId!, pending.Name, pending.Model!, position);
         placement = null;
         RefreshSceneFromDocument();
-        Text = $"{baseTitle} — added: {pending.AssetId}";
+        Text = $"{baseTitle} - added: {selection.Name}";
     }
 
     private void CancelPlacement()
@@ -667,18 +1041,63 @@ public sealed class ViewerForm : Form
         Text = baseTitle;
     }
 
-    private void RefreshPropProperties()
+    private void RefreshOpsCreationInputs()
+    {
+        opsInputFields.Clear();
+        opsInputPanel.Controls.Clear();
+        if (opsProfileList.SelectedItem is not OpsSpatialCreationProfile profile) return;
+        opsProfileEvidence.Text = profile.Evidence;
+        foreach (var input in profile.Inputs)
+        {
+            var row = new FlowLayoutPanel
+            {
+                Width = Math.Max(220, opsInputPanel.ClientSize.Width - 20),
+                Height = 28,
+                WrapContents = false,
+                Margin = Padding.Empty,
+            };
+            row.Controls.Add(new Label
+            {
+                Width = 110,
+                Text = input.DisplayName,
+                TextAlign = ContentAlignment.MiddleLeft,
+            });
+            var field = new TextBox { Width = 120 };
+            row.Controls.Add(field);
+            opsInputFields.Add(input.Name, field);
+            opsInputPanel.Controls.Add(row);
+        }
+    }
+
+    private void BeginOpsPlacement()
+    {
+        if (opsProfileList.SelectedItem is not OpsSpatialCreationProfile profile) return;
+        try
+        {
+            var inputs = opsInputFields.ToDictionary(pair => pair.Key, pair => pair.Value.Text, StringComparer.Ordinal);
+            profile.ValidateInputs(inputs);
+            placement = new PlacementState(null, profile.DisplayName, null, profile, inputs, null, Vector3.UnitY);
+            var pointer = viewportHost.PointToClient(Cursor.Position);
+            if (viewportHost.ClientRectangle.Contains(pointer)) UpdatePlacement(pointer);
+            Text = $"{baseTitle} - place {profile.DisplayName}: click surface, Esc cancel";
+        }
+        catch (ArgumentException exception)
+        {
+            MessageBox.Show(exception.Message, "Cannot create OPS element", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private void RefreshElementProperties()
     {
         propertyGrid.Rows.Clear();
-        var prop = selection is null ? null : document.FindProp(selection);
-        propertyGroup.Enabled = prop is not null;
-        if (prop is null) return;
-        var protectedNames = new HashSet<string>(new[] { "asset", "name", "pos", "rot", "scl" }, StringComparer.Ordinal);
-        foreach (var attribute in prop.SourceAttributes.OrderBy(value => value.Key, StringComparer.Ordinal))
+        var attributeSet = selection is null ? null : document.FindElementAttributes(selection);
+        propertyGroup.Enabled = attributeSet is not null;
+        if (attributeSet is null) return;
+        foreach (var attribute in attributeSet.Values.OrderBy(value => value.Key, StringComparer.Ordinal))
         {
             var rowIndex = propertyGrid.Rows.Add(attribute.Key, attribute.Value);
             var row = propertyGrid.Rows[rowIndex];
-            if (protectedNames.Contains(attribute.Key))
+            if (attributeSet.ProtectedNames.Contains(attribute.Key))
             {
                 row.ReadOnly = true;
                 row.DefaultCellStyle.ForeColor = SystemColors.GrayText;
@@ -686,9 +1105,9 @@ public sealed class ViewerForm : Form
         }
     }
 
-    private void ApplyPropProperties()
+    private void ApplyElementProperties()
     {
-        if (selection is not { Kind: SceneElementKind.Prop } selected) return;
+        if (selection is not { } selected) return;
         try
         {
             var attributes = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -702,7 +1121,7 @@ public sealed class ViewerForm : Form
                     throw new ArgumentException($"Duplicate OPS attribute '{name}'.");
                 }
             }
-            document.ApplyPropAttributes(selected, attributes);
+            document.ApplyElementAttributes(selected, attributes);
         }
         catch (ArgumentException exception)
         {
@@ -762,7 +1181,7 @@ public sealed class ViewerForm : Form
     private enum CameraDragMode
     {
         None,
-        Orbit,
+        Look,
         Pan,
     }
 
@@ -773,7 +1192,8 @@ public sealed class ViewerForm : Form
         SceneTransform OriginalTransform,
         float StartParameter,
         Vector3 StartVector,
-        float GizmoLength);
+        float GizmoLength,
+        SceneCameraHandle? CameraHandle);
 
     private enum GizmoMode
     {
@@ -783,9 +1203,11 @@ public sealed class ViewerForm : Form
     }
 
     private sealed record PlacementState(
-        string AssetId,
+        string? AssetId,
         string Name,
-        CpuModel Model,
+        CpuModel? Model,
+        OpsSpatialCreationProfile? OpsProfile,
+        IReadOnlyDictionary<string, string> Inputs,
         Vector3? Position,
         Vector3 SurfaceNormal);
 

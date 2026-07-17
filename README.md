@@ -124,10 +124,20 @@ pass used to validate every primitive and topology independently of a window.
 
 `ED8Editor.Viewer` provides that interactive viewport: a flip-model swap chain,
 depth buffer, OPS model instances, perspective camera, and textured/solid shader
-paths. Hold the right mouse button to orbit, drag with the middle mouse button to
-pan, use the wheel to zoom, and press `F` to frame the selected prop. `WASD` moves
-laterally, `Q/E` moves vertically, and Shift accelerates movement. Left-click a
-visible model to select its nearest intersected triangle; the selected instance
+paths. Drag with the left mouse button to look freely in the direction of the
+mouse; releasing it without crossing the normal drag threshold performs a
+selection click instead. Right-drag is retained as an alternate look binding,
+middle-drag pans, and the wheel moves forward/backward along the exact view
+direction without a pivot-distance stop. Press `F`, or double-click an object in
+the scene outliner, to place the camera in front of it and look at its center.
+The cursor is hidden and recentered only after a look drag crosses the selection
+threshold, allowing unlimited horizontal rotation and pitch up to the vertical
+without ever introducing camera roll; it returns to its original screen
+position on release. Releasing a navigation button or leaving the window always
+ends its drag mode. The navigation selector switches persistently between
+`ZQSD` (AZERTY) and `WASD` (QWERTY). Movement follows the complete view direction;
+`E`/Space moves up, `C` moves down, and Shift
+accelerates movement. Left-click a visible model to select its nearest intersected triangle; the selected instance
 is highlighted and identified in the window title. OPS volumes and markers are
 selectable through the same nearest-hit query and turn white when selected.
 Press `1`, `2`, or `3` to display translation axes, rotation rings, or scale axes
@@ -136,31 +146,40 @@ the element; `Ctrl+Z` and `Ctrl+Y` undo and redo committed drags. Capabilities
 are explicit: props and volumes support all three modes, while point-like OPS
 elements currently expose translation only.
 
+The optional snap control rounds translation to 0.25 world units, rotation to
+15-degree increments, and scale to 0.1 increments. Prop names are made unique
+inside the document automatically, without asking for additional input.
+
 `Ctrl+S` saves the current editable scene through `OpsWriter`. The first save
 opens a Save As dialog defaulting to `<map>.edited.ops`; subsequent saves reuse
 that explicit destination, while `Ctrl+Shift+S` chooses another. The writer
 updates only changed spatial attributes, retains unknown XML elements and
 attributes, reparses the temporary output, and atomically replaces the selected
 destination only after validation.
+Closing a document whose current undo state differs from the last successful
+save offers to save, discard, or cancel the close operation.
 
 The asset library panel indexes PKG filenames and variants without opening their
 archives. Search for an asset and choose **Add selected asset**; only then is that
 single package decoded and uploaded, at the current camera pivot. New props use
-the centralized neutral OPS `NewObject` profile. `Ctrl+D` duplicates the selected prop and
-Delete removes it. Addition, duplication, deletion, and transforms share the
-same undo/redo history, and `OpsWriter` persists the resulting `AssetObject`
-collection.
+the centralized neutral OPS `NewObject` profile. `Ctrl+D` duplicates the selected
+scene element and Delete removes it. For non-prop OPS elements, duplication
+copies the complete source attribute profile, including attributes not yet
+understood by the editor; no default flags are invented. Addition, duplication,
+deletion, and transforms share the same undo/redo history, and `OpsWriter`
+persists every supported spatial collection.
 
 Adding an asset enters surface-placement mode instead of modifying the document
 immediately. A green preview follows the nearest exact triangle hit under the
 cursor; left-click confirms the new prop and `Esc` cancels without creating an
 undo entry or changing the OPS snapshot.
 
-Selecting a prop also populates a generic OPS attribute grid. Transform and
-asset identity fields are read-only there because they are controlled by the
-gizmos and asset loader; flags, clipping, material values, and previously
-unknown attributes can be edited, added, or removed. Attribute changes are
-undoable and are preserved by `OpsWriter`.
+Selecting any OPS element populates a generic attribute grid. Transform and
+identity fields are read-only there because they are controlled by the gizmos
+or asset loader. Flags, TP destinations, point radii, camera parameters, sound
+settings, light colors/ranges, and previously unknown attributes can be edited,
+added, or removed. Known numeric and vector fields are validated before they
+enter the document; attribute changes are undoable and preserved by `OpsWriter`.
 
 OPS spatial data is visible directly in the 3D viewport: `EntryBox` volumes are
 cyan, transitions with an explicit destination are blue, `GroupBox` volumes are
@@ -168,6 +187,30 @@ violet, `LookPoint` markers are yellow, map cameras plus their sight lines are
 green, sounds and their ranges are orange, and lights use their OPS color and
 outer range. These overlays are generated directly in memory from exact OPS
 coordinates.
+The scene outliner on the left groups every currently editable OPS element by
+kind, and each child repeats its readable category. Selecting an entry selects
+the same object in the viewport and exposes its transform gizmo. The generic OPS
+attribute panel sits directly below the outliner so selection and properties stay
+together.
+
+The OPS reader also exposes the exact `default` map environment fog color. It is
+used as the viewport background when a map has no explicit sky model. A sky such
+as `O_S00SKY00` remains an ordinary in-memory OPS model; the debug map `m0010`
+contains no such sky asset.
+
+The **Create OPS element** panel provides evidence-backed creation profiles for
+a type-2 TP/`EntryBox`, `GroupBox`, type-0 event `LookPoint`, type-3 map camera,
+point sound, and point light. Required external values are limited to the TP destination map and
+entry, or the sound name. Creation then enters the same exact surface-placement
+mode as props. Each profile records the shipped OPS element from which its
+attribute set was derived; the generic attribute panel remains available after
+placement. Missing XML sections are inserted in the canonical OPS section order
+when the edited map did not originally contain that element family.
+
+For a selected map camera, the cyan eye handle controls the complete camera
+translation and keeps its sight vector intact. Clicking the magenta look-at
+handle activates a separate translation gizmo for the target alone. Both edits
+participate in the same preview, snapping, undo/redo, and OPS save history.
 
 ```powershell
 dotnet run --project src/ED8Editor.Viewer -- "path\to\scripts\scena\dat\a0000.dat"
@@ -189,3 +232,17 @@ Run the complete script-to-GPU validation with:
 ```powershell
 dotnet run --project tests/ED8Editor.Tests -- --gpu-upload "path\to\scripts\scena\dat\a0000.dat"
 ```
+
+## Test distribution
+
+Create a self-contained Windows x64 test build with:
+
+```powershell
+dotnet publish src/ED8Editor.Viewer/ED8Editor.Viewer.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o dist/ED8Editor-win-x64-single
+```
+
+The resulting `ED8Editor.Viewer.exe` includes the .NET runtime and the managed
+project dependencies, so no adjacent DLL and no separate .NET installation is
+required. The tester still needs a Windows x64 machine with Direct3D 11 support
+and a local Trails of Cold Steel installation; the viewer asks for that game
+directory on first launch.

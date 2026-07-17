@@ -296,15 +296,20 @@ var tests = new (string Name, Action Run)[]
     ("reports truncated picking index data", ReportsTruncatedPickingIndexData),
     ("calculates transformed scene bounds", CalculatesTransformedSceneBounds),
     ("creates a center viewport ray", CreatesCenterViewportRay),
-    ("keeps editor camera orbit centered", KeepsEditorCameraOrbitCentered),
+    ("supports editor camera orbit and free flight", KeepsEditorCameraOrbitCentered),
     ("builds typed OPS overlay geometry", BuildsTypedOpsOverlayGeometry),
     ("picks exact OPS volume geometry", PicksExactOpsVolumeGeometry),
     ("undoes and redoes scene document transforms", UndoesAndRedoesSceneDocumentTransforms),
     ("picks and parameterizes translation gizmo axes", PicksTranslationGizmoAxes),
     ("picks rotation rings and computes signed angles", PicksRotationRings),
+    ("picks camera eye and look-at handles", PicksCameraHandles),
+    ("snaps scene transforms to explicit increments", SnapsSceneTransforms),
+    ("groups editable elements for the scene outliner", GroupsSceneOutlinerElements),
     ("validates and normalizes game installations", ValidatesGameInstallations),
     ("persists editor user settings", PersistsEditorUserSettings),
     ("writes transformed OPS props without losing unknown data", WritesTransformedOpsProps),
+    ("writes duplicated and deleted OPS spatial elements", WritesStructuralOpsEdits),
+    ("creates observed OPS spatial profiles in empty sections", CreatesObservedOpsProfiles),
     ("indexes PKG names without reading archives", IndexesPkgNamesWithoutReadingArchives),
 };
 
@@ -362,6 +367,12 @@ static void ReadsOpsProps()
     const string xml = """
         <?xml version="1.0" encoding="utf-8"?>
         <Ops version="1">
+          <MapSetting>
+            <MapColor>
+              <Type type="default" />
+              <Fog near="2" far="800" color="0.1, 0.2, 0.3" />
+            </MapColor>
+          </MapSetting>
           <MapObjects>
             <AssetObject asset="O_TEST" name="chair" flag="0x283" custom="kept"
               pos="2.5, 1, -3" rot="0, 0, 0" scl="1, 2, 1"
@@ -395,6 +406,10 @@ static void ReadsOpsProps()
     {
         var scene = new OpsReader().Read(path);
         Equal(1, scene.Props.Count);
+        Equal("default", scene.DefaultEnvironment!.ProfileName);
+        Near(0.1f, scene.DefaultEnvironment.FogColor.X);
+        Near(2f, scene.DefaultEnvironment.FogNearDistance);
+        Near(800f, scene.DefaultEnvironment.FogFarDistance);
         var prop = scene.Props[0];
         Equal("O_TEST", prop.AssetId);
         Equal("chair", prop.Name);
@@ -873,6 +888,32 @@ static void KeepsEditorCameraOrbitCentered()
     Near(cameraTranslation.Z, targetTranslation.Z);
     camera.Zoom(1, 0.1f, 100f);
     Equal(true, camera.Distance < 10f);
+
+    var freeCamera = new EditorOrbitCamera();
+    freeCamera.Initialize(Vector3.Zero, new Vector3(0, 0, -10));
+    Equal(-Vector3.UnitX, freeCamera.ScreenRight);
+    var freePosition = freeCamera.Position;
+    freeCamera.Look(100, -20);
+    Equal(freePosition, freeCamera.Position);
+    Equal(true, freeCamera.Forward.X < 0f);
+    Equal(true, freeCamera.Forward.Y > 0f);
+    var forward = freeCamera.Forward;
+    freeCamera.Dolly(5f);
+    Near(5f, Vector3.Distance(freePosition, freeCamera.Position));
+    Near(1f, Vector3.Dot(Vector3.Normalize(freeCamera.Position - freePosition), forward));
+
+    var stableCamera = new EditorOrbitCamera();
+    stableCamera.Initialize(new Vector3(0, 0, 1), Vector3.Zero);
+    var quarterTurnPixels = (MathF.PI / 2f) / 0.004f;
+    stableCamera.Look(0f, quarterTurnPixels);
+    Equal(true, stableCamera.Forward.Y < -0.999f);
+    Equal(Vector3.UnitY, stableCamera.WorldUp);
+    Near(0f, Vector3.Dot(stableCamera.Forward, stableCamera.ScreenUp), 0.0001f);
+    var downwardDirection = stableCamera.Forward;
+    stableCamera.Look(0f, quarterTurnPixels);
+    Near(downwardDirection.X, stableCamera.Forward.X);
+    Near(downwardDirection.Y, stableCamera.Forward.Y);
+    Near(downwardDirection.Z, stableCamera.Forward.Z);
 }
 
 static void BuildsTypedOpsOverlayGeometry()
@@ -959,16 +1000,28 @@ static void UndoesAndRedoesSceneDocumentTransforms()
             ["O_TEST"] = new("O_TEST", AssetModelLoadStatus.Loaded, model, null),
         });
     var document = new EditorSceneDocument(session);
+    Equal(false, document.IsDirty);
     var selection = new SceneElementSelection(SceneElementKind.Prop, 0, "editable");
     var original = document.Find(selection)!.Transform;
     document.PreviewTransform(selection, original with { Position = new Vector3(8, 4, 5) });
+    Equal(false, document.IsDirty);
     Equal(true, document.CommitPreview(selection, original));
+    Equal(true, document.IsDirty);
     Near(8f, document.CreateMapSnapshot()!.Props[0].Transform.Position.X);
     Equal(true, document.Undo());
+    Equal(false, document.IsDirty);
     Near(3f, document.CreateModelInstances()[0].Transform.M41);
     Equal(true, document.Redo());
+    Equal(true, document.IsDirty);
     Near(8f, document.CreateModelInstances()[0].Transform.M41);
+    document.MarkSaved();
+    Equal(false, document.IsDirty);
+    Equal(true, document.ApplyPropAttributes(
+        selection,
+        new Dictionary<string, string>(document.FindProp(selection)!.SourceAttributes)));
+    Equal(false, document.IsDirty);
     var added = document.AddPropFromTemplate(selection, "O_TEST", "copy", model);
+    Equal(true, document.IsDirty);
     Equal(2, document.CreateMapSnapshot()!.Props.Count);
     Equal(true, document.Undo());
     Equal(1, document.CreateMapSnapshot()!.Props.Count);
@@ -979,6 +1032,8 @@ static void UndoesAndRedoesSceneDocumentTransforms()
     Equal(true, document.Undo());
     Equal(2, document.CreateMapSnapshot()!.Props.Count);
     var independent = document.AddProp("O_TEST", "independent", model, new Vector3(20, 1, 2));
+    var uniqueIndependent = document.AddProp("O_TEST", "independent", model, new Vector3(21, 1, 2));
+    Equal("independent_001", uniqueIndependent.Name);
     var independentProp = document.CreateMapSnapshot()!.Props.Single(value => value.SourceIndex == independent.SourceIndex);
     Equal(OpsNewPropProfile.UndocumentedNeutralFlags, independentProp.Flags!.Value);
     Near(20f, independentProp.Transform.Position.X);
@@ -1014,6 +1069,53 @@ static void PicksRotationRings()
     Near(MathF.PI / 2f, SceneRotationGizmo.SignedAngle(axis, start, end));
 }
 
+static void PicksCameraHandles()
+{
+    var camera = new MapCameraMarker(
+        0, "0", Vector3.Zero, new Vector3(0, 0, 5), new Dictionary<string, string>());
+    var gizmo = new SceneCameraGizmo();
+    Equal(7, gizmo.Build(camera, 0.2f, SceneCameraHandle.LookAt).Count);
+    Equal(true, gizmo.TryPickHandle(
+        new SceneRay(new Vector3(0, 0, -5), Vector3.UnitZ), camera, 0.2f, out var eye));
+    Equal(SceneCameraHandle.Eye, eye);
+    var targetRayOrigin = new Vector3(2, 0, 0);
+    Equal(true, gizmo.TryPickHandle(
+        new SceneRay(targetRayOrigin, Vector3.Normalize(camera.LookAt - targetRayOrigin)),
+        camera,
+        0.2f,
+        out var lookAt));
+    Equal(SceneCameraHandle.LookAt, lookAt);
+}
+
+static void SnapsSceneTransforms()
+{
+    var settings = new SceneSnapSettings(0.25f, MathF.PI / 12f, 0.1f);
+    Near(1.25f, settings.SnapTranslation(1.14f));
+    Near(-0.5f, settings.SnapTranslation(-0.4f));
+    Near(MathF.PI / 6f, settings.SnapRotation(0.49f));
+    Near(1.2f, settings.SnapScale(1.16f));
+    Near(-0.1f, settings.SnapScale(-0.01f));
+    Throws<ArgumentOutOfRangeException>(() => new SceneSnapSettings(0f, 1f, 1f));
+}
+
+static void GroupsSceneOutlinerElements()
+{
+    var identity = new SceneTransform(Vector3.Zero, Quaternion.Identity, Vector3.One);
+    var elements = new[]
+    {
+        new EditableSceneElement(new SceneElementSelection(SceneElementKind.Light, 3, "light"), SceneTransformCapabilities.Translate, identity),
+        new EditableSceneElement(new SceneElementSelection(SceneElementKind.Prop, 2, "z prop"), SceneTransformCapabilities.All, identity),
+        new EditableSceneElement(new SceneElementSelection(SceneElementKind.Prop, 1, "a prop"), SceneTransformCapabilities.All, identity),
+    };
+    var groups = new SceneOutlinerBuilder().Build(elements);
+    Equal(2, groups.Count);
+    Equal("Props", groups[0].Name);
+    Equal("Prop", groups[0].ElementTypeName);
+    Equal("a prop", groups[0].Elements[0].Name);
+    Equal("Lights", groups[1].Name);
+    Equal("Light", groups[1].ElementTypeName);
+}
+
 static void ValidatesGameInstallations()
 {
     var root = Path.Combine(Path.GetTempPath(), $"ed8-install-{Guid.NewGuid():N}");
@@ -1042,7 +1144,10 @@ static void PersistsEditorUserSettings()
     {
         var store = new EditorSettingsStore(path);
         Equal(EditorUserSettings.Default, store.Load());
-        var settings = new EditorUserSettings(1, @"C:\Games\Cold Steel");
+        Directory.CreateDirectory(root);
+        File.WriteAllText(path, """{"Version":1,"GameDirectory":"C:\\\\Legacy"}""");
+        Equal(EditorKeyboardLayout.Azerty, store.Load().KeyboardLayout);
+        var settings = new EditorUserSettings(1, @"C:\Games\Cold Steel", EditorKeyboardLayout.Qwerty);
         store.Save(settings);
         Equal(settings, store.Load());
     }
@@ -1127,6 +1232,207 @@ static void WritesTransformedOpsProps()
         var metadataReload = new OpsReader().Read(outputPath).Props[0];
         Equal("changed", metadataReload.SourceAttributes["custom"]);
         Equal("new value", metadataReload.SourceAttributes["newAttribute"]);
+    }
+    finally
+    {
+        File.Delete(sourcePath);
+        if (File.Exists(outputPath)) File.Delete(outputPath);
+    }
+}
+
+static void WritesStructuralOpsEdits()
+{
+    const string xml = """
+        <Ops>
+          <MapObjects />
+          <Entrys><EntryBox name="entry" next="a0001" entry="start" flag="0x1" pos="1,2,3, 0,0,0, 4,5,6" /></Entrys>
+          <GroupBoxes><GroupBox name="group" flag="0x2" pos="2,3,4, 0,0,0, 5,6,7" /></GroupBoxes>
+          <LookPoints><LookPoint name="look" flag="0x3" pos="3,4,5" radius="2" /></LookPoints>
+          <MapCameras><MapCamera no="7" flag="0x4" fov="35" eye="4,5,6" lookat="7,8,9" /></MapCameras>
+          <MapSounds><SoundObject seName="bell" seType="POINT" sePosition="5,6,7" seRange="8" seRotation="0" seScale="1,1,1" seVolume="0.5" /></MapSounds>
+          <Lights><Light group="0" type="POINT" flag="0x5" pos="6,7,8" color="1,0.5,0.25,1" colorPower="2" innerRange="3" outerRange="9" /></Lights>
+        </Ops>
+        """;
+    var sourcePath = WriteTemporaryOps(xml);
+    var outputPath = Path.Combine(Path.GetTempPath(), $"ed8-structural-{Guid.NewGuid():N}.ops");
+    try
+    {
+        var source = new OpsReader().Read(sourcePath);
+        var header = new ScriptHeader("test.dat", "test", ScriptKind.Scenario, ScriptTargetKind.Map, 0, 0, Array.Empty<byte>());
+        var session = new EditorSession(
+            new ScriptOpenResult(header, null, sourcePath),
+            source,
+            new Dictionary<string, AssetResolution>(),
+            new Dictionary<string, AssetManifestLoad>(),
+            new Dictionary<string, AssetModelLoad>());
+        var document = new EditorSceneDocument(session);
+        Equal(true, new OpsWriter().Serialize(source, document.CreateMapSnapshot()!).SequenceEqual(source.OriginalBytes));
+        var originals = document.Elements.Select(value => value.Selection).ToArray();
+        var cameraSelection = originals.Single(value => value.Kind == SceneElementKind.Camera);
+        var originalLookAt = document.FindCamera(cameraSelection)!.LookAt;
+        var editedLookAt = new Vector3(20, 21, 22);
+        Equal(true, document.PreviewCameraLookAt(cameraSelection, editedLookAt));
+        Equal(false, document.IsDirty);
+        Equal(true, document.CommitCameraLookAtPreview(cameraSelection, originalLookAt));
+        Equal(true, document.IsDirty);
+        Equal(editedLookAt, document.FindCamera(cameraSelection)!.LookAt);
+        Equal(true, document.Undo());
+        Equal(originalLookAt, document.FindCamera(cameraSelection)!.LookAt);
+        Equal(true, document.Redo());
+        Equal(editedLookAt, document.FindCamera(cameraSelection)!.LookAt);
+        void Apply(SceneElementKind kind, Action<Dictionary<string, string>> edit)
+        {
+            var selected = originals.Single(value => value.Kind == kind);
+            var values = new Dictionary<string, string>(document.FindElementAttributes(selected)!.Values);
+            edit(values);
+            Equal(true, document.ApplyElementAttributes(selected, values));
+        }
+        Apply(SceneElementKind.EntryVolume, values => values["next"] = "a9999");
+        Apply(SceneElementKind.GroupVolume, values => values["flag"] = "0x7");
+        Apply(SceneElementKind.LookPoint, values => values["radius"] = "4.5");
+        Apply(SceneElementKind.Camera, values => values["fov"] = "45");
+        Apply(SceneElementKind.Sound, values =>
+        {
+            values["seRange"] = "12.5";
+            values["seVolume"] = "0.75";
+        });
+        Apply(SceneElementKind.Light, values =>
+        {
+            values["colorPower"] = "4";
+            values["outerRange"] = "11";
+        });
+        Near(4.5f, document.CreateMapSnapshot()!.Points[0].Radius!.Value);
+        Near(12.5f, document.CreateMapSnapshot()!.Sounds[0].Range);
+        Near(11f, document.CreateMapSnapshot()!.Lights[0].OuterRange);
+        Equal(true, document.Undo());
+        Near(9f, document.CreateMapSnapshot()!.Lights[0].OuterRange);
+        Equal(true, document.Redo());
+        Near(11f, document.CreateMapSnapshot()!.Lights[0].OuterRange);
+
+        new OpsWriter().Write(outputPath, source, document.CreateMapSnapshot()!);
+        var attributesReloaded = new OpsReader().Read(outputPath);
+        Equal("a9999", attributesReloaded.Volumes.Single(value => value.Kind == MapVolumeKind.Entry).DestinationMap!);
+        Equal("0x7", attributesReloaded.Volumes.Single(value => value.Kind == MapVolumeKind.Group).SourceAttributes["flag"]);
+        Equal("45", attributesReloaded.Cameras[0].SourceAttributes["fov"]);
+        Near(12.5f, attributesReloaded.Sounds[0].Range);
+        Near(4f, attributesReloaded.Lights[0].ColorPower);
+
+        var invalidSound = new Dictionary<string, string>(
+            document.FindElementAttributes(originals.Single(value => value.Kind == SceneElementKind.Sound))!.Values);
+        invalidSound.Remove("seRange");
+        Throws<ArgumentException>(() => document.ApplyElementAttributes(
+            originals.Single(value => value.Kind == SceneElementKind.Sound), invalidSound));
+        var invalidCamera = new Dictionary<string, string>(
+            document.FindElementAttributes(originals.Single(value => value.Kind == SceneElementKind.Camera))!.Values)
+        {
+            ["fov"] = "not-a-number",
+        };
+        Throws<ArgumentException>(() => document.ApplyElementAttributes(
+            originals.Single(value => value.Kind == SceneElementKind.Camera), invalidCamera));
+        var protectedEntry = new Dictionary<string, string>(
+            document.FindElementAttributes(originals.Single(value => value.Kind == SceneElementKind.EntryVolume))!.Values)
+        {
+            ["pos"] = "invalid",
+        };
+        Equal(true, document.ApplyElementAttributes(
+            originals.Single(value => value.Kind == SceneElementKind.EntryVolume), protectedEntry));
+        Equal("1,2,3, 0,0,0, 4,5,6", document.FindElementAttributes(
+            originals.Single(value => value.Kind == SceneElementKind.EntryVolume))!.Values["pos"]);
+        foreach (var original in originals)
+        {
+            var duplicate = document.DuplicateElement(original);
+            Equal(1, duplicate.SourceIndex);
+            Equal(true, document.DeleteElement(original));
+        }
+        var edited = document.CreateMapSnapshot()!;
+        Equal(1, edited.Volumes.Count(value => value.Kind == MapVolumeKind.Entry));
+        Equal(1, edited.Volumes.Count(value => value.Kind == MapVolumeKind.Group));
+        Equal(1, edited.Points.Count);
+        Equal(1, edited.Cameras.Count);
+        Equal(1, edited.Sounds.Count);
+        Equal(1, edited.Lights.Count);
+
+        new OpsWriter().Write(outputPath, source, edited);
+        var reloaded = new OpsReader().Read(outputPath);
+        Equal("entry_001", reloaded.Volumes.Single(value => value.Kind == MapVolumeKind.Entry).Name);
+        Equal("group_001", reloaded.Volumes.Single(value => value.Kind == MapVolumeKind.Group).Name);
+        Equal("look_001", reloaded.Points[0].Name);
+        Equal("7", reloaded.Cameras[0].Name);
+        Equal("bell", reloaded.Sounds[0].SoundName);
+        Equal("0.75", reloaded.Sounds[0].SourceAttributes["seVolume"]);
+        Near(12.5f, reloaded.Sounds[0].Range);
+        Equal("0x5", reloaded.Lights[0].SourceAttributes["flag"]);
+        Near(11f, reloaded.Lights[0].OuterRange);
+        Equal(true, document.Undo());
+        Equal(2, document.CreateMapSnapshot()!.Lights.Count);
+    }
+    finally
+    {
+        File.Delete(sourcePath);
+        if (File.Exists(outputPath)) File.Delete(outputPath);
+    }
+
+}
+
+static void CreatesObservedOpsProfiles()
+{
+    const string xml = "<Ops><MapObjects/><Entrys/></Ops>";
+    var sourcePath = WriteTemporaryOps(xml);
+    var outputPath = Path.Combine(Path.GetTempPath(), $"ed8-profiles-{Guid.NewGuid():N}.ops");
+    try
+    {
+        var source = new OpsReader().Read(sourcePath);
+        var header = new ScriptHeader("test.dat", "test", ScriptKind.Scenario, ScriptTargetKind.Map, 0, 0, Array.Empty<byte>());
+        var document = new EditorSceneDocument(new EditorSession(
+            new ScriptOpenResult(header, null, sourcePath),
+            source,
+            new Dictionary<string, AssetResolution>(),
+            new Dictionary<string, AssetManifestLoad>(),
+            new Dictionary<string, AssetModelLoad>()));
+        OpsSpatialCreationProfile Profile(string id)
+            => OpsSpatialCreationCatalog.Profiles.Single(value => value.Id == id);
+
+        Throws<ArgumentException>(() => document.AddSpatialElement(
+            Profile("observed.m0010.entry_type_2"), Vector3.Zero, new Dictionary<string, string>()));
+        var entry = document.AddSpatialElement(
+            Profile("observed.m0010.entry_type_2"),
+            new Vector3(1, 2, 3),
+            new Dictionary<string, string> { ["next"] = "a1000", ["entry"] = "from_test" });
+        document.AddSpatialElement(
+            Profile("observed.c0010.group_box"), new Vector3(4, 5, 6), new Dictionary<string, string>());
+        document.AddSpatialElement(
+            Profile("observed.a0006.look_point_type_0"), new Vector3(7, 8, 9), new Dictionary<string, string>());
+        document.AddSpatialElement(
+            Profile("observed.a1700.map_camera_type_3"), new Vector3(8, 9, 10), new Dictionary<string, string>());
+        document.AddSpatialElement(
+            Profile("observed.a0007.point_sound"),
+            new Vector3(10, 11, 12),
+            new Dictionary<string, string> { ["seName"] = "se_test" });
+        document.AddSpatialElement(
+            Profile("observed.a0004.point_light_0x103"), new Vector3(13, 14, 15), new Dictionary<string, string>());
+        Equal(true, document.IsDirty);
+        Equal(true, document.Undo());
+        Equal(0, document.CreateMapSnapshot()!.Lights.Count);
+        Equal(true, document.Redo());
+        Equal(1, document.CreateMapSnapshot()!.Lights.Count);
+        Equal("go_a1000", entry.Name);
+
+        new OpsWriter().Write(outputPath, source, document.CreateMapSnapshot()!);
+        var reloaded = new OpsReader().Read(outputPath);
+        var transition = reloaded.Volumes.Single(value => value.Kind == MapVolumeKind.Entry);
+        Equal("a1000", transition.DestinationMap!);
+        Equal("from_test", transition.DestinationEntry!);
+        Equal("2", transition.SourceAttributes["entryType"]);
+        Near(10f, transition.Transform.Scale.X);
+        Equal("0x3", reloaded.Volumes.Single(value => value.Kind == MapVolumeKind.Group).SourceAttributes["flag"]);
+        Equal("0", reloaded.Points[0].SourceAttributes["type"]);
+        Equal("3", reloaded.Cameras[0].SourceAttributes["type"]);
+        Near(-0.86f, reloaded.Cameras[0].LookAt.X - reloaded.Cameras[0].Eye.X);
+        Near(-1f, reloaded.Cameras[0].LookAt.Y - reloaded.Cameras[0].Eye.Y);
+        Near(-1.5f, reloaded.Cameras[0].LookAt.Z - reloaded.Cameras[0].Eye.Z);
+        Equal("se_test", reloaded.Sounds[0].SoundName);
+        Equal(MapSoundKind.Point, reloaded.Sounds[0].Kind);
+        Equal("0x103", reloaded.Lights[0].SourceAttributes["flag"]);
     }
     finally
     {
@@ -1254,6 +1560,7 @@ static void Near(float expected, float actual, float tolerance = 0.00001f)
 static int ScanOpsCorpus(string opsDirectory)
 {
     var reader = new OpsReader();
+    var attributeCodec = new OpsSpatialAttributeCodec();
     var files = Directory.GetFiles(opsDirectory, "*.ops", SearchOption.TopDirectoryOnly);
     var props = 0;
     var failures = new List<string>();
@@ -1262,7 +1569,13 @@ static int ScanOpsCorpus(string opsDirectory)
     {
         try
         {
-            props += reader.Read(file).Props.Count;
+            var scene = reader.Read(file);
+            props += scene.Props.Count;
+            foreach (var volume in scene.Volumes) attributeCodec.Apply(volume, volume.SourceAttributes);
+            foreach (var point in scene.Points) attributeCodec.Apply(point, point.SourceAttributes);
+            foreach (var camera in scene.Cameras) attributeCodec.Apply(camera, camera.SourceAttributes);
+            foreach (var sound in scene.Sounds) attributeCodec.Apply(sound, sound.SourceAttributes);
+            foreach (var light in scene.Lights) attributeCodec.Apply(light, light.SourceAttributes);
         }
         catch (Exception exception)
         {
