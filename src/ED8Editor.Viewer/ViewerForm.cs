@@ -610,9 +610,7 @@ public sealed class ViewerForm : Form
         if (placement is { Position: { } position, Model: not null, AssetId: not null } preview
             && resourcesByAsset.TryGetValue(preview.AssetId, out var previewResources))
         {
-            var transform = Matrix4x4.CreateFromQuaternion(
-                    Quaternion.CreateFromAxisAngle(Vector3.UnitX, -MathF.PI / 2f))
-                * Matrix4x4.CreateTranslation(position);
+            var transform = Matrix4x4.CreateTranslation(position);
             rendered.Add(new D3D11SceneInstance(-1, previewResources, transform, false, true));
         }
         instances = rendered;

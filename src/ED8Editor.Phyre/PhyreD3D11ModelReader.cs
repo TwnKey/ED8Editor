@@ -21,6 +21,7 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
         var materialGroup = FindRequiredGroup(cluster, "PMaterial");
         var materialGroupIndex = materialGroup.Index;
         var indexBufferSize = ReadUInt32(cluster.Data.Span, 0x48, cluster.Metadata.IsBigEndian);
+        var sceneGraph = new PhyreMeshSceneGraphReader().Read(cluster);
 
         var meshes = new List<CpuMesh>(checked((int)meshGroup.Group.Count));
         for (uint meshIndex = 0; meshIndex < meshGroup.Group.Count; meshIndex++)
@@ -58,7 +59,12 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
                 }
             }
 
-            meshes.Add(new CpuMesh($"{assetId}:mesh:{meshIndex}", Matrix4x4.Identity, primitives));
+            var sceneEntry = sceneGraph.GetValueOrDefault(meshIndex);
+            meshes.Add(new CpuMesh(
+                sceneEntry?.Name ?? $"{assetId}:mesh:{meshIndex}",
+                Matrix4x4.Identity,
+                primitives,
+                sceneEntry?.Purpose ?? CpuMeshPurpose.Render));
         }
 
         var materials = ReadMaterials(cluster, materialGroupIndex);

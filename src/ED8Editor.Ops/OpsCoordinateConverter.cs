@@ -15,7 +15,7 @@ internal static class OpsCoordinateConverter
     {
         var editorPosition = ToEditorPosition(sourcePosition);
         var editorEuler = new Vector3(
-            sourceEulerRadians.X - (MathF.PI / 2f),
+            sourceEulerRadians.X,
             -sourceEulerRadians.Y,
             sourceEulerRadians.Z);
 
@@ -45,13 +45,12 @@ internal static class OpsCoordinateConverter
     }
 
     public static (Vector3 Position, Vector3 EulerRadians, Vector3 Scale) ToSourceTransform(
-        MapTransform editorTransform,
-        bool assetObject)
+        MapTransform editorTransform)
     {
         ArgumentNullException.ThrowIfNull(editorTransform);
         var editorEuler = ToEditorEuler(Quaternion.Normalize(editorTransform.Rotation));
         var sourceEuler = new Vector3(
-            editorEuler.X + (assetObject ? MathF.PI / 2f : 0f),
+            editorEuler.X,
             -editorEuler.Y,
             editorEuler.Z);
         return (

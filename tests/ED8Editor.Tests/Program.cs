@@ -277,6 +277,7 @@ var tests = new (string Name, Action Run)[]
     ("rejects an invalid marker", RejectsInvalidMarker),
     ("rejects an unterminated identifier", RejectsUnterminatedIdentifier),
     ("reads OPS props and preserves source data", ReadsOpsProps),
+    ("keeps the OPS vertical axis upright", KeepsOpsVerticalAxisUpright),
     ("creates scene instances at OPS prop transforms", CreatesSceneInstancesAtOpsTransforms),
     ("rejects malformed OPS vectors", RejectsMalformedOpsVector),
     ("resolves the requested localized asset variant", ResolvesLocalizedAsset),
@@ -296,6 +297,8 @@ var tests = new (string Name, Action Run)[]
     ("reports truncated picking index data", ReportsTruncatedPickingIndexData),
     ("calculates transformed scene bounds", CalculatesTransformedSceneBounds),
     ("creates a center viewport ray", CreatesCenterViewportRay),
+    ("validates explicit viewport lighting", ValidatesViewportLighting),
+    ("derives viewport alpha testing from Phyre materials", DerivesViewportMaterialSettings),
     ("supports editor camera orbit and free flight", KeepsEditorCameraOrbitCentered),
     ("builds typed OPS overlay geometry", BuildsTypedOpsOverlayGeometry),
     ("picks exact OPS volume geometry", PicksExactOpsVolumeGeometry),
@@ -416,8 +419,7 @@ static void ReadsOpsProps()
         Equal(0x283u, prop.Flags!.Value);
         Equal("kept", prop.SourceAttributes["custom"]);
         Near(-2.5f, prop.Transform.Position.X);
-        Near(-MathF.Sqrt(0.5f), prop.Transform.Rotation.X);
-        Near(MathF.Sqrt(0.5f), prop.Transform.Rotation.W);
+        Near(1f, MathF.Abs(Quaternion.Dot(Quaternion.Identity, prop.Transform.Rotation)));
         Equal(2, scene.Volumes.Count);
         var entry = scene.Volumes.Single(value => value.Kind == MapVolumeKind.Entry);
         Equal("event_box", entry.Name);
@@ -491,6 +493,24 @@ static void CreatesSceneInstancesAtOpsTransforms()
     Near(5f, origin.Z);
     var scaledX = Vector3.TransformNormal(Vector3.UnitX, instance.Transform);
     Near(2f, scaledX.Length());
+}
+
+static void KeepsOpsVerticalAxisUpright()
+{
+    const string xml = "<Ops><MapObjects><AssetObject asset=\"O_LAMP\" name=\"lamp\" pos=\"0,0,0\" rot=\"0,1.570796,0\" scl=\"1,1,1\" /></MapObjects></Ops>";
+    var path = WriteTemporaryOps(xml);
+    try
+    {
+        var prop = new OpsReader().Read(path).Props.Single();
+        var transformedUp = Vector3.Transform(Vector3.UnitY, prop.Transform.Rotation);
+        Near(0f, transformedUp.X);
+        Near(1f, transformedUp.Y);
+        Near(0f, transformedUp.Z);
+    }
+    finally
+    {
+        File.Delete(path);
+    }
 }
 
 static void RejectsMalformedOpsVector()
@@ -871,6 +891,29 @@ static void CreatesCenterViewportRay()
     Near(1f, ray.Direction.Z);
 }
 
+static void ValidatesViewportLighting()
+{
+    var lighting = ViewportLighting.Neutral;
+    Near(1f, lighting.DirectionToLight.Length());
+    Throws<ArgumentOutOfRangeException>(() => new ViewportLighting(Vector3.Zero, Vector3.One, Vector3.One));
+    Throws<ArgumentOutOfRangeException>(() => new ViewportLighting(Vector3.UnitY, -Vector3.One, Vector3.One));
+}
+
+static void DerivesViewportMaterialSettings()
+{
+    var material = new CpuMaterial(
+        "leaves",
+        new Vector4(0.8f, 0.9f, 1f, 1f),
+        0,
+        new Dictionary<string, float[]> { ["AlphaThreshold"] = new[] { 0.5f } },
+        new Dictionary<string, string>(),
+        new Dictionary<string, int>());
+    var settings = ViewportMaterialSettings.FromMaterial(material);
+    Near(0.8f, settings.BaseColor.X);
+    Near(0.5f, settings.AlphaThreshold!.Value);
+    Equal(ViewportMaterialSettings.Fallback, ViewportMaterialSettings.FromMaterial(null));
+}
+
 static void KeepsEditorCameraOrbitCentered()
 {
     var camera = new EditorOrbitCamera();
@@ -1037,6 +1080,7 @@ static void UndoesAndRedoesSceneDocumentTransforms()
     var independentProp = document.CreateMapSnapshot()!.Props.Single(value => value.SourceIndex == independent.SourceIndex);
     Equal(OpsNewPropProfile.UndocumentedNeutralFlags, independentProp.Flags!.Value);
     Near(20f, independentProp.Transform.Position.X);
+    Near(1f, MathF.Abs(Quaternion.Dot(Quaternion.Identity, independentProp.Transform.Rotation)));
     var changedAttributes = new Dictionary<string, string>(document.FindProp(selection)!.SourceAttributes)
     {
         ["flag"] = "0x283",

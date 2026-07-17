@@ -124,7 +124,10 @@ pass used to validate every primitive and topology independently of a window.
 
 `ED8Editor.Viewer` provides that interactive viewport: a flip-model swap chain,
 depth buffer, OPS model instances, perspective camera, and textured/solid shader
-paths. Drag with the left mouse button to look freely in the direction of the
+paths. Model normals feed an explicit neutral viewport light, while Phyre
+`AlphaThreshold` parameters drive per-material alpha testing for foliage and
+other cutout geometry. This editor light is intentionally independent from the
+game's OPS environment lights. Drag with the left mouse button to look freely in the direction of the
 mouse; releasing it without crossing the normal drag threshold performs a
 selection click instead. Right-drag is retained as an alternate look binding,
 middle-drag pans, and the wheel moves forward/backward along the exact view
@@ -206,6 +209,11 @@ mode as props. Each profile records the shipped OPS element from which its
 attribute set was derived; the generic attribute panel remains available after
 placement. Missing XML sections are inserted in the canonical OPS section order
 when the edited map did not originally contain that element family.
+
+OPS asset transforms and raw Phyre vertex data share the same Y-up world basis.
+The editor reflects the source X coordinate and corresponding Y Euler rotation
+for handedness, but does not add an export-oriented 90-degree rotation;
+zero-rotation trees, maps, and lamp posts therefore remain upright.
 
 For a selected map camera, the cyan eye handle controls the complete camera
 translation and keeps its sight vector intact. Clicking the magenta look-at

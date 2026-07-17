@@ -17,17 +17,33 @@ public sealed class D3D11Viewport : IDisposable
         cbuffer PerDraw : register(b0)
         {
             row_major float4x4 WorldViewProjection;
+            row_major float4x4 WorldInverseTranspose;
             float4 SelectionColor;
+            float4 MaterialColor;
+            float4 LightDirectionAndAlphaThreshold;
+            float4 AmbientColorAndAlphaTest;
+            float4 DirectColorAndHasNormal;
         };
         struct VSPosition { float3 Position : POSITION; };
+        struct VSPositionNormal { float3 Position : POSITION; float4 Normal : NORMAL; };
         struct VSTextured { float3 Position : POSITION; float2 TexCoord : TEXCOORD0; };
+        struct VSTexturedNormal { float3 Position : POSITION; float4 Normal : NORMAL; float2 TexCoord : TEXCOORD0; };
         struct VSColored { float3 Position : POSITION; float4 Color : COLOR0; };
-        struct PSInput { float4 Position : SV_Position; float2 TexCoord : TEXCOORD0; };
+        struct PSInput { float4 Position : SV_Position; float3 Normal : NORMAL; float2 TexCoord : TEXCOORD0; };
         struct PSColoredInput { float4 Position : SV_Position; float4 Color : COLOR0; };
         PSInput VSPositionMain(VSPosition input)
         {
             PSInput output;
             output.Position = mul(float4(input.Position, 1.0f), WorldViewProjection);
+            output.Normal = float3(0.0f, 1.0f, 0.0f);
+            output.TexCoord = float2(0.0f, 0.0f);
+            return output;
+        }
+        PSInput VSPositionNormalMain(VSPositionNormal input)
+        {
+            PSInput output;
+            output.Position = mul(float4(input.Position, 1.0f), WorldViewProjection);
+            output.Normal = normalize(mul(float4(input.Normal.xyz, 0.0f), WorldInverseTranspose).xyz);
             output.TexCoord = float2(0.0f, 0.0f);
             return output;
         }
@@ -35,6 +51,15 @@ public sealed class D3D11Viewport : IDisposable
         {
             PSInput output;
             output.Position = mul(float4(input.Position, 1.0f), WorldViewProjection);
+            output.Normal = float3(0.0f, 1.0f, 0.0f);
+            output.TexCoord = input.TexCoord;
+            return output;
+        }
+        PSInput VSTexturedNormalMain(VSTexturedNormal input)
+        {
+            PSInput output;
+            output.Position = mul(float4(input.Position, 1.0f), WorldViewProjection);
+            output.Normal = normalize(mul(float4(input.Normal.xyz, 0.0f), WorldInverseTranspose).xyz);
             output.TexCoord = input.TexCoord;
             return output;
         }
@@ -51,13 +76,27 @@ public sealed class D3D11Viewport : IDisposable
         {
             return lerp(color, float4(SelectionColor.rgb, color.a), SelectionColor.a);
         }
+        float4 ApplyMaterial(PSInput input, float4 color)
+        {
+            color *= MaterialColor;
+            if (AmbientColorAndAlphaTest.w > 0.5f)
+            {
+                clip(color.a - LightDirectionAndAlphaThreshold.w);
+            }
+            if (DirectColorAndHasNormal.w > 0.5f)
+            {
+                float diffuse = saturate(dot(normalize(input.Normal), LightDirectionAndAlphaThreshold.xyz));
+                color.rgb *= AmbientColorAndAlphaTest.rgb + DirectColorAndHasNormal.rgb * diffuse;
+            }
+            return ApplySelection(color);
+        }
         float4 PSSolidMain(PSInput input) : SV_Target
         {
-            return ApplySelection(float4(0.72f, 0.78f, 0.86f, 1.0f));
+            return ApplyMaterial(input, float4(1.0f, 1.0f, 1.0f, 1.0f));
         }
         float4 PSTexturedMain(PSInput input) : SV_Target
         {
-            return ApplySelection(DiffuseTexture.Sample(DiffuseSampler, input.TexCoord));
+            return ApplyMaterial(input, DiffuseTexture.Sample(DiffuseSampler, input.TexCoord));
         }
         float4 PSColoredMain(PSColoredInput input) : SV_Target { return input.Color; }
         """;
@@ -65,13 +104,17 @@ public sealed class D3D11Viewport : IDisposable
     private readonly D3D11GraphicsDevice graphics;
     private readonly IDXGISwapChain1 swapChain;
     private readonly ID3D11VertexShader positionVertexShader;
+    private readonly ID3D11VertexShader positionNormalVertexShader;
     private readonly ID3D11VertexShader texturedVertexShader;
+    private readonly ID3D11VertexShader texturedNormalVertexShader;
     private readonly ID3D11VertexShader coloredVertexShader;
     private readonly ID3D11PixelShader solidPixelShader;
     private readonly ID3D11PixelShader texturedPixelShader;
     private readonly ID3D11PixelShader coloredPixelShader;
     private readonly byte[] positionVertexBytecode;
+    private readonly byte[] positionNormalVertexBytecode;
     private readonly byte[] texturedVertexBytecode;
+    private readonly byte[] texturedNormalVertexBytecode;
     private readonly ID3D11InputLayout coloredInputLayout;
     private readonly ID3D11Buffer perDrawBuffer;
     private readonly ID3D11SamplerState sampler;
@@ -85,6 +128,7 @@ public sealed class D3D11Viewport : IDisposable
     private int width;
     private int height;
     private Vector4 clearColor = new(0.035f, 0.045f, 0.065f, 1f);
+    private ViewportLighting lighting = ViewportLighting.Neutral;
 
     public D3D11Viewport(D3D11GraphicsDevice graphics, IntPtr windowHandle, int width, int height)
     {
@@ -111,10 +155,14 @@ public sealed class D3D11Viewport : IDisposable
         factory.MakeWindowAssociation(windowHandle, WindowAssociationFlags.IgnoreAltEnter);
 
         positionVertexBytecode = Compile("VSPositionMain", "vs_5_0");
+        positionNormalVertexBytecode = Compile("VSPositionNormalMain", "vs_5_0");
         texturedVertexBytecode = Compile("VSTexturedMain", "vs_5_0");
+        texturedNormalVertexBytecode = Compile("VSTexturedNormalMain", "vs_5_0");
         var coloredVertexBytecode = Compile("VSColoredMain", "vs_5_0");
         positionVertexShader = graphics.Device.CreateVertexShader(positionVertexBytecode);
+        positionNormalVertexShader = graphics.Device.CreateVertexShader(positionNormalVertexBytecode);
         texturedVertexShader = graphics.Device.CreateVertexShader(texturedVertexBytecode);
+        texturedNormalVertexShader = graphics.Device.CreateVertexShader(texturedNormalVertexBytecode);
         coloredVertexShader = graphics.Device.CreateVertexShader(coloredVertexBytecode);
         solidPixelShader = graphics.Device.CreatePixelShader(Compile("PSSolidMain", "ps_5_0"));
         texturedPixelShader = graphics.Device.CreatePixelShader(Compile("PSTexturedMain", "ps_5_0"));
@@ -203,6 +251,9 @@ public sealed class D3D11Viewport : IDisposable
         clearColor = Vector4.Clamp(color, Vector4.Zero, Vector4.One);
     }
 
+    public void SetLighting(ViewportLighting value)
+        => lighting = value ?? throw new ArgumentNullException(nameof(value));
+
     public void Render(IReadOnlyList<D3D11SceneInstance> instances, ViewportCamera camera, bool verticalSync = true)
     {
         ArgumentNullException.ThrowIfNull(instances);
@@ -215,6 +266,7 @@ public sealed class D3D11Viewport : IDisposable
         context.ClearRenderTargetView(renderTarget, new Color4(clearColor.X, clearColor.Y, clearColor.Z, clearColor.W));
         context.ClearDepthStencilView(depthView, DepthStencilClearFlags.Depth | DepthStencilClearFlags.Stencil, 1.0f, 0);
         context.VSSetConstantBuffer(0, perDrawBuffer);
+        context.PSSetConstantBuffer(0, perDrawBuffer);
         context.PSSetSampler(0, sampler);
 
         foreach (var instance in instances)
@@ -223,10 +275,9 @@ public sealed class D3D11Viewport : IDisposable
             {
                 var world = mesh.LocalTransform * instance.Transform;
                 var matrix = world * camera.View * camera.Projection;
-                UpdateConstants(matrix, instance.IsSelected, instance.IsPreview);
                 foreach (var primitive in mesh.Primitives)
                 {
-                    DrawPrimitive(instance.Model, primitive);
+                    DrawPrimitive(instance.Model, primitive, world, matrix, instance.IsSelected, instance.IsPreview);
                 }
             }
         }
@@ -249,7 +300,9 @@ public sealed class D3D11Viewport : IDisposable
         texturedPixelShader.Dispose();
         coloredPixelShader.Dispose();
         solidPixelShader.Dispose();
+        texturedNormalVertexShader.Dispose();
         texturedVertexShader.Dispose();
+        positionNormalVertexShader.Dispose();
         coloredVertexShader.Dispose();
         positionVertexShader.Dispose();
         swapChain.Dispose();
@@ -258,7 +311,13 @@ public sealed class D3D11Viewport : IDisposable
     private void DrawDebugLines(ViewportCamera camera)
     {
         if (debugLineBuffer is null || debugLineVertexCount == 0) return;
-        UpdateConstants(camera.View * camera.Projection, false, false);
+        UpdateConstants(
+            camera.View * camera.Projection,
+            Matrix4x4.Identity,
+            null,
+            hasNormal: false,
+            selected: false,
+            preview: false);
         var context = graphics.Context;
         context.IASetInputLayout(coloredInputLayout);
         context.IASetVertexBuffer(0, debugLineBuffer, Marshal.SizeOf<DebugLineVertex>(), 0);
@@ -269,7 +328,13 @@ public sealed class D3D11Viewport : IDisposable
         context.Draw(debugLineVertexCount, 0);
     }
 
-    private void DrawPrimitive(D3D11ModelResources model, D3D11PrimitiveResources primitive)
+    private void DrawPrimitive(
+        D3D11ModelResources model,
+        D3D11PrimitiveResources primitive,
+        Matrix4x4 world,
+        Matrix4x4 worldViewProjection,
+        bool selected,
+        bool preview)
     {
         var positionBuffer = FindBuffer(primitive, VertexSemantic.Position);
         if (positionBuffer is null || !TryMapTopology(primitive.Topology, out var topology)) return;
@@ -286,9 +351,37 @@ public sealed class D3D11Viewport : IDisposable
         var textureFormat = Format.Unknown;
         var textured = textureView is not null && textureBuffer is not null && textureAttribute is not null
             && TryMapFormat(textureAttribute.SourceFormat, out textureFormat);
+        var normalBuffer = FindBuffer(primitive, VertexSemantic.Normal);
+        var normalAttribute = normalBuffer?.Attributes.First(value => value.Semantic == VertexSemantic.Normal);
+        var normalFormat = Format.Unknown;
+        var hasNormal = normalBuffer is not null && normalAttribute is not null
+            && TryMapFormat(normalAttribute.SourceFormat, out normalFormat);
+        var material = primitive.MaterialIndex >= 0 && primitive.MaterialIndex < model.Materials.Count
+            ? model.Materials[primitive.MaterialIndex]
+            : null;
+        var normalMatrix = Matrix4x4.Identity;
+        if (hasNormal && Matrix4x4.Invert(world, out var inverseWorld))
+        {
+            normalMatrix = Matrix4x4.Transpose(inverseWorld);
+        }
+        UpdateConstants(worldViewProjection, normalMatrix, material, hasNormal, selected, preview);
 
         var context = graphics.Context;
-        if (textured)
+        if (textured && hasNormal)
+        {
+            context.IASetInputLayout(GetTexturedNormalLayout(
+                positionFormat, positionAttribute.Offset,
+                normalFormat, normalAttribute!.Offset,
+                textureFormat, textureAttribute!.Offset));
+            context.IASetVertexBuffers(0,
+                new[] { positionBuffer.Buffer, normalBuffer!.Buffer, textureBuffer!.Buffer },
+                new[] { positionBuffer.Stride, normalBuffer.Stride, textureBuffer.Stride },
+                new[] { 0, 0, 0 });
+            context.VSSetShader(texturedNormalVertexShader);
+            context.PSSetShader(texturedPixelShader);
+            context.PSSetShaderResource(0, textureView!);
+        }
+        else if (textured)
         {
             context.IASetInputLayout(GetTexturedLayout(positionFormat, positionAttribute.Offset, textureFormat, textureAttribute!.Offset));
             context.IASetVertexBuffers(0,
@@ -298,6 +391,18 @@ public sealed class D3D11Viewport : IDisposable
             context.VSSetShader(texturedVertexShader);
             context.PSSetShader(texturedPixelShader);
             context.PSSetShaderResource(0, textureView!);
+        }
+        else if (hasNormal)
+        {
+            context.IASetInputLayout(GetPositionNormalLayout(
+                positionFormat, positionAttribute.Offset, normalFormat, normalAttribute!.Offset));
+            context.IASetVertexBuffers(0,
+                new[] { positionBuffer.Buffer, normalBuffer!.Buffer },
+                new[] { positionBuffer.Stride, normalBuffer.Stride },
+                new[] { 0, 0 });
+            context.VSSetShader(positionNormalVertexShader);
+            context.PSSetShader(solidPixelShader);
+            context.PSSetShaderResource(0, null!);
         }
         else
         {
@@ -313,15 +418,31 @@ public sealed class D3D11Viewport : IDisposable
         context.DrawIndexed(primitive.IndexCount, 0, 0);
     }
 
-    private unsafe void UpdateConstants(Matrix4x4 matrix, bool selected, bool preview)
+    private unsafe void UpdateConstants(
+        Matrix4x4 matrix,
+        Matrix4x4 normalMatrix,
+        D3D11MaterialResources? material,
+        bool hasNormal,
+        bool selected,
+        bool preview)
     {
+        var materialSettings = ViewportMaterialSettings.FromMaterial(material?.Source);
         var mapped = graphics.Context.Map(perDrawBuffer, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
         *(PerDrawConstants*)mapped.DataPointer = new PerDrawConstants
         {
             WorldViewProjection = matrix,
+            WorldInverseTranspose = normalMatrix,
             SelectionColor = preview
                 ? new Vector4(0.1f, 1f, 0.35f, 0.62f)
                 : selected ? new Vector4(1f, 0.32f, 0.04f, 0.68f) : Vector4.Zero,
+            MaterialColor = materialSettings.BaseColor,
+            LightDirectionAndAlphaThreshold = new Vector4(
+                lighting.DirectionToLight,
+                materialSettings.AlphaThreshold ?? 0f),
+            AmbientColorAndAlphaTest = new Vector4(
+                lighting.AmbientColor,
+                materialSettings.AlphaThreshold.HasValue ? 1f : 0f),
+            DirectColorAndHasNormal = new Vector4(lighting.DirectColor, hasNormal ? 1f : 0f),
         };
         graphics.Context.Unmap(perDrawBuffer, 0);
     }
@@ -330,7 +451,12 @@ public sealed class D3D11Viewport : IDisposable
     private struct PerDrawConstants
     {
         public Matrix4x4 WorldViewProjection;
+        public Matrix4x4 WorldInverseTranspose;
         public Vector4 SelectionColor;
+        public Vector4 MaterialColor;
+        public Vector4 LightDirectionAndAlphaThreshold;
+        public Vector4 AmbientColorAndAlphaTest;
+        public Vector4 DirectColorAndHasNormal;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -349,6 +475,22 @@ public sealed class D3D11Viewport : IDisposable
         return layout;
     }
 
+    private ID3D11InputLayout GetPositionNormalLayout(
+        Format positionFormat, int positionOffset, Format normalFormat, int normalOffset)
+    {
+        var key = $"PN:{positionFormat}:{positionOffset}:{normalFormat}:{normalOffset}";
+        if (!inputLayouts.TryGetValue(key, out var layout))
+        {
+            layout = graphics.Device.CreateInputLayout(new[]
+            {
+                new InputElementDescription("POSITION", 0, positionFormat, positionOffset, 0),
+                new InputElementDescription("NORMAL", 0, normalFormat, normalOffset, 1),
+            }, positionNormalVertexBytecode);
+            inputLayouts.Add(key, layout);
+        }
+        return layout;
+    }
+
     private ID3D11InputLayout GetTexturedLayout(Format positionFormat, int positionOffset, Format textureFormat, int textureOffset)
     {
         var key = $"T:{positionFormat}:{positionOffset}:{textureFormat}:{textureOffset}";
@@ -359,6 +501,25 @@ public sealed class D3D11Viewport : IDisposable
                 new InputElementDescription("POSITION", 0, positionFormat, positionOffset, 0),
                 new InputElementDescription("TEXCOORD", 0, textureFormat, textureOffset, 1),
             }, texturedVertexBytecode);
+            inputLayouts.Add(key, layout);
+        }
+        return layout;
+    }
+
+    private ID3D11InputLayout GetTexturedNormalLayout(
+        Format positionFormat, int positionOffset,
+        Format normalFormat, int normalOffset,
+        Format textureFormat, int textureOffset)
+    {
+        var key = $"TN:{positionFormat}:{positionOffset}:{normalFormat}:{normalOffset}:{textureFormat}:{textureOffset}";
+        if (!inputLayouts.TryGetValue(key, out var layout))
+        {
+            layout = graphics.Device.CreateInputLayout(new[]
+            {
+                new InputElementDescription("POSITION", 0, positionFormat, positionOffset, 0),
+                new InputElementDescription("NORMAL", 0, normalFormat, normalOffset, 1),
+                new InputElementDescription("TEXCOORD", 0, textureFormat, textureOffset, 2),
+            }, texturedNormalVertexBytecode);
             inputLayouts.Add(key, layout);
         }
         return layout;
@@ -388,7 +549,13 @@ public sealed class D3D11Viewport : IDisposable
             "Float16x2" => Format.R16G16_Float,
             "Float16x4" => Format.R16G16B16A16_Float,
             "UNorm16x2" => Format.R16G16_UNorm,
+            "UNorm16x4" => Format.R16G16B16A16_UNorm,
             "UNorm8x2" => Format.R8G8_UNorm,
+            "UNorm8x4" => Format.R8G8B8A8_UNorm,
+            "SNorm16x2" => Format.R16G16_SNorm,
+            "SNorm16x4" => Format.R16G16B16A16_SNorm,
+            "SNorm8x2" => Format.R8G8_SNorm,
+            "SNorm8x4" => Format.R8G8B8A8_SNorm,
             _ => Format.Unknown,
         };
         return format != Format.Unknown;

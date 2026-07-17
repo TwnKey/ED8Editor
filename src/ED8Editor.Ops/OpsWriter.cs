@@ -106,7 +106,7 @@ public sealed class OpsWriter
     {
         element.SetAttributeValue("asset", prop.AssetId);
         element.SetAttributeValue("name", prop.Name);
-        var converted = OpsCoordinateConverter.ToSourceTransform(prop.Transform, assetObject: true);
+        var converted = OpsCoordinateConverter.ToSourceTransform(prop.Transform);
         element.SetAttributeValue("pos", Vector(converted.Position));
         element.SetAttributeValue("rot", Vector(converted.EulerRadians));
         element.SetAttributeValue("scl", Vector(converted.Scale));
@@ -282,7 +282,7 @@ public sealed class OpsWriter
     private static void SetVolumeAttributes(XElement element, MapVolume volume)
     {
         element.SetAttributeValue("name", volume.Name);
-        var converted = OpsCoordinateConverter.ToSourceTransform(volume.Transform, assetObject: false);
+        var converted = OpsCoordinateConverter.ToSourceTransform(volume.Transform);
         element.SetAttributeValue("pos", $"{Vector(converted.Position)},  {Vector(converted.EulerRadians)},  {Vector(converted.Scale)}");
         element.SetAttributeValue("next", volume.DestinationMap);
         element.SetAttributeValue("entry", volume.DestinationEntry);

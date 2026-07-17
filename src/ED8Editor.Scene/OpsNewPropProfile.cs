@@ -28,7 +28,7 @@ public sealed record OpsNewPropProfile(
     {
         ArgumentNullException.ThrowIfNull(model);
         var sourceEuler = Vector3.Zero;
-        var rotation = Quaternion.CreateFromAxisAngle(Vector3.UnitX, -MathF.PI / 2f);
+        var rotation = Quaternion.Identity;
         var transform = new MapTransform(position, rotation, Vector3.One, new Vector3(-position.X, position.Y, position.Z), sourceEuler);
         var attributes = new Dictionary<string, string>(AdditionalAttributes, StringComparer.Ordinal)
         {

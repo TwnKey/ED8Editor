@@ -28,7 +28,7 @@ public sealed class D3D11ModelUploader : IModelGpuUploader<D3D11ModelResources>
                 allocatedBytes = checked(allocatedBytes + sourceTexture.Data.Length);
             }
 
-            foreach (var sourceMesh in model.Meshes)
+            foreach (var sourceMesh in model.Meshes.Where(value => value.Purpose == CpuMeshPurpose.Render))
             {
                 var primitives = new List<D3D11PrimitiveResources>(sourceMesh.Primitives.Count);
                 foreach (var sourcePrimitive in sourceMesh.Primitives)
