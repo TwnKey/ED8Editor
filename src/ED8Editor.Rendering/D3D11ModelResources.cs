@@ -23,7 +23,11 @@ public sealed record D3D11MeshResources(
     Matrix4x4 LocalTransform,
     IReadOnlyList<D3D11PrimitiveResources> Primitives);
 
-public sealed record D3D11SceneInstance(D3D11ModelResources Model, Matrix4x4 Transform);
+public sealed record D3D11SceneInstance(
+    int SceneInstanceId,
+    D3D11ModelResources Model,
+    Matrix4x4 Transform,
+    bool IsSelected);
 
 public sealed record D3D11TextureResources(
     CpuTexture Source,

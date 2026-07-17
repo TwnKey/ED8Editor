@@ -46,8 +46,42 @@ public sealed class OpsReader : IMapSceneReader
                 .Select(ReadProp)
                 .ToArray();
 
-        return new MapScene(fullPath, props, originalBytes);
+        var entryVolumes = ReadElements(document, "Entrys", "EntryBox")
+            .Select((element, index) => ReadVolume(element, index, MapVolumeKind.Entry))
+            .ToArray();
+        var groupVolumes = ReadElements(document, "GroupBoxes", "GroupBox")
+            .Select((element, index) => ReadVolume(element, index, MapVolumeKind.Group))
+            .ToArray();
+        var points = ReadElements(document, "LookPoints", "LookPoint")
+            .Select(ReadPoint)
+            .ToArray();
+        var cameras = ReadElements(document, "MapCameras", "MapCamera")
+            .Select(ReadCamera)
+            .ToArray();
+        var sounds = ReadElements(document, "MapSounds", "SoundObject")
+            .Select(ReadSound)
+            .ToArray();
+        var lights = ReadElements(document, "Lights", "Light")
+            .Select(ReadLight)
+            .ToArray();
+
+        return new MapScene(
+            fullPath,
+            props,
+            originalBytes,
+            entryVolumes.Concat(groupVolumes).ToArray(),
+            points,
+            cameras,
+            sounds,
+            lights);
     }
+
+    private static IEnumerable<XElement> ReadElements(XDocument document, string sectionName, string elementName)
+        => document.Root!.Elements()
+            .FirstOrDefault(element => element.Name.LocalName == sectionName)?
+            .Elements()
+            .Where(element => element.Name.LocalName == elementName)
+            ?? Enumerable.Empty<XElement>();
 
     private static MapProp ReadProp(XElement element, int index)
     {
@@ -61,10 +95,7 @@ public sealed class OpsReader : IMapSceneReader
         var diffuse = OptionalVector4(element, "materialDiffuse", DefaultDiffuse, location);
         var emission = OptionalVector3(element, "materialEmission", DefaultEmission, location);
         var flags = ParseOptionalUInt32(element.Attribute("flag")?.Value, "flag", location);
-        var attributes = element.Attributes().ToDictionary(
-            attribute => attribute.Name.LocalName,
-            attribute => attribute.Value,
-            StringComparer.Ordinal);
+        var attributes = ReadAttributes(element);
 
         return new MapProp(
             index,
@@ -75,6 +106,102 @@ public sealed class OpsReader : IMapSceneReader
             diffuse,
             emission,
             attributes);
+    }
+
+    private static MapVolume ReadVolume(XElement element, int index, MapVolumeKind kind)
+    {
+        var location = ElementLocation(element);
+        var components = ParseComponents(RequiredAttribute(element, "pos", location), 9, "pos", location);
+        var sourcePosition = new Vector3(components[0], components[1], components[2]);
+        var sourceEuler = new Vector3(components[3], components[4], components[5]);
+        var scale = new Vector3(components[6], components[7], components[8]);
+        return new MapVolume(
+            index,
+            kind,
+            RequiredAttribute(element, "name", location),
+            OpsCoordinateConverter.ToEditorVolumeTransform(sourcePosition, sourceEuler, scale),
+            element.Attribute("next")?.Value,
+            element.Attribute("entry")?.Value,
+            ReadAttributes(element));
+    }
+
+    private static MapPoint ReadPoint(XElement element, int index)
+    {
+        var location = ElementLocation(element);
+        var position = OpsCoordinateConverter.ToEditorPosition(
+            ParseVector3(RequiredAttribute(element, "pos", location), "pos", location));
+        var radiusValue = element.Attribute("radius")?.Value;
+        float? radius = radiusValue is null ? null : ParseFloat(radiusValue, "radius", location);
+        return new MapPoint(
+            index,
+            MapPointKind.LookPoint,
+            RequiredAttribute(element, "name", location),
+            position,
+            radius,
+            ReadAttributes(element));
+    }
+
+    private static MapCameraMarker ReadCamera(XElement element, int index)
+    {
+        var location = ElementLocation(element);
+        var eye = OpsCoordinateConverter.ToEditorPosition(
+            ParseVector3(RequiredAttribute(element, "eye", location), "eye", location));
+        var lookAt = OpsCoordinateConverter.ToEditorPosition(
+            ParseVector3(RequiredAttribute(element, "lookat", location), "lookat", location));
+        var name = element.Attribute("no")?.Value ?? index.ToString(CultureInfo.InvariantCulture);
+        return new MapCameraMarker(index, name, eye, lookAt, ReadAttributes(element));
+    }
+
+    private static MapSoundMarker ReadSound(XElement element, int index)
+    {
+        var location = ElementLocation(element);
+        var sourceKind = RequiredAttribute(element, "seType", location);
+        var kind = sourceKind.ToUpperInvariant() switch
+        {
+            "POINT" => MapSoundKind.Point,
+            "LINE" => MapSoundKind.Line,
+            "BOX" => MapSoundKind.Box,
+            _ => MapSoundKind.Unknown,
+        };
+        return new MapSoundMarker(
+            index,
+            RequiredAttribute(element, "seName", location),
+            kind,
+            sourceKind,
+            OpsCoordinateConverter.ToEditorPosition(
+                ParseVector3(RequiredAttribute(element, "sePosition", location), "sePosition", location)),
+            ParseFloat(RequiredAttribute(element, "seRange", location), "seRange", location),
+            ParseFloat(RequiredAttribute(element, "seRotation", location), "seRotation", location),
+            ParseVector3(RequiredAttribute(element, "seScale", location), "seScale", location),
+            ReadAttributes(element));
+    }
+
+    private static MapLightMarker ReadLight(XElement element, int index)
+    {
+        var location = ElementLocation(element);
+        return new MapLightMarker(
+            index,
+            RequiredAttribute(element, "group", location),
+            RequiredAttribute(element, "type", location),
+            OpsCoordinateConverter.ToEditorPosition(
+                ParseVector3(RequiredAttribute(element, "pos", location), "pos", location)),
+            ParseVector4(RequiredAttribute(element, "color", location), "color", location),
+            ParseFloat(RequiredAttribute(element, "colorPower", location), "colorPower", location),
+            ParseFloat(RequiredAttribute(element, "innerRange", location), "innerRange", location),
+            ParseFloat(RequiredAttribute(element, "outerRange", location), "outerRange", location),
+            ReadAttributes(element));
+    }
+
+    private static IReadOnlyDictionary<string, string> ReadAttributes(XElement element)
+        => element.Attributes().ToDictionary(
+            attribute => attribute.Name.LocalName,
+            attribute => attribute.Value,
+            StringComparer.Ordinal);
+
+    private static string ElementLocation(XElement element)
+    {
+        var lineInfo = (IXmlLineInfo)element;
+        return lineInfo.HasLineInfo() ? $" at line {lineInfo.LineNumber}" : string.Empty;
     }
 
     private static string RequiredAttribute(XElement element, string name, string location)
@@ -115,6 +242,18 @@ public sealed class OpsReader : IMapSceneReader
         return new Vector4(components[0], components[1], components[2], components[3]);
     }
 
+    private static float ParseFloat(string value, string name, string location)
+    {
+        value = value.Trim();
+        if (value.EndsWith('f') || value.EndsWith('F')) value = value[..^1];
+        if (!float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var result)
+            || !float.IsFinite(result))
+        {
+            throw new InvalidOpsException($"Attribute '{name}'{location} contains invalid number '{value}'.");
+        }
+        return result;
+    }
+
     private static float[] ParseComponents(string value, int expectedCount, string name, string location)
     {
         var parts = value.Split(',', StringSplitOptions.TrimEntries);
@@ -127,12 +266,7 @@ public sealed class OpsReader : IMapSceneReader
         var components = new float[expectedCount];
         for (var index = 0; index < parts.Length; index++)
         {
-            if (!float.TryParse(parts[index], NumberStyles.Float, CultureInfo.InvariantCulture, out components[index])
-                || !float.IsFinite(components[index]))
-            {
-                throw new InvalidOpsException(
-                    $"Attribute '{name}'{location} contains invalid number '{parts[index]}'.");
-            }
+            components[index] = ParseFloat(parts[index], name, location);
         }
 
         return components;

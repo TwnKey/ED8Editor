@@ -14,10 +14,16 @@ public sealed record ViewportCamera(Matrix4x4 View, Matrix4x4 Projection);
 public sealed class D3D11Viewport : IDisposable
 {
     private const string ShaderSource = """
-        cbuffer PerDraw : register(b0) { row_major float4x4 WorldViewProjection; };
+        cbuffer PerDraw : register(b0)
+        {
+            row_major float4x4 WorldViewProjection;
+            float4 SelectionColor;
+        };
         struct VSPosition { float3 Position : POSITION; };
         struct VSTextured { float3 Position : POSITION; float2 TexCoord : TEXCOORD0; };
+        struct VSColored { float3 Position : POSITION; float4 Color : COLOR0; };
         struct PSInput { float4 Position : SV_Position; float2 TexCoord : TEXCOORD0; };
+        struct PSColoredInput { float4 Position : SV_Position; float4 Color : COLOR0; };
         PSInput VSPositionMain(VSPosition input)
         {
             PSInput output;
@@ -32,20 +38,41 @@ public sealed class D3D11Viewport : IDisposable
             output.TexCoord = input.TexCoord;
             return output;
         }
+        PSColoredInput VSColoredMain(VSColored input)
+        {
+            PSColoredInput output;
+            output.Position = mul(float4(input.Position, 1.0f), WorldViewProjection);
+            output.Color = input.Color;
+            return output;
+        }
         Texture2D DiffuseTexture : register(t0);
         SamplerState DiffuseSampler : register(s0);
-        float4 PSSolidMain(PSInput input) : SV_Target { return float4(0.72f, 0.78f, 0.86f, 1.0f); }
-        float4 PSTexturedMain(PSInput input) : SV_Target { return DiffuseTexture.Sample(DiffuseSampler, input.TexCoord); }
+        float4 ApplySelection(float4 color)
+        {
+            return lerp(color, float4(SelectionColor.rgb, color.a), SelectionColor.a);
+        }
+        float4 PSSolidMain(PSInput input) : SV_Target
+        {
+            return ApplySelection(float4(0.72f, 0.78f, 0.86f, 1.0f));
+        }
+        float4 PSTexturedMain(PSInput input) : SV_Target
+        {
+            return ApplySelection(DiffuseTexture.Sample(DiffuseSampler, input.TexCoord));
+        }
+        float4 PSColoredMain(PSColoredInput input) : SV_Target { return input.Color; }
         """;
 
     private readonly D3D11GraphicsDevice graphics;
     private readonly IDXGISwapChain1 swapChain;
     private readonly ID3D11VertexShader positionVertexShader;
     private readonly ID3D11VertexShader texturedVertexShader;
+    private readonly ID3D11VertexShader coloredVertexShader;
     private readonly ID3D11PixelShader solidPixelShader;
     private readonly ID3D11PixelShader texturedPixelShader;
+    private readonly ID3D11PixelShader coloredPixelShader;
     private readonly byte[] positionVertexBytecode;
     private readonly byte[] texturedVertexBytecode;
+    private readonly ID3D11InputLayout coloredInputLayout;
     private readonly ID3D11Buffer perDrawBuffer;
     private readonly ID3D11SamplerState sampler;
     private readonly ID3D11RasterizerState rasterizer;
@@ -53,6 +80,8 @@ public sealed class D3D11Viewport : IDisposable
     private ID3D11RenderTargetView? renderTarget;
     private ID3D11Texture2D? depthTexture;
     private ID3D11DepthStencilView? depthView;
+    private ID3D11Buffer? debugLineBuffer;
+    private int debugLineVertexCount;
     private int width;
     private int height;
 
@@ -82,12 +111,20 @@ public sealed class D3D11Viewport : IDisposable
 
         positionVertexBytecode = Compile("VSPositionMain", "vs_5_0");
         texturedVertexBytecode = Compile("VSTexturedMain", "vs_5_0");
+        var coloredVertexBytecode = Compile("VSColoredMain", "vs_5_0");
         positionVertexShader = graphics.Device.CreateVertexShader(positionVertexBytecode);
         texturedVertexShader = graphics.Device.CreateVertexShader(texturedVertexBytecode);
+        coloredVertexShader = graphics.Device.CreateVertexShader(coloredVertexBytecode);
         solidPixelShader = graphics.Device.CreatePixelShader(Compile("PSSolidMain", "ps_5_0"));
         texturedPixelShader = graphics.Device.CreatePixelShader(Compile("PSTexturedMain", "ps_5_0"));
+        coloredPixelShader = graphics.Device.CreatePixelShader(Compile("PSColoredMain", "ps_5_0"));
+        coloredInputLayout = graphics.Device.CreateInputLayout(new[]
+        {
+            new InputElementDescription("POSITION", 0, Format.R32G32B32_Float, 0, 0),
+            new InputElementDescription("COLOR", 0, Format.R32G32B32A32_Float, 12, 0),
+        }, coloredVertexBytecode);
         perDrawBuffer = graphics.Device.CreateBuffer(new BufferDescription(
-            Marshal.SizeOf<Matrix4x4>(),
+            Marshal.SizeOf<PerDrawConstants>(),
             BindFlags.ConstantBuffer,
             ResourceUsage.Dynamic,
             CpuAccessFlags.Write));
@@ -138,6 +175,23 @@ public sealed class D3D11Viewport : IDisposable
         this.height = height;
     }
 
+    public void SetDebugLines(IReadOnlyList<D3D11DebugLine> lines)
+    {
+        ArgumentNullException.ThrowIfNull(lines);
+        debugLineBuffer?.Dispose();
+        debugLineBuffer = null;
+        debugLineVertexCount = 0;
+        if (lines.Count == 0) return;
+        var vertices = new DebugLineVertex[checked(lines.Count * 2)];
+        for (var index = 0; index < lines.Count; index++)
+        {
+            vertices[index * 2] = new DebugLineVertex(lines[index].Start, lines[index].Color);
+            vertices[index * 2 + 1] = new DebugLineVertex(lines[index].End, lines[index].Color);
+        }
+        debugLineBuffer = graphics.Device.CreateBuffer(vertices, BindFlags.VertexBuffer);
+        debugLineVertexCount = vertices.Length;
+    }
+
     public void Render(IReadOnlyList<D3D11SceneInstance> instances, ViewportCamera camera, bool verticalSync = true)
     {
         ArgumentNullException.ThrowIfNull(instances);
@@ -158,13 +212,15 @@ public sealed class D3D11Viewport : IDisposable
             {
                 var world = mesh.LocalTransform * instance.Transform;
                 var matrix = world * camera.View * camera.Projection;
-                UpdateMatrix(matrix);
+                UpdateConstants(matrix, instance.IsSelected);
                 foreach (var primitive in mesh.Primitives)
                 {
                     DrawPrimitive(instance.Model, primitive);
                 }
             }
         }
+
+        DrawDebugLines(camera);
 
         swapChain.Present(verticalSync ? 1 : 0, PresentFlags.None).CheckError();
     }
@@ -174,14 +230,32 @@ public sealed class D3D11Viewport : IDisposable
         graphics.Context.ClearState();
         ReleaseTargets();
         foreach (var layout in inputLayouts.Values) layout.Dispose();
+        debugLineBuffer?.Dispose();
+        coloredInputLayout.Dispose();
         rasterizer.Dispose();
         sampler.Dispose();
         perDrawBuffer.Dispose();
         texturedPixelShader.Dispose();
+        coloredPixelShader.Dispose();
         solidPixelShader.Dispose();
         texturedVertexShader.Dispose();
+        coloredVertexShader.Dispose();
         positionVertexShader.Dispose();
         swapChain.Dispose();
+    }
+
+    private void DrawDebugLines(ViewportCamera camera)
+    {
+        if (debugLineBuffer is null || debugLineVertexCount == 0) return;
+        UpdateConstants(camera.View * camera.Projection, false);
+        var context = graphics.Context;
+        context.IASetInputLayout(coloredInputLayout);
+        context.IASetVertexBuffer(0, debugLineBuffer, Marshal.SizeOf<DebugLineVertex>(), 0);
+        context.IASetPrimitiveTopology(Vortice.Direct3D.PrimitiveTopology.LineList);
+        context.VSSetShader(coloredVertexShader);
+        context.PSSetShader(coloredPixelShader);
+        context.PSSetShaderResource(0, null!);
+        context.Draw(debugLineVertexCount, 0);
     }
 
     private void DrawPrimitive(D3D11ModelResources model, D3D11PrimitiveResources primitive)
@@ -228,12 +302,26 @@ public sealed class D3D11Viewport : IDisposable
         context.DrawIndexed(primitive.IndexCount, 0, 0);
     }
 
-    private unsafe void UpdateMatrix(Matrix4x4 matrix)
+    private unsafe void UpdateConstants(Matrix4x4 matrix, bool selected)
     {
         var mapped = graphics.Context.Map(perDrawBuffer, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
-        *(Matrix4x4*)mapped.DataPointer = matrix;
+        *(PerDrawConstants*)mapped.DataPointer = new PerDrawConstants
+        {
+            WorldViewProjection = matrix,
+            SelectionColor = selected ? new Vector4(1f, 0.32f, 0.04f, 0.68f) : Vector4.Zero,
+        };
         graphics.Context.Unmap(perDrawBuffer, 0);
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PerDrawConstants
+    {
+        public Matrix4x4 WorldViewProjection;
+        public Vector4 SelectionColor;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private readonly record struct DebugLineVertex(Vector3 Position, Vector4 Color);
 
     private ID3D11InputLayout GetPositionLayout(Format format, int offset)
     {

@@ -24,6 +24,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ED8Editor.Rendering", "src\
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ED8Editor.Viewer", "src\ED8Editor.Viewer\ED8Editor.Viewer.csproj", "{2F9671A8-D984-4821-8F74-B1CD136E4100}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ED8Editor.Scene", "src\ED8Editor.Scene\ED8Editor.Scene.csproj", "{7E3F88F4-A617-4AC8-BC83-17F4BC6F0DA6}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -74,5 +76,9 @@ Global
 		{2F9671A8-D984-4821-8F74-B1CD136E4100}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{2F9671A8-D984-4821-8F74-B1CD136E4100}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{2F9671A8-D984-4821-8F74-B1CD136E4100}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7E3F88F4-A617-4AC8-BC83-17F4BC6F0DA6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7E3F88F4-A617-4AC8-BC83-17F4BC6F0DA6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7E3F88F4-A617-4AC8-BC83-17F4BC6F0DA6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7E3F88F4-A617-4AC8-BC83-17F4BC6F0DA6}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

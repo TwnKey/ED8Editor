@@ -12,5 +12,6 @@
     <ProjectReference Include="..\ED8Editor.Packages\ED8Editor.Packages.csproj" />
     <ProjectReference Include="..\ED8Editor.Phyre\ED8Editor.Phyre.csproj" />
     <ProjectReference Include="..\ED8Editor.Rendering\ED8Editor.Rendering.csproj" />
+    <ProjectReference Include="..\ED8Editor.Scene\ED8Editor.Scene.csproj" />
   </ItemGroup>
 </Project>

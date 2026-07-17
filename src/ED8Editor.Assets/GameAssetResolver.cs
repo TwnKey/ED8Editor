@@ -20,12 +20,15 @@ public sealed class GameAssetResolver : IAssetPackageResolver
         }
 
         packagesById = BuildIndex(AssetRootPath);
-        PackageCount = packagesById.Values.Sum(packages => packages.Count);
+        Packages = packagesById.Values.SelectMany(packages => packages).ToArray();
+        PackageCount = Packages.Count;
     }
 
     public string AssetRootPath { get; }
 
     public int PackageCount { get; }
+
+    public IReadOnlyList<AssetPackage> Packages { get; }
 
     public int UniqueAssetCount => packagesById.Count;
 

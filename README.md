@@ -2,6 +2,13 @@
 
 Early Cold Steel 1 map-editor foundation.
 
+On the first interactive launch, the viewer asks for the Trails of Cold Steel
+installation directory and validates its `data/scripts`, `data/ops`, and
+`data/asset` folders. The normalized installation path is stored per user in
+`%LocalAppData%\ED8Editor\settings.json`; it is requested again only if the
+saved installation is no longer valid. The next dialog selects the script to
+open from the configured game data.
+
 The first supported workflow deliberately starts from a game script:
 
 1. open a `.dat` script;
@@ -14,7 +21,8 @@ The first supported workflow deliberately starts from a game script:
 8. parse `asset_D3D11.xml` and select the asset block matching the OPS asset ID.
 9. parse the embedded Phyre class layouts and decompress object/array/pointer fixups;
 10. decode D3D11 index and vertex data directly into CPU-side meshes;
-11. decode complete material parameters and textures (in progress).
+11. decode material parameters and textures into file-free CPU resources;
+12. build transformed scene instances for rendering, bounds and exact triangle picking.
 
 The full script decompiler is intentionally outside `ED8Editor.ScriptHeaders`. This
 small bootstrap module can be replaced later without coupling the editor to the
@@ -116,11 +124,59 @@ pass used to validate every primitive and topology independently of a window.
 
 `ED8Editor.Viewer` provides that interactive viewport: a flip-model swap chain,
 depth buffer, OPS model instances, perspective camera, and textured/solid shader
-paths. Hold the right mouse button to look around, use `WASD` to move, `Q/E` to
-move vertically, and hold Shift for faster movement.
+paths. Hold the right mouse button to orbit, drag with the middle mouse button to
+pan, use the wheel to zoom, and press `F` to frame the selected prop. `WASD` moves
+laterally, `Q/E` moves vertically, and Shift accelerates movement. Left-click a
+visible model to select its nearest intersected triangle; the selected instance
+is highlighted and identified in the window title. OPS volumes and markers are
+selectable through the same nearest-hit query and turn white when selected.
+Press `1`, `2`, or `3` to display translation axes, rotation rings, or scale axes
+for the current selection. Drag a handle with the left mouse button to transform
+the element; `Ctrl+Z` and `Ctrl+Y` undo and redo committed drags. Capabilities
+are explicit: props and volumes support all three modes, while point-like OPS
+elements currently expose translation only.
+
+`Ctrl+S` saves the current editable scene through `OpsWriter`. The first save
+opens a Save As dialog defaulting to `<map>.edited.ops`; subsequent saves reuse
+that explicit destination, while `Ctrl+Shift+S` chooses another. The writer
+updates only changed spatial attributes, retains unknown XML elements and
+attributes, reparses the temporary output, and atomically replaces the selected
+destination only after validation.
+
+The asset library panel indexes PKG filenames and variants without opening their
+archives. Search for an asset and choose **Add selected asset**; only then is that
+single package decoded and uploaded, at the current camera pivot. New props use
+the centralized neutral OPS `NewObject` profile. `Ctrl+D` duplicates the selected prop and
+Delete removes it. Addition, duplication, deletion, and transforms share the
+same undo/redo history, and `OpsWriter` persists the resulting `AssetObject`
+collection.
+
+Selecting a prop also populates a generic OPS attribute grid. Transform and
+asset identity fields are read-only there because they are controlled by the
+gizmos and asset loader; flags, clipping, material values, and previously
+unknown attributes can be edited, added, or removed. Attribute changes are
+undoable and are preserved by `OpsWriter`.
+
+OPS spatial data is visible directly in the 3D viewport: `EntryBox` volumes are
+cyan, transitions with an explicit destination are blue, `GroupBox` volumes are
+violet, `LookPoint` markers are yellow, map cameras plus their sight lines are
+green, sounds and their ranges are orange, and lights use their OPS color and
+outer range. These overlays are generated directly in memory from exact OPS
+coordinates.
 
 ```powershell
 dotnet run --project src/ED8Editor.Viewer -- "path\to\scripts\scena\dat\a0000.dat"
+```
+
+`ED8Editor.Scene` owns scene-instance construction, transformed bounds, viewport
+ray creation, vertex-position decoding and exact indexed-triangle intersection.
+Unsupported formats and malformed geometry are returned as structured issues
+instead of being approximated by a bounding-box selection.
+
+Validate scene geometry without creating a window or writing intermediate files:
+
+```powershell
+dotnet run --project tests/ED8Editor.Tests -- --scene-scan "path\to\scripts\scena\dat\a0000.dat"
 ```
 
 Run the complete script-to-GPU validation with:

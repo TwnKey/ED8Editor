@@ -41,6 +41,19 @@ public sealed class EditorProjectLoader
         return new EditorSession(script, map, resolutions, manifests, models);
     }
 
+    public AssetModelLoad LoadAsset(
+        string assetId,
+        string gameDataPath,
+        AssetVariantPreference preference = AssetVariantPreference.English)
+    {
+        if (assetResolverFactory is null || packageArchiveReader is null || assetManifestReader is null || modelReader is null)
+        {
+            throw new InvalidOperationException("The project loader has no complete asset-loading pipeline.");
+        }
+        var resolution = assetResolverFactory.Create(gameDataPath).Resolve(assetId, preference);
+        return LoadModel(LoadManifest(resolution));
+    }
+
     private IReadOnlyDictionary<string, AssetModelLoad> LoadModels(
         IReadOnlyDictionary<string, AssetManifestLoad> manifests)
     {
