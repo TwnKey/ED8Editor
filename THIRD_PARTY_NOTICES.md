@@ -31,3 +31,10 @@ marked proprietary and no license permitting redistribution was found, so no
 PhyreEngine source code is copied into or linked by ED8Editor. The reader is an
 independent managed implementation driven by the descriptors embedded in each
 asset.
+
+## Vortice.Windows
+
+`ED8Editor.Rendering` uses Vortice.Direct3D11 and Vortice.D3DCompiler for
+managed Direct3D 11 bindings and runtime compilation of editor shaders.
+Vortice.Windows is distributed under the MIT License. The package and source
+repository are available from https://github.com/amerkoleci/Vortice.Windows.

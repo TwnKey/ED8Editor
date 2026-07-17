@@ -86,8 +86,45 @@ by this Phyre version, including DXT1/3/5 and BC4-7. The application loader
 attaches every texture from the primary asset manifest directly to its
 `CpuModel`; no DDS or GLB is written to disk.
 
+Materials are decoded from their variable-sized `PParameterBuffer` storage.
+The reader preserves numeric shader constants, resolves every serialized
+`PAssetReferenceImport` by parameter name, and remaps each mesh's local
+material table to the global `CpuMaterial` list. Once textures are loaded, the
+application produces parameter-to-texture indices (for example
+`DiffuseMapSampler` and `SpecularMapSampler`) and selects the diffuse binding as
+the material's base-color texture.
+
 Inspect a texture payload with:
 
 ```powershell
 dotnet run --project tests/ED8Editor.Tests -- --phyre-texture "path\to\asset.pkg" texture.dds.phyre
+```
+
+Inspect raw material definitions and imported asset references with:
+
+```powershell
+dotnet run --project tests/ED8Editor.Tests -- --phyre-material "path\to\asset.pkg" model.dae.phyre
+```
+
+## Direct3D 11 renderer
+
+`ED8Editor.Rendering` is an injectable GPU backend built on Vortice.Direct3D11.
+It creates immutable vertex and index buffers, native compressed texture
+resources with every mip level, shader-resource views, and material bindings
+directly from `CpuModel`. `D3D11SceneRenderer` retains a position-only offscreen
+pass used to validate every primitive and topology independently of a window.
+
+`ED8Editor.Viewer` provides that interactive viewport: a flip-model swap chain,
+depth buffer, OPS model instances, perspective camera, and textured/solid shader
+paths. Hold the right mouse button to look around, use `WASD` to move, `Q/E` to
+move vertically, and hold Shift for faster movement.
+
+```powershell
+dotnet run --project src/ED8Editor.Viewer -- "path\to\scripts\scena\dat\a0000.dat"
+```
+
+Run the complete script-to-GPU validation with:
+
+```powershell
+dotnet run --project tests/ED8Editor.Tests -- --gpu-upload "path\to\scripts\scena\dat\a0000.dat"
 ```

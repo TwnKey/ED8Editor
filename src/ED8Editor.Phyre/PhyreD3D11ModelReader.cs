@@ -18,14 +18,22 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
         var segmentGroup = FindRequiredGroup(cluster, "PMeshSegment");
         var dataBlockGroup = FindRequiredGroup(cluster, "PDataBlockD3D11");
         var streamGroup = FindRequiredGroup(cluster, "PVertexStream");
+        var materialGroup = FindRequiredGroup(cluster, "PMaterial");
+        var materialGroupIndex = materialGroup.Index;
         var indexBufferSize = ReadUInt32(cluster.Data.Span, 0x48, cluster.Metadata.IsBigEndian);
 
         var meshes = new List<CpuMesh>(checked((int)meshGroup.Group.Count));
-        var highestMaterial = -1;
         for (uint meshIndex = 0; meshIndex < meshGroup.Group.Count; meshIndex++)
         {
             var meshObject = cluster.GetObject(meshGroup.Index, meshIndex).Span;
             var segmentCount = ReadUInt32(meshObject, 0, cluster.Metadata.IsBigEndian);
+            var materialPointers = cluster.Fixups.Pointers
+                .Where(value => value.SourceListIndex == meshGroup.Index
+                    && value.SourceObjectId == meshIndex
+                    && !value.IsClassDataMember
+                    && value.SourceOffset == 0x34)
+                .OrderBy(value => value.ArrayIndex)
+                .ToArray();
             var primitives = new List<CpuMeshPrimitive>(checked((int)segmentCount));
             if (segmentCount != 0)
             {
@@ -35,7 +43,17 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
                 {
                     var segmentId = checked(segmentPointer.DestinationObjectId + localSegment);
                     var primitive = ReadPrimitive(cluster, segmentGroup.Index, segmentId, dataBlockGroup, streamGroup, indexBufferSize);
-                    highestMaterial = Math.Max(highestMaterial, primitive.MaterialIndex);
+                    if ((uint)primitive.MaterialIndex >= materialPointers.Length)
+                    {
+                        throw new InvalidPhyreException($"Mesh {meshIndex} references missing local material {primitive.MaterialIndex}.");
+                    }
+
+                    var materialPointer = materialPointers[primitive.MaterialIndex];
+                    if (materialPointer.UserFixupId is not null || materialPointer.DestinationListIndex != materialGroupIndex)
+                    {
+                        throw new InvalidPhyreException($"Mesh {meshIndex} material {primitive.MaterialIndex} has an invalid destination.");
+                    }
+                    primitive = primitive with { MaterialIndex = checked((int)materialPointer.DestinationObjectId) };
                     primitives.Add(primitive);
                 }
             }
@@ -43,12 +61,178 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
             meshes.Add(new CpuMesh($"{assetId}:mesh:{meshIndex}", Matrix4x4.Identity, primitives));
         }
 
-        var materialGroup = FindOptionalGroup(cluster, "PMaterial");
-        var materialCount = Math.Max(highestMaterial + 1, materialGroup is null ? 0 : checked((int)materialGroup.Value.Group.Count));
-        var materials = Enumerable.Range(0, materialCount)
-            .Select(index => new CpuMaterial($"material:{index}", Vector4.One, null, new Dictionary<string, float[]>()))
-            .ToArray();
+        var materials = ReadMaterials(cluster, materialGroupIndex);
         return new CpuModel(assetId, meshes, materials, Array.Empty<CpuTexture>());
+    }
+
+    private static IReadOnlyList<CpuMaterial> ReadMaterials(PhyreClusterData cluster, int materialGroupIndex)
+    {
+        var materialGroup = cluster.Metadata.InstanceGroups[materialGroupIndex];
+        var parameterBufferMember = FindRequiredMember(cluster, "PMaterial", "m_parameterBuffer");
+        var importNames = ReadAssetImportNames(cluster);
+        var materials = new CpuMaterial[checked((int)materialGroup.Count)];
+        for (uint materialId = 0; materialId < materialGroup.Count; materialId++)
+        {
+            var bufferPointer = cluster.Fixups.Pointers.SingleOrDefault(value =>
+                value.SourceListIndex == materialGroupIndex
+                && value.SourceObjectId == materialId
+                && value.IsClassDataMember
+                && value.SourceMemberId == (uint)parameterBufferMember.Index)
+                ?? throw new InvalidPhyreException($"Material {materialId} has no parameter buffer.");
+            if (bufferPointer.UserFixupId is not null
+                || cluster.Metadata.InstanceGroups[checked((int)bufferPointer.DestinationListIndex)].ClassName != "PParameterBuffer")
+            {
+                throw new InvalidPhyreException($"Material {materialId} has an invalid parameter buffer.");
+            }
+
+            materials[checked((int)materialId)] = ReadMaterialParameterBuffer(
+                cluster,
+                checked((int)bufferPointer.DestinationListIndex),
+                importNames,
+                checked((int)materialId));
+        }
+
+        return materials;
+    }
+
+    private static CpuMaterial ReadMaterialParameterBuffer(
+        PhyreClusterData cluster,
+        int bufferGroupIndex,
+        IReadOnlyList<string> importNames,
+        int materialId)
+    {
+        var bufferGroup = cluster.Metadata.InstanceGroups[bufferGroupIndex];
+        if (bufferGroup.Count != 1)
+        {
+            throw new InvalidPhyreException("A material parameter buffer group must contain exactly one object.");
+        }
+
+        var buffer = cluster.GetGroupObjectsData(bufferGroupIndex).Span;
+        var definitionCount = ReadUInt32(buffer, 0x08, cluster.Metadata.IsBigEndian);
+        var definitionsPointer = RequirePointer(cluster, bufferGroupIndex, 0, 0x0c);
+        var definitionGroupIndex = checked((int)definitionsPointer.DestinationListIndex);
+        var definitionGroup = cluster.Metadata.InstanceGroups[definitionGroupIndex];
+        if (definitionsPointer.UserFixupId is not null || definitionGroup.ClassName != "PShaderParameterDefinition"
+            || (ulong)definitionsPointer.DestinationObjectId + definitionCount > definitionGroup.Count)
+        {
+            throw new InvalidPhyreException($"Material {materialId} has invalid shader parameter definitions.");
+        }
+
+        var parameters = new Dictionary<string, float[]>(StringComparer.Ordinal);
+        var textures = new Dictionary<string, string>(StringComparer.Ordinal);
+        for (uint localDefinition = 0; localDefinition < definitionCount; localDefinition++)
+        {
+            var definitionId = checked(definitionsPointer.DestinationObjectId + localDefinition);
+            var definition = cluster.GetObject(definitionGroupIndex, definitionId).Span;
+            var name = ReadDefinitionName(cluster, definitionGroupIndex, definitionId);
+            var parameterType = definition[0x02];
+            var dataType = definition[0x03];
+            var location = ReadUInt16(definition, 0x08, cluster.Metadata.IsBigEndian);
+            var size = ReadUInt16(definition, 0x0a, cluster.Metadata.IsBigEndian) & 0x1fff;
+            if ((uint)location + size > buffer.Length)
+            {
+                throw new InvalidPhyreException($"Material {materialId} parameter '{name}' exceeds its buffer.");
+            }
+
+            if (parameterType is 64 or 65 && dataType <= 3 && size >= (dataType + 1) * sizeof(float))
+            {
+                var values = new float[dataType + 1];
+                for (var component = 0; component < values.Length; component++)
+                {
+                    values[component] = ReadSingle(buffer, location + component * sizeof(float), cluster.Metadata.IsBigEndian);
+                }
+                parameters[name] = values;
+            }
+            else if (parameterType == 66)
+            {
+                var texturePointer = cluster.Fixups.Pointers.SingleOrDefault(value =>
+                    value.SourceListIndex == bufferGroupIndex
+                    && value.SourceObjectId == 0
+                    && !value.IsClassDataMember
+                    && value.SourceOffset >= location
+                    && value.SourceOffset < location + size
+                    && value.UserFixupId is not null
+                    && cluster.Fixups.UserFixups[checked((int)value.UserFixupId.Value)].TypeName == "PAssetReferenceImport");
+                if (texturePointer?.UserFixupId is { } userFixupId)
+                {
+                    var importId = ReadUserImportId(cluster.Fixups.UserFixups[checked((int)userFixupId)]);
+                    if ((uint)importId >= importNames.Count)
+                    {
+                        throw new InvalidPhyreException($"Material {materialId} parameter '{name}' references missing asset import {importId}.");
+                    }
+                    textures[name] = Path.GetFileName(importNames[importId].Replace('\\', '/'));
+                }
+            }
+        }
+
+        var baseColor = FindBaseColor(parameters);
+        return new CpuMaterial(
+            $"material:{materialId}",
+            baseColor,
+            null,
+            parameters,
+            textures,
+            new Dictionary<string, int>(StringComparer.Ordinal));
+    }
+
+    private static IReadOnlyList<string> ReadAssetImportNames(PhyreClusterData cluster)
+    {
+        var importGroup = FindOptionalGroup(cluster, "PAssetReferenceImport");
+        if (importGroup is null) return Array.Empty<string>();
+        var names = new string[checked((int)importGroup.Value.Group.Count)];
+        for (uint objectId = 0; objectId < importGroup.Value.Group.Count; objectId++)
+        {
+            var idFixup = cluster.Fixups.Arrays.SingleOrDefault(value =>
+                value.SourceListIndex == importGroup.Value.Index && value.SourceObjectId == objectId)
+                ?? throw new InvalidPhyreException($"Asset import {objectId} has no identifier.");
+            names[checked((int)objectId)] = ReadZeroTerminatedArrayString(cluster, importGroup.Value.Index, idFixup.Offset);
+        }
+        return names;
+    }
+
+    private static string ReadDefinitionName(PhyreClusterData cluster, int groupIndex, uint objectId)
+    {
+        var fixup = cluster.Fixups.Arrays.SingleOrDefault(value =>
+            value.SourceListIndex == groupIndex && value.SourceObjectId == objectId)
+            ?? throw new InvalidPhyreException($"Shader parameter definition {objectId} has no name.");
+        return ReadZeroTerminatedArrayString(cluster, groupIndex, fixup.Offset);
+    }
+
+    private static string ReadZeroTerminatedArrayString(PhyreClusterData cluster, int groupIndex, uint offset)
+    {
+        var group = cluster.Metadata.InstanceGroups[groupIndex];
+        if (offset >= group.ArraysSize) throw new InvalidPhyreException("Phyre string offset exceeds its array storage.");
+        var data = cluster.GetArrayData(groupIndex, offset, group.ArraysSize - offset).Span;
+        var zero = data.IndexOf((byte)0);
+        if (zero < 0) throw new InvalidPhyreException("Phyre string is not zero terminated.");
+        return System.Text.Encoding.ASCII.GetString(data[..zero]);
+    }
+
+    private static int ReadUserImportId(PhyreUserFixup fixup)
+    {
+        if (fixup.Data.Length != sizeof(ushort))
+        {
+            throw new InvalidPhyreException($"Asset import user fixup {fixup.Id} has an invalid size.");
+        }
+        // Asset import payloads use the serialized user-fixup wire order, independently of object endianness.
+        return BinaryPrimitives.ReadUInt16BigEndian(fixup.Data.Span);
+    }
+
+    private static Vector4 FindBaseColor(IReadOnlyDictionary<string, float[]> parameters)
+    {
+        var pair = parameters.FirstOrDefault(value =>
+            value.Key.Equals("BaseColor", StringComparison.OrdinalIgnoreCase)
+            || value.Key.Equals("DiffuseColor", StringComparison.OrdinalIgnoreCase)
+            || value.Key.Equals("MaterialDiffuse", StringComparison.OrdinalIgnoreCase));
+        if (pair.Value is not { Length: >= 3 } values) return Vector4.One;
+        return new Vector4(values[0], values[1], values[2], values.Length >= 4 ? values[3] : 1f);
+    }
+
+    private static PhyreDataMember FindRequiredMember(PhyreClusterData cluster, string className, string name)
+    {
+        return cluster.Metadata.Classes.SingleOrDefault(value => value.Name == className)?.Members
+            .SingleOrDefault(value => value.Name == name)
+            ?? throw new InvalidPhyreException($"Phyre metadata has no {className}.{name} member.");
     }
 
     private static CpuMeshPrimitive ReadPrimitive(
@@ -239,6 +423,23 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
 
         var span = data.Slice(offset, sizeof(uint));
         return bigEndian ? BinaryPrimitives.ReadUInt32BigEndian(span) : BinaryPrimitives.ReadUInt32LittleEndian(span);
+    }
+
+    private static ushort ReadUInt16(ReadOnlySpan<byte> data, int offset, bool bigEndian)
+    {
+        if ((uint)offset > data.Length - sizeof(ushort))
+        {
+            throw new InvalidPhyreException("A Phyre object field lies outside its object.");
+        }
+
+        var span = data.Slice(offset, sizeof(ushort));
+        return bigEndian ? BinaryPrimitives.ReadUInt16BigEndian(span) : BinaryPrimitives.ReadUInt16LittleEndian(span);
+    }
+
+    private static float ReadSingle(ReadOnlySpan<byte> data, int offset, bool bigEndian)
+    {
+        var bits = ReadUInt32(data, offset, bigEndian);
+        return BitConverter.Int32BitsToSingle(unchecked((int)bits));
     }
 
     private static PhyrePointerFixup RequirePointer(PhyreClusterData cluster, int listIndex, uint objectId, uint offset)

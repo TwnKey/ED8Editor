@@ -77,7 +77,11 @@ public sealed class EditorProjectLoader
                         Path.GetFileNameWithoutExtension(value.ArchiveEntryName),
                         archive.ReadEntry(value.ArchiveEntryName)))
                     .ToArray();
-                model = model with { Textures = textures };
+                var textureIndices = textures
+                    .Select((value, index) => (value.Name, Index: index))
+                    .ToDictionary(value => value.Name, value => value.Index, StringComparer.OrdinalIgnoreCase);
+                var materials = model.Materials.Select(material => BindMaterialTextures(material, textureIndices)).ToArray();
+                model = model with { Materials = materials, Textures = textures };
             }
             return new AssetModelLoad(load.AssetId, AssetModelLoadStatus.Loaded, model, null);
         }
@@ -85,6 +89,30 @@ public sealed class EditorProjectLoader
         {
             return new AssetModelLoad(load.AssetId, AssetModelLoadStatus.Invalid, null, exception.Message);
         }
+    }
+
+    private static CpuMaterial BindMaterialTextures(
+        CpuMaterial material,
+        IReadOnlyDictionary<string, int> textureIndices)
+    {
+        var bindings = material.SourceTextureReferences
+            .Where(value => textureIndices.ContainsKey(value.Value))
+            .ToDictionary(value => value.Key, value => textureIndices[value.Value], StringComparer.Ordinal);
+        var diffuse = bindings.FirstOrDefault(value =>
+            value.Key.Equals("DiffuseMapSampler", StringComparison.OrdinalIgnoreCase)
+            || value.Key.Equals("DiffuseSampler", StringComparison.OrdinalIgnoreCase));
+        if (diffuse.Key is null)
+        {
+            diffuse = bindings.FirstOrDefault(value =>
+                value.Key.Contains("diffuse", StringComparison.OrdinalIgnoreCase)
+                && !value.Key.Contains("spec", StringComparison.OrdinalIgnoreCase));
+        }
+
+        return material with
+        {
+            BaseColorTextureIndex = diffuse.Key is null ? null : diffuse.Value,
+            TextureBindings = bindings,
+        };
     }
 
     private IReadOnlyDictionary<string, AssetManifestLoad> LoadManifests(

@@ -6,6 +6,44 @@ using ED8Editor.Ops;
 using ED8Editor.Assets;
 using ED8Editor.Packages;
 using ED8Editor.Phyre;
+using ED8Editor.Application;
+using ED8Editor.Rendering;
+
+if (args is ["--gpu-upload", var gpuScriptPath])
+{
+    var session = new EditorProjectLoader(
+        new OpsReader(),
+        new GameAssetResolverFactory(),
+        new PkgArchiveReader(),
+        new AssetManifestReader(),
+        new PhyreD3D11ModelReader(),
+        new PhyreD3D11TextureReader()).OpenScript(gpuScriptPath);
+    using var graphics = D3D11GraphicsDevice.Create();
+    var uploader = new D3D11ModelUploader(graphics.Device);
+    var uploaded = new List<D3D11ModelResources>();
+    try
+    {
+        foreach (var model in session.AssetModels.Values.Where(value => value.Model is not null))
+        {
+            uploaded.Add(uploader.Upload(model.Model!));
+        }
+
+        Console.WriteLine($"Feature level : {graphics.FeatureLevel}");
+        Console.WriteLine($"GPU models    : {uploaded.Count}");
+        Console.WriteLine($"GPU meshes    : {uploaded.Sum(value => value.Meshes.Count)}");
+        Console.WriteLine($"GPU textures  : {uploaded.Sum(value => value.Textures.Count)}");
+        Console.WriteLine($"GPU bytes     : {uploaded.Sum(value => value.AllocatedBytes)}");
+        using var renderer = new D3D11SceneRenderer(graphics);
+        var report = renderer.RenderOffscreen(uploaded);
+        Console.WriteLine($"Draw calls    : {report.DrawCalls}");
+        Console.WriteLine($"Draw skipped  : {report.SkippedPrimitives}");
+    }
+    finally
+    {
+        foreach (var model in uploaded) model.Dispose();
+    }
+    return 0;
+}
 
 if (args is ["--ops-corpus", var opsDirectory])
 {
@@ -102,6 +140,14 @@ if (args is ["--phyre-model", var modelPackagePath, var modelEntryName])
     Console.WriteLine($"Meshes     : {model.Meshes.Count}");
     Console.WriteLine($"Primitives : {model.Meshes.Sum(value => value.Primitives.Count)}");
     Console.WriteLine($"Materials  : {model.Materials.Count}");
+    foreach (var (material, materialIndex) in model.Materials.Select((value, index) => (value, index)))
+    {
+        Console.WriteLine($"material {materialIndex}: {material.SourceParameters.Count} constants, {material.SourceTextureReferences.Count} texture references");
+        foreach (var reference in material.SourceTextureReferences)
+        {
+            Console.WriteLine($"  {reference.Key} -> {reference.Value}");
+        }
+    }
     foreach (var (mesh, meshIndex) in model.Meshes.Select((value, index) => (value, index)))
     {
         foreach (var (primitive, primitiveIndex) in mesh.Primitives.Select((value, index) => (value, index)))
@@ -133,6 +179,67 @@ if (args is ["--phyre-texture", var texturePackagePath, var textureEntryName])
     Console.WriteLine($"Format     : {texture.Format}");
     Console.WriteLine($"GPU bytes  : {texture.Data.Length}");
     return 0;
+}
+
+if (args is ["--phyre-material", var materialPackagePath, var materialEntryName])
+{
+    var archive = new PkgArchiveReader().Read(materialPackagePath);
+    var cluster = new PhyreClusterReader().Read(archive.ReadEntry(materialEntryName));
+    var memberNames = cluster.Metadata.Classes.SelectMany(value => value.Members)
+        .ToDictionary(value => (uint)value.Index, value => value.Name);
+    foreach (var user in cluster.Fixups.UserFixups)
+    {
+        Console.WriteLine($"USER #{user.Id}: {user.TypeName}, {Convert.ToHexString(user.Data.Span)}, text='{user.Text}'");
+    }
+    for (var groupIndex = 0; groupIndex < cluster.Metadata.InstanceGroups.Count; groupIndex++)
+    {
+        var group = cluster.Metadata.InstanceGroups[groupIndex];
+        if (group.ClassName == "PAssetReferenceImport")
+        {
+            for (uint objectId = 0; objectId < group.Count; objectId++)
+            {
+                var idFixup = cluster.Fixups.Arrays.Single(value => value.SourceListIndex == groupIndex && value.SourceObjectId == objectId);
+                var idPointer = cluster.Fixups.Pointers.Single(value => value.SourceListIndex == groupIndex && value.SourceObjectId == objectId);
+                Console.WriteLine($"IMPORT {objectId}: '{ReadZeroTerminated(cluster, groupIndex, idFixup.Offset)}', pointer user={idPointer.UserFixupId}");
+            }
+        }
+
+        if (group.ClassName != "PParameterBuffer") continue;
+        var buffer = cluster.GetGroupObjectsData(groupIndex).Span;
+        Console.WriteLine($"BUFFER group={groupIndex}, stored={group.ObjectsSize}, declared={BinaryPrimitives.ReadUInt32LittleEndian(buffer)}");
+        foreach (var pointer in cluster.Fixups.Pointers.Where(value => value.SourceListIndex == groupIndex && value.UserFixupId is not null))
+        {
+            var user = cluster.Fixups.UserFixups[checked((int)pointer.UserFixupId!.Value)];
+            Console.WriteLine($"  USER +0x{pointer.SourceOffset:X}: #{user.Id} {user.TypeName}, {Convert.ToHexString(user.Data.Span)}, text='{user.Text}'");
+        }
+
+        var definitionPointer = cluster.FindPointer(groupIndex, 0, 0x0c);
+        var definitionCount = BinaryPrimitives.ReadUInt32LittleEndian(buffer.Slice(8, 4));
+        if (definitionPointer is null) continue;
+        for (uint local = 0; local < definitionCount; local++)
+        {
+            var objectId = definitionPointer.DestinationObjectId + local;
+            var definition = cluster.GetObject(checked((int)definitionPointer.DestinationListIndex), objectId).Span;
+            var nameFixup = cluster.Fixups.Arrays.Single(value =>
+                value.SourceListIndex == definitionPointer.DestinationListIndex && value.SourceObjectId == objectId
+                && (!value.IsClassDataMember || memberNames[value.SourceMemberId] == "m_name"));
+            var name = ReadZeroTerminated(cluster, checked((int)definitionPointer.DestinationListIndex), nameFixup.Offset);
+            var location = BinaryPrimitives.ReadUInt16LittleEndian(definition.Slice(8, 2));
+            var size = BinaryPrimitives.ReadUInt16LittleEndian(definition.Slice(10, 2));
+            Console.WriteLine($"  DEF {local}: '{name}' nameCount={nameFixup.Count} nameOffset={nameFixup.Offset} type={definition[2]} data={definition[3]} array={BinaryPrimitives.ReadUInt16LittleEndian(definition)} loc=0x{location:X} size={size}");
+        }
+    }
+
+    return 0;
+}
+
+static string ReadZeroTerminated(PhyreClusterData cluster, int groupIndex, uint offset)
+{
+    var group = cluster.Metadata.InstanceGroups[groupIndex];
+    var remaining = cluster.GetArrayData(groupIndex, offset, group.ArraysSize - offset).Span;
+    var zero = remaining.IndexOf((byte)0);
+    if (zero < 0) throw new InvalidDataException("Unterminated diagnostic Phyre string.");
+    return Encoding.ASCII.GetString(remaining[..zero]);
 }
 
 var tests = new (string Name, Action Run)[]

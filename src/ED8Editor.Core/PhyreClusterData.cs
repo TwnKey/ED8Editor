@@ -61,6 +61,12 @@ public sealed class PhyreClusterData
         return Slice(checked(_groupOffsets[groupIndex] + group.ObjectsSize + relativeOffset), size, "array data");
     }
 
+    public ReadOnlyMemory<byte> GetGroupObjectsData(int groupIndex)
+    {
+        var group = GetGroup(groupIndex);
+        return Slice(_groupOffsets[groupIndex], group.ObjectsSize, "instance group objects");
+    }
+
     public ReadOnlyMemory<byte> GetVramData(uint relativeOffset, uint size)
     {
         return Slice(checked(Fixups.VramDataOffset + relativeOffset), size, "VRAM data");

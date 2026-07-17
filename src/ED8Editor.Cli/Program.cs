@@ -91,6 +91,9 @@ static string FormatModelSummary(IEnumerable<ED8Editor.Core.AssetModelLoad> mode
     var invalid = values.Count(value => value.Status == ED8Editor.Core.AssetModelLoadStatus.Invalid);
     var meshes = values.Sum(value => value.Model?.Meshes.Count ?? 0);
     var primitives = values.Sum(value => value.Model?.Meshes.Sum(mesh => mesh.Primitives.Count) ?? 0);
+    var materials = values.Sum(value => value.Model?.Materials.Count ?? 0);
+    var references = values.Sum(value => value.Model?.Materials.Sum(material => material.SourceTextureReferences.Count) ?? 0);
+    var bindings = values.Sum(value => value.Model?.Materials.Sum(material => material.TextureBindings.Count) ?? 0);
     var textures = values.Sum(value => value.Model?.Textures.Count ?? 0);
-    return $"{loaded} loaded, {missing} missing, {invalid} invalid, {meshes} meshes, {primitives} primitives, {textures} textures";
+    return $"{loaded} loaded, {missing} missing, {invalid} invalid, {meshes} meshes, {primitives} primitives, {materials} materials, {textures} textures, {bindings}/{references} bindings";
 }

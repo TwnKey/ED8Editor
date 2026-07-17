@@ -20,6 +20,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ED8Editor.Phyre", "src\ED8E
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ED8Editor.Tests", "tests\ED8Editor.Tests\ED8Editor.Tests.csproj", "{8CF93AC2-CFAE-48C5-B047-2666A14DA440}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ED8Editor.Rendering", "src\ED8Editor.Rendering\ED8Editor.Rendering.csproj", "{B1D848DB-5EA6-4D5D-B833-13C46839F9D0}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ED8Editor.Viewer", "src\ED8Editor.Viewer\ED8Editor.Viewer.csproj", "{2F9671A8-D984-4821-8F74-B1CD136E4100}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -62,5 +66,13 @@ Global
 		{8CF93AC2-CFAE-48C5-B047-2666A14DA440}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{8CF93AC2-CFAE-48C5-B047-2666A14DA440}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{8CF93AC2-CFAE-48C5-B047-2666A14DA440}.Release|Any CPU.Build.0 = Release|Any CPU
+		{B1D848DB-5EA6-4D5D-B833-13C46839F9D0}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{B1D848DB-5EA6-4D5D-B833-13C46839F9D0}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{B1D848DB-5EA6-4D5D-B833-13C46839F9D0}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{B1D848DB-5EA6-4D5D-B833-13C46839F9D0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2F9671A8-D984-4821-8F74-B1CD136E4100}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2F9671A8-D984-4821-8F74-B1CD136E4100}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2F9671A8-D984-4821-8F74-B1CD136E4100}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2F9671A8-D984-4821-8F74-B1CD136E4100}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
