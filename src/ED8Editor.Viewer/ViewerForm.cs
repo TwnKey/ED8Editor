@@ -22,6 +22,7 @@ public sealed class ViewerForm : Form
     private readonly SceneElementPicker elementPicker = new();
     private readonly SceneRaycaster surfaceRaycaster = new();
     private readonly EditorOrbitCamera cameraNavigation = new();
+    private readonly EditorCameraDollySmoother cameraDollySmoother = new();
     private readonly SceneTranslationGizmo translationGizmo = new();
     private readonly SceneRotationGizmo rotationGizmo = new();
     private readonly SceneCameraGizmo cameraGizmo = new();
@@ -29,9 +30,19 @@ public sealed class ViewerForm : Form
     private readonly HashSet<Keys> pressedKeys = new();
     private readonly System.Windows.Forms.Timer renderTimer = new() { Interval = 16 };
     private readonly Stopwatch frameClock = Stopwatch.StartNew();
+    private readonly CancellationTokenSource effectMetadataCancellation = new();
     private readonly List<D3D11ModelResources> uploadedModels = new();
     private readonly Dictionary<string, CpuModel> loadedModelsByAsset = new(StringComparer.OrdinalIgnoreCase);
     private readonly Panel viewportHost = new() { Dock = DockStyle.Fill, TabStop = true };
+    private readonly ToolStrip gizmoToolStrip = new()
+    {
+        Dock = DockStyle.Top,
+        GripStyle = ToolStripGripStyle.Hidden,
+        RenderMode = ToolStripRenderMode.System,
+    };
+    private readonly ToolStripButton translateToolButton = new("Move (1)") { ToolTipText = "Translate the selected object" };
+    private readonly ToolStripButton rotateToolButton = new("Rotate (2)") { ToolTipText = "Rotate the selected object" };
+    private readonly ToolStripButton scaleToolButton = new("Scale (3)") { ToolTipText = "Scale the selected object" };
     private readonly Panel scenePanel = new() { Dock = DockStyle.Left, Width = 340, Padding = new Padding(8) };
     private readonly GroupBox sceneOutlinerGroup = new()
     {
@@ -57,6 +68,19 @@ public sealed class ViewerForm : Form
         Dock = DockStyle.Top,
         Height = 28,
         DropDownStyle = ComboBoxStyle.DropDownList,
+    };
+    private readonly ComboBox environmentVariantList = new()
+    {
+        Dock = DockStyle.Top,
+        Height = 28,
+        DropDownStyle = ComboBoxStyle.DropDownList,
+    };
+    private readonly Label effectMetadataStatus = new()
+    {
+        Dock = DockStyle.Top,
+        Height = 24,
+        Text = "Phyre effects: pending",
+        TextAlign = ContentAlignment.MiddleLeft,
     };
     private readonly ListBox assetList = new() { Dock = DockStyle.Fill, IntegralHeight = false };
     private readonly Button addAssetButton = new() { Dock = DockStyle.Bottom, Height = 34, Text = "Add selected asset" };
@@ -98,6 +122,7 @@ public sealed class ViewerForm : Form
     private Point leftMouseDown;
     private bool pendingLeftClick;
     private bool lookCursorLocked;
+    private bool rightLookMoved;
     private Point lookCursorRestoreScreen;
     private CameraDragMode cameraDrag;
     private long previousFrameTicks;
@@ -110,6 +135,8 @@ public sealed class ViewerForm : Form
     private IReadOnlyList<SceneElementSelection> outlinerSelections = Array.Empty<SceneElementSelection>();
     private bool refreshingOutliner;
     private EditorKeyboardLayout keyboardLayout;
+    private SceneEnvironmentVariant environmentVariant = SceneEnvironmentVariant.Daylight;
+    private bool refreshingEnvironmentVariant;
 
     public ViewerForm(
         EditorSession session,
@@ -125,8 +152,9 @@ public sealed class ViewerForm : Form
             new AssetManifestReader(), new PhyreD3D11ModelReader(), new PhyreD3D11TextureReader());
         document = new EditorSceneDocument(session);
         document.Changed += (_, _) => RefreshSceneFromDocument();
+        document.PreviewChanged += (_, _) => RefreshScenePreviewFromDocument();
         this.smokeTest = smokeTest;
-        baseTitle = $"ED8Editor — {session.Script.Header.Identifier} — 1: move, 2: rotate, 3: scale, Ctrl+Z/Y: undo/redo";
+        baseTitle = $"ED8Editor — {session.Script.Header.Identifier} — 1: move, 2: rotate, 3: scale, Ctrl+click: select through, Ctrl+Z/Y: undo/redo";
         Text = baseTitle;
         ClientSize = new Size(1280, 720);
         MinimumSize = new Size(640, 360);
@@ -134,6 +162,8 @@ public sealed class ViewerForm : Form
         KeyPreview = true;
         assetPanel.Controls.Add(assetList);
         assetPanel.Controls.Add(snapCheckBox);
+        assetPanel.Controls.Add(effectMetadataStatus);
+        assetPanel.Controls.Add(environmentVariantList);
         assetPanel.Controls.Add(keyboardLayoutList);
         assetPanel.Controls.Add(assetSearch);
         propertyGroup.Controls.Add(propertyGrid);
@@ -152,6 +182,18 @@ public sealed class ViewerForm : Form
         Controls.Add(viewportHost);
         Controls.Add(assetPanel);
         Controls.Add(scenePanel);
+        gizmoToolStrip.Items.AddRange(new ToolStripItem[]
+        {
+            translateToolButton,
+            rotateToolButton,
+            scaleToolButton,
+        });
+        Controls.Add(gizmoToolStrip);
+        gizmoToolStrip.BringToFront();
+        translateToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Translate);
+        rotateToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Rotate);
+        scaleToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Scale);
+        SetGizmoMode(GizmoMode.Translate);
         assetSearch.TextChanged += (_, _) => FilterAssetCatalog();
         addAssetButton.Click += async (_, _) => await AddSelectedAssetAsync();
         duplicateButton.Click += (_, _) => DuplicateSelectedElement();
@@ -172,6 +214,16 @@ public sealed class ViewerForm : Form
         });
         keyboardLayoutList.SelectedIndex = keyboardLayout == EditorKeyboardLayout.Azerty ? 0 : 1;
         keyboardLayoutList.SelectedIndexChanged += (_, _) => ChangeKeyboardLayout();
+        environmentVariantList.Items.AddRange(new object[]
+        {
+            "Environment: Daylight",
+            "Environment: Evening",
+            "Environment: Night",
+            "Environment: Morning",
+            "Environment: Rain",
+        });
+        environmentVariantList.SelectedIndex = 0;
+        environmentVariantList.SelectedIndexChanged += (_, _) => ChangeEnvironmentVariant();
         RefreshOpsCreationInputs();
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.Opaque, true);
         renderTimer.Tick += (_, _) => RenderFrame();
@@ -179,13 +231,12 @@ public sealed class ViewerForm : Form
         {
             if (eventArgs.KeyCode is Keys.D1 or Keys.D2 or Keys.D3)
             {
-                gizmoMode = eventArgs.KeyCode switch
+                SetGizmoMode(eventArgs.KeyCode switch
                 {
                     Keys.D1 => GizmoMode.Translate,
                     Keys.D2 => GizmoMode.Rotate,
                     _ => GizmoMode.Scale,
-                };
-                RefreshOverlay();
+                });
                 return;
             }
             if (eventArgs.KeyCode == Keys.Escape && placement is not null)
@@ -251,7 +302,11 @@ public sealed class ViewerForm : Form
                 return;
             }
             if (eventArgs.Button is not (MouseButtons.Right or MouseButtons.Middle)) return;
-            if (eventArgs.Button == MouseButtons.Right) BeginLookDrag(eventArgs.Location);
+            if (eventArgs.Button == MouseButtons.Right)
+            {
+                rightLookMoved = false;
+                BeginLookDrag(eventArgs.Location);
+            }
             else
             {
                 cameraDrag = CameraDragMode.Pan;
@@ -293,7 +348,11 @@ public sealed class ViewerForm : Form
             if (eventArgs.Button is not (MouseButtons.Right or MouseButtons.Middle)) return;
             if ((eventArgs.Button == MouseButtons.Right && cameraDrag != CameraDragMode.Look)
                 || (eventArgs.Button == MouseButtons.Middle && cameraDrag != CameraDragMode.Pan)) return;
+            var deselect = eventArgs.Button == MouseButtons.Right
+                && cameraDrag == CameraDragMode.Look
+                && !rightLookMoved;
             EndCameraDrag();
+            if (deselect) ClearSelection();
         };
         viewportHost.MouseMove += (_, eventArgs) =>
         {
@@ -308,6 +367,7 @@ public sealed class ViewerForm : Form
             {
                 pendingLeftClick = false;
                 cameraDrag = CameraDragMode.None;
+                rightLookMoved = false;
                 ReleaseLookCursor();
             }
         };
@@ -319,13 +379,22 @@ public sealed class ViewerForm : Form
         };
     }
 
-    protected override void OnShown(EventArgs eventArgs)
+    protected override async void OnShown(EventArgs eventArgs)
     {
         base.OnShown(eventArgs);
         try
         {
             InitializeRenderer();
             InitializeAssetCatalog();
+            effectMetadataStatus.Text = "Phyre effects: loading...";
+            var effectCount = await LoadEffectMetadataAsync();
+            if (IsDisposed) return;
+            var modelCount = session.AssetModels.Values.Count(value => value.Model is not null);
+            if (effectCount >= 0)
+            {
+                effectMetadataStatus.Text = $"Phyre effects: {effectCount}/{modelCount} models loaded";
+                effectMetadataStatus.ForeColor = effectCount == modelCount ? Color.DarkGreen : Color.DarkOrange;
+            }
             if (smokeTest)
             {
                 RenderFrame();
@@ -333,6 +402,7 @@ public sealed class ViewerForm : Form
             }
             else
             {
+                Text = baseTitle;
                 renderTimer.Start();
             }
         }
@@ -377,6 +447,8 @@ public sealed class ViewerForm : Form
             renderTimer.Stop();
             renderTimer.Dispose();
             viewport?.Dispose();
+            effectMetadataCancellation.Cancel();
+            effectMetadataCancellation.Dispose();
             foreach (var model in uploadedModels) model.Dispose();
             graphics?.Dispose();
             viewportHost.Capture = false;
@@ -405,14 +477,17 @@ public sealed class ViewerForm : Form
 
         sceneInstances = document.CreateModelInstances();
         currentMap = document.CreateMapSnapshot();
+        SetEnvironmentVariant(SceneEnvironmentVariantSelector.FromProfileName(
+            currentMap?.DefaultEnvironment?.ProfileName));
         RefreshRenderInstances(resourcesByAsset);
 
-        var bounds = new SceneBoundsCalculator().Calculate(sceneInstances);
+        var bounds = new SceneBoundsCalculator().Calculate(VisibleSceneInstances());
         var center = bounds.HasGeometry ? bounds.Center : Vector3.Zero;
         sceneRadius = Math.Max(bounds.Radius, 1f);
         var initialPosition = center + new Vector3(0, sceneRadius * 0.35f, -sceneRadius * 1.6f);
         cameraNavigation.Initialize(center, initialPosition);
         viewport = new D3D11Viewport(graphics, viewportHost.Handle, viewportHost.ClientSize.Width, viewportHost.ClientSize.Height);
+        viewport.SetEnvironmentVariant(ActiveEnvironmentVariant);
         if (currentMap?.DefaultEnvironment is { } environment)
         {
             viewport.SetClearColor(new Vector4(environment.FogColor, 1f));
@@ -421,6 +496,36 @@ public sealed class ViewerForm : Form
         RefreshOverlay();
         RefreshOutliner();
         previousFrameTicks = frameClock.ElapsedTicks;
+    }
+
+    private async Task<int> LoadEffectMetadataAsync()
+    {
+        try
+        {
+            var models = await projectLoader.LoadEffectMetadataAsync(
+                session,
+                effectMetadataCancellation.Token);
+            if (IsDisposed) return -1;
+            foreach (var uploaded in uploadedModels)
+            {
+                if (models.TryGetValue(uploaded.AssetId, out var model))
+                {
+                    uploaded.UpdateMaterialSources(model);
+                }
+            }
+            return models.Count;
+        }
+        catch (OperationCanceledException)
+        {
+            return -1;
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException)
+        {
+            Debug.WriteLine($"Could not load Phyre effect metadata: {exception}");
+            effectMetadataStatus.Text = $"Phyre effects: failed — {exception.Message}";
+            effectMetadataStatus.ForeColor = Color.DarkRed;
+            return -1;
+        }
     }
 
     private void RenderFrame()
@@ -467,6 +572,8 @@ public sealed class ViewerForm : Form
             var translation = Vector3.Normalize(movement) * speed * fast * elapsed;
             cameraNavigation.Translate(translation);
         }
+        var dollyDistance = cameraDollySmoother.Advance(elapsed);
+        if (dollyDistance != 0f) cameraNavigation.Dolly(dollyDistance);
     }
 
     private void ChangeKeyboardLayout()
@@ -476,6 +583,33 @@ public sealed class ViewerForm : Form
             : EditorKeyboardLayout.Qwerty;
         settingsStore.Save(settingsStore.Load() with { KeyboardLayout = keyboardLayout });
         pressedKeys.Clear();
+    }
+
+    private void ChangeEnvironmentVariant()
+    {
+        if (refreshingEnvironmentVariant || environmentVariantList.SelectedIndex < 0) return;
+        SetEnvironmentVariant((SceneEnvironmentVariant)environmentVariantList.SelectedIndex);
+        if (uploadedModels.Count != 0)
+        {
+            var resourcesByAsset = uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase);
+            RefreshRenderInstances(resourcesByAsset);
+        }
+        Text = $"{baseTitle} — environment: {environmentVariant}";
+    }
+
+    private void SetEnvironmentVariant(SceneEnvironmentVariant value)
+    {
+        environmentVariant = value;
+        viewport?.SetEnvironmentVariant(value);
+        refreshingEnvironmentVariant = true;
+        try
+        {
+            environmentVariantList.SelectedIndex = (int)value;
+        }
+        finally
+        {
+            refreshingEnvironmentVariant = false;
+        }
     }
 
     private bool UpdateLeftMouseGesture(Point current)
@@ -498,6 +632,7 @@ public sealed class ViewerForm : Form
             var lookDeltaX = current.X - center.X;
             var lookDeltaY = current.Y - center.Y;
             if (lookDeltaX == 0 && lookDeltaY == 0) return;
+            rightLookMoved = true;
             cameraNavigation.Look(lookDeltaX, lookDeltaY);
             CenterLookCursor();
             return;
@@ -546,19 +681,42 @@ public sealed class ViewerForm : Form
         if (wheelDelta == 0) return;
         var hit = surfaceRaycaster.Cast(
             new SceneRay(cameraNavigation.Position, cameraNavigation.Forward),
-            sceneInstances).Hit;
+            VisibleSceneInstances()).Hit;
         var referenceDistance = hit?.Distance ?? sceneRadius * 0.25f;
         var minimumStep = Math.Max(sceneRadius * 0.002f, 0.05f);
         var maximumStep = Math.Max(sceneRadius * 0.25f, 1f);
         var step = Math.Clamp(referenceDistance * 0.2f, minimumStep, maximumStep);
-        cameraNavigation.Dolly(wheelDelta / 120f * step);
+        cameraDollySmoother.Add(wheelDelta / 120f * step);
+    }
+
+    private void SetGizmoMode(GizmoMode mode)
+    {
+        gizmoMode = mode;
+        translateToolButton.Checked = mode == GizmoMode.Translate;
+        rotateToolButton.Checked = mode == GizmoMode.Rotate;
+        scaleToolButton.Checked = mode == GizmoMode.Scale;
+        RefreshOverlay();
+    }
+
+    private void ClearSelection()
+    {
+        if (selection is null) return;
+        selection = null;
+        cameraHandle = SceneCameraHandle.Eye;
+        var resourcesByAsset = uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase);
+        RefreshRenderInstances(resourcesByAsset);
+        RefreshOverlay();
+        RefreshElementProperties();
+        SyncOutlinerSelection();
+        Text = $"{baseTitle} - no selection";
     }
 
     private void SelectAt(Point location)
     {
         if (viewport is null || viewportHost.ClientSize.Width <= 0 || viewportHost.ClientSize.Height <= 0) return;
         var ray = CreatePointerRay(location);
-        var hit = elementPicker.Pick(ray, sceneInstances, currentMap, overlayMarkerSize);
+        var hits = elementPicker.PickAll(ray, VisibleSceneInstances(), currentMap, overlayMarkerSize);
+        var hit = SelectPickCandidate(hits, ModifierKeys.HasFlag(Keys.Control));
         selection = hit?.Selection;
         cameraHandle = SceneCameraHandle.Eye;
         var resourcesByAsset = uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase);
@@ -568,12 +726,31 @@ public sealed class ViewerForm : Form
         SyncOutlinerSelection();
         Text = hit is null
             ? $"{baseTitle} — no selection"
-            : $"{baseTitle} — selected: {hit.Selection.Name} [{hit.Selection.Kind}]";
+            : $"{baseTitle} — selected: {DescribeSelection(hit.Selection)}";
+    }
+
+    private SceneElementPickHit? SelectPickCandidate(
+        IReadOnlyList<SceneElementPickHit> hits,
+        bool selectThrough)
+    {
+        if (hits.Count == 0) return null;
+        if (!selectThrough) return hits[0];
+        if (selection is null) return hits.Count > 1 ? hits[1] : hits[0];
+        var currentIndex = hits
+            .Select((value, index) => (value, index))
+            .Where(value => value.value.Selection == selection)
+            .Select(value => value.index)
+            .DefaultIfEmpty(-1)
+            .First();
+        return currentIndex >= 0 && currentIndex < hits.Count - 1
+            ? hits[currentIndex + 1]
+            : hits[0];
     }
 
     private void FocusSelection()
     {
         if (selection is null) return;
+        cameraDollySmoother.Reset();
         if (selection.Kind == SceneElementKind.Prop)
         {
             var selected = sceneInstances.FirstOrDefault(value => value.Id == selection.SourceIndex);
@@ -596,22 +773,35 @@ public sealed class ViewerForm : Form
         cameraNavigation.Focus(center, Math.Max(radius * 2.5f, sceneRadius * 0.01f));
     }
 
+    private string DescribeSelection(SceneElementSelection selected)
+    {
+        var assetId = selected.Kind == SceneElementKind.Prop
+            ? document.FindProp(selected)?.AssetId
+            : null;
+        return assetId is null
+            ? $"{selected.Name} [{selected.Kind}]"
+            : $"{selected.Name} [{selected.Kind}] — asset: {assetId}";
+    }
+
     private void RefreshRenderInstances(IReadOnlyDictionary<string, D3D11ModelResources> resourcesByAsset)
     {
         var rendered = sceneInstances
+            .Where(value => SceneEnvironmentVariantSelector.IsVisible(value.Name, ActiveEnvironmentVariant))
             .Where(value => resourcesByAsset.ContainsKey(value.AssetId))
             .Select(value => new D3D11SceneInstance(
                 value.Id,
                 resourcesByAsset[value.AssetId],
                 value.Transform,
                 selection is { Kind: SceneElementKind.Prop }
-                    && value.Id == selection.SourceIndex))
+                    && value.Id == selection.SourceIndex,
+                MaterialDiffuse: value.MaterialDiffuse,
+                MaterialEmission: value.MaterialEmission))
             .ToList();
         if (placement is { Position: { } position, Model: not null, AssetId: not null } preview
             && resourcesByAsset.TryGetValue(preview.AssetId, out var previewResources))
         {
             var transform = Matrix4x4.CreateTranslation(position);
-            rendered.Add(new D3D11SceneInstance(-1, previewResources, transform, false, true));
+            rendered.Add(new D3D11SceneInstance(-1, previewResources, transform, false, true, Vector4.One, Vector3.Zero));
         }
         instances = rendered;
     }
@@ -656,7 +846,7 @@ public sealed class ViewerForm : Form
             overlayLines.Add(new SceneOverlayLine(previewPosition - Vector3.UnitZ * size, previewPosition + Vector3.UnitZ * size, color));
         }
         viewport.SetDebugLines(overlayLines
-            .Select(line => new D3D11DebugLine(line.Start, line.End, line.Color))
+            .Select(line => new D3D11DebugLine(line.Start, line.End, line.Color, line.Thickness))
             .ToArray());
     }
 
@@ -667,8 +857,7 @@ public sealed class ViewerForm : Form
         var ray = CreatePointerRay(location);
         if (!cameraGizmo.TryPickHandle(ray, camera, overlayMarkerSize * 2f, out var handle)) return false;
         cameraHandle = handle;
-        gizmoMode = GizmoMode.Translate;
-        RefreshOverlay();
+        SetGizmoMode(GizmoMode.Translate);
         Text = $"{baseTitle} - camera handle: {handle}";
         return true;
     }
@@ -792,7 +981,7 @@ public sealed class ViewerForm : Form
     {
         var distance = Vector3.Distance(cameraNavigation.Position, position);
         var worldUnitsPerPixel = 2f * distance * MathF.Tan(MathF.PI / 6f) / Math.Max(1, viewportHost.ClientSize.Height);
-        return Math.Max(worldUnitsPerPixel * 90f, overlayMarkerSize * 2f);
+        return Math.Max(worldUnitsPerPixel * 115f, overlayMarkerSize * 2.5f);
     }
 
     private static bool SupportsMode(EditableSceneElement element, GizmoMode mode)
@@ -808,11 +997,21 @@ public sealed class ViewerForm : Form
     {
         sceneInstances = document.CreateModelInstances();
         currentMap = document.CreateMapSnapshot();
+        viewport?.SetEnvironmentVariant(environmentVariant);
         var resourcesByAsset = uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase);
         RefreshRenderInstances(resourcesByAsset);
         RefreshOverlay();
         RefreshElementProperties();
         RefreshOutliner();
+    }
+
+    private void RefreshScenePreviewFromDocument()
+    {
+        sceneInstances = document.CreateModelInstances();
+        currentMap = document.CreateMapSnapshot();
+        var resourcesByAsset = uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase);
+        RefreshRenderInstances(resourcesByAsset);
+        RefreshOverlay();
     }
 
     private void RefreshOutliner()
@@ -835,8 +1034,12 @@ public sealed class ViewerForm : Form
                 var groupNode = sceneOutliner.Nodes.Add(group.Name);
                 foreach (var element in group.Elements)
                 {
+                    var assetId = element.Kind == SceneElementKind.Prop
+                        ? document.FindProp(element)?.AssetId
+                        : null;
+                    var assetSuffix = assetId is null ? string.Empty : $" — {assetId}";
                     groupNode.Nodes.Add(new TreeNode(
-                        $"{element.Name} — {group.ElementTypeName} [{element.SourceIndex}]") { Tag = element });
+                        $"{element.Name} — {group.ElementTypeName} [{element.SourceIndex}]{assetSuffix}") { Tag = element });
                 }
                 groupNode.Expand();
             }
@@ -859,7 +1062,7 @@ public sealed class ViewerForm : Form
         RefreshRenderInstances(resourcesByAsset);
         RefreshOverlay();
         RefreshElementProperties();
-        Text = $"{baseTitle} - selected: {selected.Name} [{selected.Kind}]";
+        Text = $"{baseTitle} — selected: {DescribeSelection(selected)}";
     }
 
     private void FocusOutlinerNode(TreeNode node)
@@ -1012,7 +1215,7 @@ public sealed class ViewerForm : Form
     private void UpdatePlacement(Point location)
     {
         if (placement is null || viewportHost.ClientSize.Width <= 0 || viewportHost.ClientSize.Height <= 0) return;
-        var result = surfaceRaycaster.Cast(CreatePointerRay(location), sceneInstances);
+        var result = surfaceRaycaster.Cast(CreatePointerRay(location), VisibleSceneInstances());
         placement = result.Hit is null
             ? placement with { Position = null }
             : placement with { Position = result.Hit.Position, SurfaceNormal = result.Hit.Normal };
@@ -1175,6 +1378,14 @@ public sealed class ViewerForm : Form
         }
         return false;
     }
+
+    private SceneEnvironmentVariant ActiveEnvironmentVariant
+        => environmentVariant;
+
+    private IReadOnlyList<SceneModelInstance> VisibleSceneInstances()
+        => sceneInstances
+            .Where(value => SceneEnvironmentVariantSelector.IsVisible(value.Name, ActiveEnvironmentVariant))
+            .ToArray();
 
     private enum CameraDragMode
     {

@@ -4,3 +4,6 @@ dist/
 .vs/
 *.user
 *.suo
+*.exe
+*.pdb
+*.build

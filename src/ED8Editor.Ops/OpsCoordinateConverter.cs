@@ -6,7 +6,7 @@ namespace ED8Editor.Ops;
 internal static class OpsCoordinateConverter
 {
     public static Vector3 ToEditorPosition(Vector3 sourcePosition)
-        => new(-sourcePosition.X, sourcePosition.Y, sourcePosition.Z);
+        => sourcePosition;
 
     public static MapTransform ToEditorTransform(
         Vector3 sourcePosition,
@@ -14,14 +14,9 @@ internal static class OpsCoordinateConverter
         Vector3 scale)
     {
         var editorPosition = ToEditorPosition(sourcePosition);
-        var editorEuler = new Vector3(
-            sourceEulerRadians.X,
-            -sourceEulerRadians.Y,
-            sourceEulerRadians.Z);
-
         return new MapTransform(
             editorPosition,
-            FromEditorEuler(editorEuler),
+            FromEditorEuler(sourceEulerRadians),
             scale,
             sourcePosition,
             sourceEulerRadians);
@@ -32,13 +27,9 @@ internal static class OpsCoordinateConverter
         Vector3 sourceEulerRadians,
         Vector3 scale)
     {
-        var editorEuler = new Vector3(
-            sourceEulerRadians.X,
-            -sourceEulerRadians.Y,
-            sourceEulerRadians.Z);
         return new MapTransform(
             ToEditorPosition(sourcePosition),
-            FromEditorEuler(editorEuler),
+            FromEditorEuler(sourceEulerRadians),
             scale,
             sourcePosition,
             sourceEulerRadians);
@@ -49,13 +40,9 @@ internal static class OpsCoordinateConverter
     {
         ArgumentNullException.ThrowIfNull(editorTransform);
         var editorEuler = ToEditorEuler(Quaternion.Normalize(editorTransform.Rotation));
-        var sourceEuler = new Vector3(
-            editorEuler.X,
-            -editorEuler.Y,
-            editorEuler.Z);
         return (
-            new Vector3(-editorTransform.Position.X, editorTransform.Position.Y, editorTransform.Position.Z),
-            sourceEuler,
+            editorTransform.Position,
+            editorEuler,
             editorTransform.Scale);
     }
 

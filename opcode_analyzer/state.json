@@ -1,0 +1,94 @@
+{
+  "opcode_names": {},
+  "operand_defs": {
+    "19_0": {
+      "format": "s16",
+      "name": ""
+    },
+    "19_5": {
+      "format": "float",
+      "name": ""
+    },
+    "19_4": {
+      "format": "u8",
+      "name": ""
+    },
+    "19_3": {
+      "format": "u8",
+      "name": ""
+    },
+    "19_1": {
+      "format": "str",
+      "name": ""
+    },
+    "19_2": {
+      "format": "str",
+      "name": ""
+    },
+    "19_6": {
+      "format": "float",
+      "name": ""
+    },
+    "19_7": {
+      "format": "float",
+      "name": ""
+    },
+    "19_8": {
+      "format": "float",
+      "name": ""
+    },
+    "19_9": {
+      "format": "float",
+      "name": ""
+    },
+    "19_10": {
+      "format": "float",
+      "name": ""
+    },
+    "19_11": {
+      "format": "float",
+      "name": ""
+    },
+    "19_12": {
+      "format": "float",
+      "name": ""
+    },
+    "19_13": {
+      "format": "str",
+      "name": ""
+    },
+    "19_14": {
+      "format": "str",
+      "name": ""
+    },
+    "20_0": {
+      "format": "s16",
+      "name": ""
+    },
+    "20_1": {
+      "format": "u8",
+      "name": ""
+    },
+    "20_2": {
+      "format": "u8",
+      "name": ""
+    },
+    "20_3": {
+      "format": "str",
+      "name": ""
+    },
+    "43_0": {
+      "format": "s16",
+      "name": ""
+    },
+    "43_1": {
+      "format": "s32",
+      "name": ""
+    }
+  },
+  "committed": [
+    "19",
+    "20",
+    "43"
+  ]
+}

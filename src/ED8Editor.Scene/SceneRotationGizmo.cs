@@ -20,6 +20,7 @@ public sealed class SceneRotationGizmo
 
         void AddRing(SceneGizmoAxis axis, Vector3 basisA, Vector3 basisB, Vector4 color)
         {
+            var thickness = axis == activeAxis ? 4f : 3f;
             if (axis == activeAxis) color = ActiveColor;
             const int segments = 48;
             for (var segment = 0; segment < segments; segment++)
@@ -28,7 +29,7 @@ public sealed class SceneRotationGizmo
                 var angleB = (segment + 1) * MathF.Tau / segments;
                 var start = origin + (basisA * MathF.Cos(angleA) + basisB * MathF.Sin(angleA)) * radius;
                 var end = origin + (basisA * MathF.Cos(angleB) + basisB * MathF.Sin(angleB)) * radius;
-                lines.Add(new SceneOverlayLine(start, end, color));
+                lines.Add(new SceneOverlayLine(start, end, color, thickness));
             }
         }
     }

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Ce module encapsule le moteur natif valide (cs1_decompiler.dll). -->
+    <!-- Warnings-as-errors relache ici (couche interop) le temps de stabiliser. -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ED8Editor.Core\ED8Editor.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Le document (source de verite des instructions) est copie a cote de l'exe. -->
+    <None Include="cs1_instructions.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <!-- La DLL native, une fois construite via native\build.cmd, est copiee aussi. -->
+    <None Include="native\cs1_decompiler.dll" Condition="Exists('native\cs1_decompiler.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

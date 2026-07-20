@@ -32,6 +32,13 @@ public sealed class SceneElementPicker
         IReadOnlyList<SceneModelInstance> modelInstances,
         MapScene? map,
         float pointMarkerSize)
+        => PickAll(ray, modelInstances, map, pointMarkerSize).FirstOrDefault();
+
+    public IReadOnlyList<SceneElementPickHit> PickAll(
+        SceneRay ray,
+        IReadOnlyList<SceneModelInstance> modelInstances,
+        MapScene? map,
+        float pointMarkerSize)
     {
         ArgumentNullException.ThrowIfNull(modelInstances);
         if (!float.IsFinite(pointMarkerSize) || pointMarkerSize <= 0)
@@ -39,16 +46,13 @@ public sealed class SceneElementPicker
             throw new ArgumentOutOfRangeException(nameof(pointMarkerSize));
         }
 
-        SceneElementPickHit? nearest = null;
-        var modelHit = modelRaycaster.Cast(ray, modelInstances).Hit;
-        if (modelHit is not null)
-        {
-            nearest = new SceneElementPickHit(
+        var hits = modelRaycaster.CastAll(ray, modelInstances).Hits
+            .Select(modelHit => new SceneElementPickHit(
                 new SceneElementSelection(SceneElementKind.Prop, modelHit.Instance.Id, modelHit.Instance.Name),
                 modelHit.Position,
-                modelHit.Distance);
-        }
-        if (map is null) return nearest;
+                modelHit.Distance))
+            .ToList();
+        if (map is null) return hits;
 
         foreach (var volume in map.Volumes)
         {
@@ -92,15 +96,14 @@ public sealed class SceneElementPicker
                 Consider(SceneElementKind.Light, light.SourceIndex, $"Light {light.SourceIndex}", distance);
             }
         }
-        return nearest;
+        return hits.OrderBy(value => value.Distance).ToArray();
 
         void Consider(SceneElementKind kind, int sourceIndex, string name, float distance)
         {
-            if (nearest is not null && distance >= nearest.Distance) return;
-            nearest = new SceneElementPickHit(
+            hits.Add(new SceneElementPickHit(
                 new SceneElementSelection(kind, sourceIndex, name),
                 ray.Origin + ray.Direction * distance,
-                distance);
+                distance));
         }
     }
 

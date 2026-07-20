@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ED8Editor.Decompiler\ED8Editor.Decompiler.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Garantit que la DLL native et le document sont a cote de l'exe du probe. -->
+    <None Include="..\ED8Editor.Decompiler\cs1_instructions.json" Link="cs1_instructions.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Include="..\ED8Editor.Decompiler\native\cs1_decompiler.dll" Link="cs1_decompiler.dll"
+          Condition="Exists('..\ED8Editor.Decompiler\native\cs1_decompiler.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

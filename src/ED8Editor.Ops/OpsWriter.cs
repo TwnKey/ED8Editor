@@ -325,7 +325,7 @@ public sealed class OpsWriter
             .Elements().Where(element => element.Name.LocalName == elementName).ToArray();
 
     private static Vector3 ToSourcePosition(Vector3 editorPosition)
-        => new(-editorPosition.X, editorPosition.Y, editorPosition.Z);
+        => editorPosition;
 
     private static string Vector(Vector3 value)
         => $"{Number(value.X)}, {Number(value.Y)}, {Number(value.Z)}";

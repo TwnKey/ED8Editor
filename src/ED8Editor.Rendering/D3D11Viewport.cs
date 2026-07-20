@@ -20,23 +20,39 @@ public sealed class D3D11Viewport : IDisposable
             row_major float4x4 WorldInverseTranspose;
             float4 SelectionColor;
             float4 MaterialColor;
+            float4 MaterialEmission;
             float4 LightDirectionAndAlphaThreshold;
             float4 AmbientColorAndAlphaTest;
             float4 DirectColorAndHasNormal;
+            float4 EffectSettings;
+            float4 MultiUvSettings;
+            float4 MultiUvColor;
+            float4 MultiUvTransform;
+            float4 ViewportSize;
         };
         struct VSPosition { float3 Position : POSITION; };
         struct VSPositionNormal { float3 Position : POSITION; float4 Normal : NORMAL; };
         struct VSTextured { float3 Position : POSITION; float2 TexCoord : TEXCOORD0; };
         struct VSTexturedNormal { float3 Position : POSITION; float4 Normal : NORMAL; float2 TexCoord : TEXCOORD0; };
-        struct VSColored { float3 Position : POSITION; float4 Color : COLOR0; };
-        struct PSInput { float4 Position : SV_Position; float3 Normal : NORMAL; float2 TexCoord : TEXCOORD0; };
+        struct VSTexturedColor { float3 Position : POSITION; float2 TexCoord : TEXCOORD0; float4 Color : COLOR0; };
+        struct VSTexturedNormalColor { float3 Position : POSITION; float4 Normal : NORMAL; float2 TexCoord : TEXCOORD0; float4 Color : COLOR0; };
+        struct VSTexturedNormalColorMultiUv { float3 Position : POSITION; float4 Normal : NORMAL; float2 TexCoord : TEXCOORD0; float2 TexCoord2 : TEXCOORD1; float4 Color : COLOR0; };
+        struct VSDebug { float4 Position : POSITION; float4 Color : COLOR0; };
+        struct PSInput { float4 Position : SV_Position; float3 Normal : NORMAL; float2 TexCoord : TEXCOORD0; float2 TexCoord2 : TEXCOORD1; float4 Color : COLOR0; };
         struct PSColoredInput { float4 Position : SV_Position; float4 Color : COLOR0; };
+        struct MaterialOutput
+        {
+            float4 Scene : SV_Target0;
+            float4 Glow : SV_Target1;
+        };
         PSInput VSPositionMain(VSPosition input)
         {
             PSInput output;
             output.Position = mul(float4(input.Position, 1.0f), WorldViewProjection);
             output.Normal = float3(0.0f, 1.0f, 0.0f);
             output.TexCoord = float2(0.0f, 0.0f);
+            output.TexCoord2 = output.TexCoord;
+            output.Color = float4(1.0f, 1.0f, 1.0f, 1.0f);
             return output;
         }
         PSInput VSPositionNormalMain(VSPositionNormal input)
@@ -45,6 +61,8 @@ public sealed class D3D11Viewport : IDisposable
             output.Position = mul(float4(input.Position, 1.0f), WorldViewProjection);
             output.Normal = normalize(mul(float4(input.Normal.xyz, 0.0f), WorldInverseTranspose).xyz);
             output.TexCoord = float2(0.0f, 0.0f);
+            output.TexCoord2 = output.TexCoord;
+            output.Color = float4(1.0f, 1.0f, 1.0f, 1.0f);
             return output;
         }
         PSInput VSTexturedMain(VSTextured input)
@@ -53,6 +71,8 @@ public sealed class D3D11Viewport : IDisposable
             output.Position = mul(float4(input.Position, 1.0f), WorldViewProjection);
             output.Normal = float3(0.0f, 1.0f, 0.0f);
             output.TexCoord = input.TexCoord;
+            output.TexCoord2 = input.TexCoord;
+            output.Color = float4(1.0f, 1.0f, 1.0f, 1.0f);
             return output;
         }
         PSInput VSTexturedNormalMain(VSTexturedNormal input)
@@ -61,16 +81,49 @@ public sealed class D3D11Viewport : IDisposable
             output.Position = mul(float4(input.Position, 1.0f), WorldViewProjection);
             output.Normal = normalize(mul(float4(input.Normal.xyz, 0.0f), WorldInverseTranspose).xyz);
             output.TexCoord = input.TexCoord;
+            output.TexCoord2 = input.TexCoord;
+            output.Color = float4(1.0f, 1.0f, 1.0f, 1.0f);
             return output;
         }
-        PSColoredInput VSColoredMain(VSColored input)
+        PSInput VSTexturedColorMain(VSTexturedColor input)
+        {
+            PSInput output;
+            output.Position = mul(float4(input.Position, 1.0f), WorldViewProjection);
+            output.Normal = float3(0.0f, 1.0f, 0.0f);
+            output.TexCoord = input.TexCoord;
+            output.TexCoord2 = input.TexCoord;
+            output.Color = saturate(input.Color);
+            return output;
+        }
+        PSInput VSTexturedNormalColorMain(VSTexturedNormalColor input)
+        {
+            PSInput output;
+            output.Position = mul(float4(input.Position, 1.0f), WorldViewProjection);
+            output.Normal = normalize(mul(float4(input.Normal.xyz, 0.0f), WorldInverseTranspose).xyz);
+            output.TexCoord = input.TexCoord;
+            output.TexCoord2 = input.TexCoord;
+            output.Color = saturate(input.Color);
+            return output;
+        }
+        PSInput VSTexturedNormalColorMultiUvMain(VSTexturedNormalColorMultiUv input)
+        {
+            PSInput output;
+            output.Position = mul(float4(input.Position, 1.0f), WorldViewProjection);
+            output.Normal = normalize(mul(float4(input.Normal.xyz, 0.0f), WorldInverseTranspose).xyz);
+            output.TexCoord = input.TexCoord;
+            output.TexCoord2 = input.TexCoord2;
+            output.Color = saturate(input.Color);
+            return output;
+        }
+        PSColoredInput VSDebugMain(VSDebug input)
         {
             PSColoredInput output;
-            output.Position = mul(float4(input.Position, 1.0f), WorldViewProjection);
+            output.Position = input.Position;
             output.Color = input.Color;
             return output;
         }
         Texture2D DiffuseTexture : register(t0);
+        Texture2D DiffuseTexture2 : register(t1);
         SamplerState DiffuseSampler : register(s0);
         float4 ApplySelection(float4 color)
         {
@@ -79,24 +132,71 @@ public sealed class D3D11Viewport : IDisposable
         float4 ApplyMaterial(PSInput input, float4 color)
         {
             color *= MaterialColor;
+            color.a *= input.Color.a;
             if (AmbientColorAndAlphaTest.w > 0.5f)
             {
-                clip(color.a - LightDirectionAndAlphaThreshold.w);
+                clip(color.a - LightDirectionAndAlphaThreshold.w * input.Color.a);
             }
             if (DirectColorAndHasNormal.w > 0.5f)
             {
                 float diffuse = saturate(dot(normalize(input.Normal), LightDirectionAndAlphaThreshold.xyz));
                 color.rgb *= AmbientColorAndAlphaTest.rgb + DirectColorAndHasNormal.rgb * diffuse;
             }
-            return ApplySelection(color);
+            color.rgb *= input.Color.rgb;
+            color.rgb += MaterialEmission.rgb;
+            float sourceAlpha = color.a;
+            if (EffectSettings.z < 0.5f)
+            {
+                color = ApplySelection(color);
+            }
+            if (EffectSettings.w > 0.5f)
+            {
+                // The authored ed8.fx returns resultColor directly for ALPHA_BLENDING_ENABLED.
+            }
+            else if (EffectSettings.x > 0.5f && EffectSettings.z < 0.5f)
+            {
+                float glowValue = max(dot(color.rgb, float3(1.0f, 1.0f, 1.0f)) - 1.0f, 0.0f);
+                color.a = glowValue * EffectSettings.y * sourceAlpha;
+            }
+            else if (EffectSettings.z < 0.5f)
+            {
+                color.a = 0.0f;
+            }
+            return color;
         }
-        float4 PSSolidMain(PSInput input) : SV_Target
+        MaterialOutput CreateMaterialOutput(float4 color)
         {
-            return ApplyMaterial(input, float4(1.0f, 1.0f, 1.0f, 1.0f));
+            MaterialOutput output;
+            output.Scene = color;
+            output.Glow = color;
+            return output;
         }
-        float4 PSTexturedMain(PSInput input) : SV_Target
+        MaterialOutput PSSolidMain(PSInput input)
         {
-            return ApplyMaterial(input, DiffuseTexture.Sample(DiffuseSampler, input.TexCoord));
+            return CreateMaterialOutput(ApplyMaterial(input, float4(1.0f, 1.0f, 1.0f, 1.0f)));
+        }
+        MaterialOutput PSTexturedMain(PSInput input)
+        {
+            float4 color = DiffuseTexture.Sample(DiffuseSampler, input.TexCoord);
+            if (MultiUvSettings.x > 0.5f)
+            {
+                float2 multiUv = input.TexCoord2 * MultiUvTransform.zw + MultiUvTransform.xy;
+                float4 color2 = DiffuseTexture2.Sample(DiffuseSampler, multiUv) * MultiUvColor;
+                float multiUvAlpha = input.Color.a * color2.a;
+                if (MultiUvSettings.x < 1.5f)
+                {
+                    color.rgb = lerp(color.rgb, color2.rgb, multiUvAlpha);
+                }
+                else if (MultiUvSettings.x < 2.5f)
+                {
+                    color.rgb += color2.rgb * multiUvAlpha;
+                }
+                else if (MultiUvSettings.x < 3.5f)
+                {
+                    color.rgb += (color2.rgb - 1.0f) * color.rgb * multiUvAlpha;
+                }
+            }
+            return CreateMaterialOutput(ApplyMaterial(input, color));
         }
         float4 PSColoredMain(PSColoredInput input) : SV_Target { return input.Color; }
         """;
@@ -107,23 +207,35 @@ public sealed class D3D11Viewport : IDisposable
     private readonly ID3D11VertexShader positionNormalVertexShader;
     private readonly ID3D11VertexShader texturedVertexShader;
     private readonly ID3D11VertexShader texturedNormalVertexShader;
+    private readonly ID3D11VertexShader texturedColorVertexShader;
+    private readonly ID3D11VertexShader texturedNormalColorVertexShader;
+    private readonly ID3D11VertexShader texturedNormalColorMultiUvVertexShader;
     private readonly ID3D11VertexShader coloredVertexShader;
     private readonly ID3D11PixelShader solidPixelShader;
     private readonly ID3D11PixelShader texturedPixelShader;
     private readonly ID3D11PixelShader coloredPixelShader;
+    private SceneEnvironmentVariant environmentVariant = SceneEnvironmentVariant.Daylight;
     private readonly byte[] positionVertexBytecode;
     private readonly byte[] positionNormalVertexBytecode;
     private readonly byte[] texturedVertexBytecode;
     private readonly byte[] texturedNormalVertexBytecode;
+    private readonly byte[] texturedColorVertexBytecode;
+    private readonly byte[] texturedNormalColorVertexBytecode;
+    private readonly byte[] texturedNormalColorMultiUvVertexBytecode;
     private readonly ID3D11InputLayout coloredInputLayout;
     private readonly ID3D11Buffer perDrawBuffer;
     private readonly ID3D11SamplerState sampler;
+    private readonly D3D11BloomPipeline bloomPipeline;
+    private readonly Dictionary<CpuRenderPassState, ID3D11BlendState> blendStates = new();
+    private readonly Dictionary<CpuRasterizerState, ID3D11RasterizerState> rasterizerStates = new();
     private readonly ID3D11RasterizerState rasterizer;
     private readonly Dictionary<string, ID3D11InputLayout> inputLayouts = new(StringComparer.Ordinal);
     private ID3D11RenderTargetView? renderTarget;
     private ID3D11Texture2D? depthTexture;
     private ID3D11DepthStencilView? depthView;
     private ID3D11Buffer? debugLineBuffer;
+    private IReadOnlyList<D3D11DebugLine> debugLines = Array.Empty<D3D11DebugLine>();
+    private int debugLineVertexCapacity;
     private int debugLineVertexCount;
     private int width;
     private int height;
@@ -158,19 +270,25 @@ public sealed class D3D11Viewport : IDisposable
         positionNormalVertexBytecode = Compile("VSPositionNormalMain", "vs_5_0");
         texturedVertexBytecode = Compile("VSTexturedMain", "vs_5_0");
         texturedNormalVertexBytecode = Compile("VSTexturedNormalMain", "vs_5_0");
-        var coloredVertexBytecode = Compile("VSColoredMain", "vs_5_0");
+        texturedColorVertexBytecode = Compile("VSTexturedColorMain", "vs_5_0");
+        texturedNormalColorVertexBytecode = Compile("VSTexturedNormalColorMain", "vs_5_0");
+        texturedNormalColorMultiUvVertexBytecode = Compile("VSTexturedNormalColorMultiUvMain", "vs_5_0");
+        var coloredVertexBytecode = Compile("VSDebugMain", "vs_5_0");
         positionVertexShader = graphics.Device.CreateVertexShader(positionVertexBytecode);
         positionNormalVertexShader = graphics.Device.CreateVertexShader(positionNormalVertexBytecode);
         texturedVertexShader = graphics.Device.CreateVertexShader(texturedVertexBytecode);
         texturedNormalVertexShader = graphics.Device.CreateVertexShader(texturedNormalVertexBytecode);
+        texturedColorVertexShader = graphics.Device.CreateVertexShader(texturedColorVertexBytecode);
+        texturedNormalColorVertexShader = graphics.Device.CreateVertexShader(texturedNormalColorVertexBytecode);
+        texturedNormalColorMultiUvVertexShader = graphics.Device.CreateVertexShader(texturedNormalColorMultiUvVertexBytecode);
         coloredVertexShader = graphics.Device.CreateVertexShader(coloredVertexBytecode);
         solidPixelShader = graphics.Device.CreatePixelShader(Compile("PSSolidMain", "ps_5_0"));
         texturedPixelShader = graphics.Device.CreatePixelShader(Compile("PSTexturedMain", "ps_5_0"));
         coloredPixelShader = graphics.Device.CreatePixelShader(Compile("PSColoredMain", "ps_5_0"));
         coloredInputLayout = graphics.Device.CreateInputLayout(new[]
         {
-            new InputElementDescription("POSITION", 0, Format.R32G32B32_Float, 0, 0),
-            new InputElementDescription("COLOR", 0, Format.R32G32B32A32_Float, 12, 0),
+            new InputElementDescription("POSITION", 0, Format.R32G32B32A32_Float, 0, 0),
+            new InputElementDescription("COLOR", 0, Format.R32G32B32A32_Float, 16, 0),
         }, coloredVertexBytecode);
         perDrawBuffer = graphics.Device.CreateBuffer(new BufferDescription(
             Marshal.SizeOf<PerDrawConstants>(),
@@ -194,6 +312,7 @@ public sealed class D3D11Viewport : IDisposable
             CullMode = CullMode.None,
             DepthClipEnable = true,
         });
+        bloomPipeline = new D3D11BloomPipeline(graphics);
         Resize(width, height);
     }
 
@@ -220,6 +339,7 @@ public sealed class D3D11Viewport : IDisposable
         };
         depthTexture = graphics.Device.CreateTexture2D(depthDescription);
         depthView = graphics.Device.CreateDepthStencilView(depthTexture);
+        bloomPipeline.Resize(width, height);
         this.width = width;
         this.height = height;
     }
@@ -227,18 +347,12 @@ public sealed class D3D11Viewport : IDisposable
     public void SetDebugLines(IReadOnlyList<D3D11DebugLine> lines)
     {
         ArgumentNullException.ThrowIfNull(lines);
-        debugLineBuffer?.Dispose();
-        debugLineBuffer = null;
-        debugLineVertexCount = 0;
-        if (lines.Count == 0) return;
-        var vertices = new DebugLineVertex[checked(lines.Count * 2)];
         for (var index = 0; index < lines.Count; index++)
         {
-            vertices[index * 2] = new DebugLineVertex(lines[index].Start, lines[index].Color);
-            vertices[index * 2 + 1] = new DebugLineVertex(lines[index].End, lines[index].Color);
+            if (!float.IsFinite(lines[index].Thickness) || lines[index].Thickness <= 0f)
+                throw new ArgumentOutOfRangeException(nameof(lines), "Debug line thickness must be finite and positive.");
         }
-        debugLineBuffer = graphics.Device.CreateBuffer(vertices, BindFlags.VertexBuffer);
-        debugLineVertexCount = vertices.Length;
+        debugLines = lines.ToArray();
     }
 
     public void SetClearColor(Vector4 color)
@@ -254,53 +368,99 @@ public sealed class D3D11Viewport : IDisposable
     public void SetLighting(ViewportLighting value)
         => lighting = value ?? throw new ArgumentNullException(nameof(value));
 
+    public void SetEnvironmentVariant(SceneEnvironmentVariant value)
+        => environmentVariant = value;
+
     public void Render(IReadOnlyList<D3D11SceneInstance> instances, ViewportCamera camera, bool verticalSync = true)
     {
         ArgumentNullException.ThrowIfNull(instances);
-        if (renderTarget is null || depthView is null) return;
+        if (renderTarget is null || depthView is null
+            || bloomPipeline.SceneRenderTarget is null
+            || bloomPipeline.GlowSourceRenderTarget is null) return;
 
         var context = graphics.Context;
-        context.OMSetRenderTargets(renderTarget, depthView);
+        context.OMSetRenderTargets(bloomPipeline.SceneRenderTarget, depthView);
         context.RSSetViewport(new Viewport(0, 0, width, height));
         context.RSSetState(rasterizer);
-        context.ClearRenderTargetView(renderTarget, new Color4(clearColor.X, clearColor.Y, clearColor.Z, clearColor.W));
+        context.ClearRenderTargetView(
+            bloomPipeline.SceneRenderTarget,
+            new Color4(clearColor.X, clearColor.Y, clearColor.Z, 0f));
+        context.ClearRenderTargetView(
+            bloomPipeline.GlowSourceRenderTarget,
+            new Color4(0f, 0f, 0f, 0f));
         context.ClearDepthStencilView(depthView, DepthStencilClearFlags.Depth | DepthStencilClearFlags.Stencil, 1.0f, 0);
         context.VSSetConstantBuffer(0, perDrawBuffer);
         context.PSSetConstantBuffer(0, perDrawBuffer);
         context.PSSetSampler(0, sampler);
 
+        DrawScenePhase(instances, camera, CpuMaterialRenderPhase.Opaque);
+        context.OMSetRenderTargets(
+            new[] { bloomPipeline.SceneRenderTarget, bloomPipeline.GlowSourceRenderTarget },
+            depthView);
+        DrawScenePhase(instances, camera, CpuMaterialRenderPhase.EffectTransparent);
+
+        bloomPipeline.Composite(renderTarget);
+        context.OMSetRenderTargets(renderTarget, depthView);
+        context.RSSetViewport(new Viewport(0, 0, width, height));
+        context.RSSetState(rasterizer);
+        context.VSSetConstantBuffer(0, perDrawBuffer);
+        context.PSSetConstantBuffer(0, perDrawBuffer);
+        context.PSSetSampler(0, sampler);
+        DrawScenePhase(instances, camera, CpuMaterialRenderPhase.Transparent);
+        context.OMSetBlendState(null, new Color4(0f, 0f, 0f, 0f), uint.MaxValue);
+        DrawDebugLines(camera);
+
+        swapChain.Present(verticalSync ? 1 : 0, PresentFlags.None).CheckError();
+    }
+
+    private void DrawScenePhase(
+        IReadOnlyList<D3D11SceneInstance> instances,
+        ViewportCamera camera,
+        CpuMaterialRenderPhase phase)
+    {
         foreach (var instance in instances)
         {
             foreach (var mesh in instance.Model.Meshes)
             {
+                if (!SceneEnvironmentVariantSelector.IsVisible(mesh.Name, environmentVariant)) continue;
                 var world = mesh.LocalTransform * instance.Transform;
                 var matrix = world * camera.View * camera.Projection;
                 foreach (var primitive in mesh.Primitives)
                 {
-                    DrawPrimitive(instance.Model, primitive, world, matrix, instance.IsSelected, instance.IsPreview);
+                    var materialPhase = primitive.MaterialIndex >= 0
+                        && primitive.MaterialIndex < instance.Model.Materials.Count
+                            ? instance.Model.Materials[primitive.MaterialIndex].Source.RenderPhase
+                            : CpuMaterialRenderPhase.Opaque;
+                    if (materialPhase != phase) continue;
+                    DrawPrimitive(
+                        instance.Model, primitive, world, matrix,
+                        instance.IsSelected, instance.IsPreview,
+                        instance.MaterialDiffuse, instance.MaterialEmission);
                 }
             }
         }
-
-        DrawDebugLines(camera);
-
-        swapChain.Present(verticalSync ? 1 : 0, PresentFlags.None).CheckError();
     }
 
     public void Dispose()
     {
         graphics.Context.ClearState();
         ReleaseTargets();
+        bloomPipeline.Dispose();
         foreach (var layout in inputLayouts.Values) layout.Dispose();
         debugLineBuffer?.Dispose();
         coloredInputLayout.Dispose();
         rasterizer.Dispose();
         sampler.Dispose();
+        foreach (var state in blendStates.Values) state.Dispose();
+        foreach (var state in rasterizerStates.Values) state.Dispose();
         perDrawBuffer.Dispose();
         texturedPixelShader.Dispose();
         coloredPixelShader.Dispose();
         solidPixelShader.Dispose();
         texturedNormalVertexShader.Dispose();
+        texturedNormalColorVertexShader.Dispose();
+        texturedNormalColorMultiUvVertexShader.Dispose();
+        texturedColorVertexShader.Dispose();
         texturedVertexShader.Dispose();
         positionNormalVertexShader.Dispose();
         coloredVertexShader.Dispose();
@@ -308,24 +468,80 @@ public sealed class D3D11Viewport : IDisposable
         swapChain.Dispose();
     }
 
-    private void DrawDebugLines(ViewportCamera camera)
+    private unsafe void DrawDebugLines(ViewportCamera camera)
     {
-        if (debugLineBuffer is null || debugLineVertexCount == 0) return;
-        UpdateConstants(
-            camera.View * camera.Projection,
-            Matrix4x4.Identity,
-            null,
-            hasNormal: false,
-            selected: false,
-            preview: false);
+        if (debugLines.Count == 0) return;
+        var vertices = BuildDebugLineTriangles(camera);
+        debugLineVertexCount = vertices.Length;
+        if (debugLineVertexCount == 0) return;
+        EnsureDebugLineBuffer(debugLineVertexCount);
+        var mapped = graphics.Context.Map(debugLineBuffer!, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
+        fixed (DebugLineVertex* source = vertices)
+        {
+            Buffer.MemoryCopy(
+                source,
+                (void*)mapped.DataPointer,
+                (long)debugLineVertexCapacity * Marshal.SizeOf<DebugLineVertex>(),
+                (long)debugLineVertexCount * Marshal.SizeOf<DebugLineVertex>());
+        }
+        graphics.Context.Unmap(debugLineBuffer!, 0);
         var context = graphics.Context;
+        context.RSSetState(rasterizer);
         context.IASetInputLayout(coloredInputLayout);
-        context.IASetVertexBuffer(0, debugLineBuffer, Marshal.SizeOf<DebugLineVertex>(), 0);
-        context.IASetPrimitiveTopology(Vortice.Direct3D.PrimitiveTopology.LineList);
+        context.IASetVertexBuffer(0, debugLineBuffer!, Marshal.SizeOf<DebugLineVertex>(), 0);
+        context.IASetPrimitiveTopology(Vortice.Direct3D.PrimitiveTopology.TriangleList);
         context.VSSetShader(coloredVertexShader);
         context.PSSetShader(coloredPixelShader);
         context.PSSetShaderResource(0, null!);
         context.Draw(debugLineVertexCount, 0);
+    }
+
+    private DebugLineVertex[] BuildDebugLineTriangles(ViewportCamera camera)
+    {
+        var matrix = camera.View * camera.Projection;
+        var vertices = new List<DebugLineVertex>(checked(debugLines.Count * 6));
+        foreach (var line in debugLines)
+        {
+            var first = Vector4.Transform(new Vector4(line.Start, 1f), matrix);
+            var second = Vector4.Transform(new Vector4(line.End, 1f), matrix);
+            if (first.W <= 0f || second.W <= 0f) continue;
+            var firstNdc = new Vector2(first.X, first.Y) / first.W;
+            var secondNdc = new Vector2(second.X, second.Y) / second.W;
+            var screenDirection = (secondNdc - firstNdc) * new Vector2(width, height);
+            if (screenDirection.LengthSquared() <= 0.0001f) continue;
+            var perpendicular = Vector2.Normalize(new Vector2(-screenDirection.Y, screenDirection.X));
+            var offsetNdc = perpendicular * new Vector2(line.Thickness / width, line.Thickness / height);
+            var firstPositive = OffsetClip(first, offsetNdc);
+            var firstNegative = OffsetClip(first, -offsetNdc);
+            var secondPositive = OffsetClip(second, offsetNdc);
+            var secondNegative = OffsetClip(second, -offsetNdc);
+            vertices.Add(new DebugLineVertex(firstPositive, line.Color));
+            vertices.Add(new DebugLineVertex(firstNegative, line.Color));
+            vertices.Add(new DebugLineVertex(secondPositive, line.Color));
+            vertices.Add(new DebugLineVertex(secondPositive, line.Color));
+            vertices.Add(new DebugLineVertex(firstNegative, line.Color));
+            vertices.Add(new DebugLineVertex(secondNegative, line.Color));
+        }
+        return vertices.ToArray();
+
+        static Vector4 OffsetClip(Vector4 position, Vector2 offsetNdc)
+            => position with
+            {
+                X = position.X + offsetNdc.X * position.W,
+                Y = position.Y + offsetNdc.Y * position.W,
+            };
+    }
+
+    private void EnsureDebugLineBuffer(int requiredVertexCount)
+    {
+        if (debugLineBuffer is not null && debugLineVertexCapacity >= requiredVertexCount) return;
+        debugLineBuffer?.Dispose();
+        debugLineVertexCapacity = Math.Max(requiredVertexCount, Math.Max(256, debugLineVertexCapacity * 2));
+        debugLineBuffer = graphics.Device.CreateBuffer(new BufferDescription(
+            checked(debugLineVertexCapacity * Marshal.SizeOf<DebugLineVertex>()),
+            BindFlags.VertexBuffer,
+            ResourceUsage.Dynamic,
+            CpuAccessFlags.Write));
     }
 
     private void DrawPrimitive(
@@ -334,7 +550,9 @@ public sealed class D3D11Viewport : IDisposable
         Matrix4x4 world,
         Matrix4x4 worldViewProjection,
         bool selected,
-        bool preview)
+        bool preview,
+        Vector4 materialDiffuse,
+        Vector3 materialEmission)
     {
         var positionBuffer = FindBuffer(primitive, VertexSemantic.Position);
         if (positionBuffer is null || !TryMapTopology(primitive.Topology, out var topology)) return;
@@ -359,15 +577,91 @@ public sealed class D3D11Viewport : IDisposable
         var material = primitive.MaterialIndex >= 0 && primitive.MaterialIndex < model.Materials.Count
             ? model.Materials[primitive.MaterialIndex]
             : null;
+        var materialSettings = ViewportMaterialSettings.FromMaterial(material?.Source);
+        var multiUvTextureView = material is not null
+            && material.TextureBindings.TryGetValue("DiffuseMap2Sampler", out var boundMultiUvTexture)
+                ? boundMultiUvTexture
+                : null;
+        var multiUvBuffer = FindBuffer(primitive, VertexSemantic.TextureCoordinate, 1);
+        var multiUvAttribute = multiUvBuffer?.Attributes.First(value =>
+            value.Semantic == VertexSemantic.TextureCoordinate && value.SemanticIndex == 1);
+        var multiUvFormat = Format.Unknown;
+        var hasMultiUv = materialSettings.MultiUvBlendMode != ViewportMultiUvBlendMode.Disabled
+            && multiUvTextureView is not null
+            && multiUvBuffer is not null
+            && multiUvAttribute is not null
+            && TryMapFormat(multiUvAttribute.SourceFormat, out multiUvFormat);
+        var colorBuffer = materialSettings.VertexColorEnabled
+            ? FindBuffer(primitive, VertexSemantic.Color)
+            : null;
+        var colorAttribute = colorBuffer?.Attributes.First(value => value.Semantic == VertexSemantic.Color);
+        var colorFormat = Format.Unknown;
+        var hasVertexColor = colorBuffer is not null && colorAttribute is not null
+            && TryMapFormat(colorAttribute.SourceFormat, out colorFormat);
         var normalMatrix = Matrix4x4.Identity;
         if (hasNormal && Matrix4x4.Invert(world, out var inverseWorld))
         {
             normalMatrix = Matrix4x4.Transpose(inverseWorld);
         }
-        UpdateConstants(worldViewProjection, normalMatrix, material, hasNormal, selected, preview);
+        UpdateConstants(
+            worldViewProjection, normalMatrix, material, hasNormal, selected, preview,
+            materialDiffuse, materialEmission);
 
         var context = graphics.Context;
-        if (textured && hasNormal)
+        context.OMSetBlendState(
+            material?.Source.RenderPassState is { } passState ? GetBlendState(passState) : null,
+            new Color4(0f, 0f, 0f, 0f),
+            uint.MaxValue);
+        context.RSSetState(material?.Source.RenderPassState?.RasterizerState is { } rasterizerState
+            ? GetRasterizerState(rasterizerState)
+            : rasterizer);
+        context.PSSetShaderResource(1, hasMultiUv ? multiUvTextureView! : null!);
+        if (textured && hasNormal && hasVertexColor && hasMultiUv)
+        {
+            context.IASetInputLayout(GetTexturedNormalColorMultiUvLayout(
+                positionFormat, positionAttribute.Offset,
+                normalFormat, normalAttribute!.Offset,
+                textureFormat, textureAttribute!.Offset,
+                multiUvFormat, multiUvAttribute!.Offset,
+                colorFormat, colorAttribute!.Offset));
+            context.IASetVertexBuffers(0,
+                new[] { positionBuffer.Buffer, normalBuffer!.Buffer, textureBuffer!.Buffer, multiUvBuffer!.Buffer, colorBuffer!.Buffer },
+                new[] { positionBuffer.Stride, normalBuffer.Stride, textureBuffer.Stride, multiUvBuffer.Stride, colorBuffer.Stride },
+                new[] { 0, 0, 0, 0, 0 });
+            context.VSSetShader(texturedNormalColorMultiUvVertexShader);
+            context.PSSetShader(texturedPixelShader);
+            context.PSSetShaderResource(0, textureView!);
+        }
+        else if (textured && hasNormal && hasVertexColor)
+        {
+            context.IASetInputLayout(GetTexturedNormalColorLayout(
+                positionFormat, positionAttribute.Offset,
+                normalFormat, normalAttribute!.Offset,
+                textureFormat, textureAttribute!.Offset,
+                colorFormat, colorAttribute!.Offset));
+            context.IASetVertexBuffers(0,
+                new[] { positionBuffer.Buffer, normalBuffer!.Buffer, textureBuffer!.Buffer, colorBuffer!.Buffer },
+                new[] { positionBuffer.Stride, normalBuffer.Stride, textureBuffer.Stride, colorBuffer.Stride },
+                new[] { 0, 0, 0, 0 });
+            context.VSSetShader(texturedNormalColorVertexShader);
+            context.PSSetShader(texturedPixelShader);
+            context.PSSetShaderResource(0, textureView!);
+        }
+        else if (textured && hasVertexColor)
+        {
+            context.IASetInputLayout(GetTexturedColorLayout(
+                positionFormat, positionAttribute.Offset,
+                textureFormat, textureAttribute!.Offset,
+                colorFormat, colorAttribute!.Offset));
+            context.IASetVertexBuffers(0,
+                new[] { positionBuffer.Buffer, textureBuffer!.Buffer, colorBuffer!.Buffer },
+                new[] { positionBuffer.Stride, textureBuffer.Stride, colorBuffer.Stride },
+                new[] { 0, 0, 0 });
+            context.VSSetShader(texturedColorVertexShader);
+            context.PSSetShader(texturedPixelShader);
+            context.PSSetShaderResource(0, textureView!);
+        }
+        else if (textured && hasNormal)
         {
             context.IASetInputLayout(GetTexturedNormalLayout(
                 positionFormat, positionAttribute.Offset,
@@ -418,13 +712,62 @@ public sealed class D3D11Viewport : IDisposable
         context.DrawIndexed(primitive.IndexCount, 0, 0);
     }
 
+    private ID3D11BlendState GetBlendState(CpuRenderPassState state)
+    {
+        if (blendStates.TryGetValue(state, out var cached)) return cached;
+        var description = new BlendDescription
+        {
+            AlphaToCoverageEnable = false,
+            IndependentBlendEnable = false,
+            RenderTarget =
+            {
+                [0] = new RenderTargetBlendDescription
+                {
+                    BlendEnable = state.BlendEnabled,
+                    SourceBlend = (Blend)state.SourceBlend,
+                    DestinationBlend = (Blend)state.DestinationBlend,
+                    BlendOperation = (BlendOperation)state.BlendOperation,
+                    SourceBlendAlpha = (Blend)state.SourceBlendAlpha,
+                    DestinationBlendAlpha = (Blend)state.DestinationBlendAlpha,
+                    BlendOperationAlpha = (BlendOperation)state.BlendOperationAlpha,
+                    RenderTargetWriteMask = (ColorWriteEnable)state.RenderTargetWriteMask,
+                },
+            },
+        };
+        cached = graphics.Device.CreateBlendState(description);
+        blendStates.Add(state, cached);
+        return cached;
+    }
+
+    private ID3D11RasterizerState GetRasterizerState(CpuRasterizerState state)
+    {
+        if (rasterizerStates.TryGetValue(state, out var cached)) return cached;
+        cached = graphics.Device.CreateRasterizerState(new RasterizerDescription
+        {
+            FillMode = (FillMode)state.FillMode,
+            CullMode = (CullMode)state.CullMode,
+            FrontCounterClockwise = state.FrontCounterClockwise,
+            DepthBias = state.DepthBias,
+            DepthBiasClamp = state.DepthBiasClamp,
+            SlopeScaledDepthBias = state.SlopeScaledDepthBias,
+            DepthClipEnable = state.DepthClipEnabled,
+            ScissorEnable = state.ScissorEnabled,
+            MultisampleEnable = state.MultisampleEnabled,
+            AntialiasedLineEnable = state.AntialiasedLineEnabled,
+        });
+        rasterizerStates.Add(state, cached);
+        return cached;
+    }
+
     private unsafe void UpdateConstants(
         Matrix4x4 matrix,
         Matrix4x4 normalMatrix,
         D3D11MaterialResources? material,
         bool hasNormal,
         bool selected,
-        bool preview)
+        bool preview,
+        Vector4 materialDiffuse,
+        Vector3 materialEmission)
     {
         var materialSettings = ViewportMaterialSettings.FromMaterial(material?.Source);
         var mapped = graphics.Context.Map(perDrawBuffer, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
@@ -435,14 +778,26 @@ public sealed class D3D11Viewport : IDisposable
             SelectionColor = preview
                 ? new Vector4(0.1f, 1f, 0.35f, 0.62f)
                 : selected ? new Vector4(1f, 0.32f, 0.04f, 0.68f) : Vector4.Zero,
-            MaterialColor = materialSettings.BaseColor,
+            MaterialColor = materialSettings.BaseColor * materialDiffuse,
+            MaterialEmission = new Vector4(materialEmission, 0f),
             LightDirectionAndAlphaThreshold = new Vector4(
                 lighting.DirectionToLight,
                 materialSettings.AlphaThreshold ?? 0f),
             AmbientColorAndAlphaTest = new Vector4(
                 lighting.AmbientColor,
-                materialSettings.AlphaThreshold.HasValue ? 1f : 0f),
-            DirectColorAndHasNormal = new Vector4(lighting.DirectColor, hasNormal ? 1f : 0f),
+                materialSettings.AlphaTestingEnabled && materialSettings.AlphaThreshold.HasValue ? 1f : 0f),
+            DirectColorAndHasNormal = new Vector4(
+                lighting.DirectColor,
+                hasNormal && materialSettings.LightingEnabled ? 1f : 0f),
+            EffectSettings = new Vector4(
+                materialSettings.GlareHighPassEnabled ? 1f : 0f,
+                materialSettings.GlareIntensity,
+                material?.Source.RenderPassState?.BlendEnabled == true ? 1f : 0f,
+                materialSettings.AlphaBlendingEnabled ? 1f : 0f),
+            MultiUvSettings = new Vector4((float)materialSettings.MultiUvBlendMode, 0f, 0f, 0f),
+            MultiUvColor = materialSettings.MultiUvColor,
+            MultiUvTransform = materialSettings.MultiUvTransform,
+            ViewportSize = new Vector4(width, height, 1f / width, 1f / height),
         };
         graphics.Context.Unmap(perDrawBuffer, 0);
     }
@@ -454,13 +809,19 @@ public sealed class D3D11Viewport : IDisposable
         public Matrix4x4 WorldInverseTranspose;
         public Vector4 SelectionColor;
         public Vector4 MaterialColor;
+        public Vector4 MaterialEmission;
         public Vector4 LightDirectionAndAlphaThreshold;
         public Vector4 AmbientColorAndAlphaTest;
         public Vector4 DirectColorAndHasNormal;
+        public Vector4 EffectSettings;
+        public Vector4 MultiUvSettings;
+        public Vector4 MultiUvColor;
+        public Vector4 MultiUvTransform;
+        public Vector4 ViewportSize;
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private readonly record struct DebugLineVertex(Vector3 Position, Vector4 Color);
+    private readonly record struct DebugLineVertex(Vector4 Position, Vector4 Color);
 
     private ID3D11InputLayout GetPositionLayout(Format format, int offset)
     {
@@ -525,6 +886,69 @@ public sealed class D3D11Viewport : IDisposable
         return layout;
     }
 
+    private ID3D11InputLayout GetTexturedColorLayout(
+        Format positionFormat, int positionOffset,
+        Format textureFormat, int textureOffset,
+        Format colorFormat, int colorOffset)
+    {
+        var key = $"TC:{positionFormat}:{positionOffset}:{textureFormat}:{textureOffset}:{colorFormat}:{colorOffset}";
+        if (!inputLayouts.TryGetValue(key, out var layout))
+        {
+            layout = graphics.Device.CreateInputLayout(new[]
+            {
+                new InputElementDescription("POSITION", 0, positionFormat, positionOffset, 0),
+                new InputElementDescription("TEXCOORD", 0, textureFormat, textureOffset, 1),
+                new InputElementDescription("COLOR", 0, colorFormat, colorOffset, 2),
+            }, texturedColorVertexBytecode);
+            inputLayouts.Add(key, layout);
+        }
+        return layout;
+    }
+
+    private ID3D11InputLayout GetTexturedNormalColorLayout(
+        Format positionFormat, int positionOffset,
+        Format normalFormat, int normalOffset,
+        Format textureFormat, int textureOffset,
+        Format colorFormat, int colorOffset)
+    {
+        var key = $"TNC:{positionFormat}:{positionOffset}:{normalFormat}:{normalOffset}:{textureFormat}:{textureOffset}:{colorFormat}:{colorOffset}";
+        if (!inputLayouts.TryGetValue(key, out var layout))
+        {
+            layout = graphics.Device.CreateInputLayout(new[]
+            {
+                new InputElementDescription("POSITION", 0, positionFormat, positionOffset, 0),
+                new InputElementDescription("NORMAL", 0, normalFormat, normalOffset, 1),
+                new InputElementDescription("TEXCOORD", 0, textureFormat, textureOffset, 2),
+                new InputElementDescription("COLOR", 0, colorFormat, colorOffset, 3),
+            }, texturedNormalColorVertexBytecode);
+            inputLayouts.Add(key, layout);
+        }
+        return layout;
+    }
+
+    private ID3D11InputLayout GetTexturedNormalColorMultiUvLayout(
+        Format positionFormat, int positionOffset,
+        Format normalFormat, int normalOffset,
+        Format textureFormat, int textureOffset,
+        Format multiUvFormat, int multiUvOffset,
+        Format colorFormat, int colorOffset)
+    {
+        var key = $"TNMC:{positionFormat}:{positionOffset}:{normalFormat}:{normalOffset}:{textureFormat}:{textureOffset}:{multiUvFormat}:{multiUvOffset}:{colorFormat}:{colorOffset}";
+        if (!inputLayouts.TryGetValue(key, out var layout))
+        {
+            layout = graphics.Device.CreateInputLayout(new[]
+            {
+                new InputElementDescription("POSITION", 0, positionFormat, positionOffset, 0),
+                new InputElementDescription("NORMAL", 0, normalFormat, normalOffset, 1),
+                new InputElementDescription("TEXCOORD", 0, textureFormat, textureOffset, 2),
+                new InputElementDescription("TEXCOORD", 1, multiUvFormat, multiUvOffset, 3),
+                new InputElementDescription("COLOR", 0, colorFormat, colorOffset, 4),
+            }, texturedNormalColorMultiUvVertexBytecode);
+            inputLayouts.Add(key, layout);
+        }
+        return layout;
+    }
+
     private void ReleaseTargets()
     {
         graphics.Context.OMSetRenderTargets(Array.Empty<ID3D11RenderTargetView>());
@@ -536,8 +960,12 @@ public sealed class D3D11Viewport : IDisposable
         renderTarget = null;
     }
 
-    private static D3D11VertexBufferResource? FindBuffer(D3D11PrimitiveResources primitive, VertexSemantic semantic)
-        => primitive.VertexBuffers.FirstOrDefault(value => value.Attributes.Any(attribute => attribute.Semantic == semantic));
+    private static D3D11VertexBufferResource? FindBuffer(
+        D3D11PrimitiveResources primitive,
+        VertexSemantic semantic,
+        int semanticIndex = 0)
+        => primitive.VertexBuffers.FirstOrDefault(value => value.Attributes.Any(attribute =>
+            attribute.Semantic == semantic && attribute.SemanticIndex == semanticIndex));
 
     private static bool TryMapFormat(string source, out Format format)
     {

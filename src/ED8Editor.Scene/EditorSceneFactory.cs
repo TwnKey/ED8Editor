@@ -19,7 +19,9 @@ public sealed class EditorSceneFactory
                     prop.AssetId,
                     prop.Name,
                     load.Model,
-                    CreateTransform(prop.Transform)));
+                    CreateTransform(prop.Transform),
+                    prop.MaterialDiffuse,
+                    prop.MaterialEmission));
             }
         }
 
@@ -28,7 +30,7 @@ public sealed class EditorSceneFactory
             var id = 0;
             foreach (var load in session.AssetModels.Values.Where(value => value.Model is not null))
             {
-                instances.Add(new SceneModelInstance(id++, load.AssetId, load.AssetId, load.Model!, Matrix4x4.Identity));
+                instances.Add(new SceneModelInstance(id++, load.AssetId, load.AssetId, load.Model!, Matrix4x4.Identity, Vector4.One, Vector3.Zero));
             }
         }
         return instances;

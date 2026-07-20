@@ -27,14 +27,15 @@ public sealed class SceneTranslationGizmo
 
         void AddAxis(SceneGizmoAxis axis, Vector3 direction, Vector4 color)
         {
+            var thickness = axis == activeAxis ? 4f : 3f;
             if (axis == activeAxis) color = ActiveColor;
             var end = origin + direction * length;
-            lines.Add(new SceneOverlayLine(origin, end, color));
+            lines.Add(new SceneOverlayLine(origin, end, color, thickness));
             var arrowSize = length * 0.12f;
             var sideA = axis == SceneGizmoAxis.Y ? Vector3.UnitX : Vector3.UnitY;
             var sideB = Vector3.Normalize(Vector3.Cross(direction, sideA));
-            lines.Add(new SceneOverlayLine(end, end - direction * arrowSize + sideA * arrowSize * 0.45f, color));
-            lines.Add(new SceneOverlayLine(end, end - direction * arrowSize + sideB * arrowSize * 0.45f, color));
+            lines.Add(new SceneOverlayLine(end, end - direction * arrowSize + sideA * arrowSize * 0.45f, color, thickness));
+            lines.Add(new SceneOverlayLine(end, end - direction * arrowSize + sideB * arrowSize * 0.45f, color, thickness));
         }
     }
 

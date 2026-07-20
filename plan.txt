@@ -1,47 +1,22 @@
-Objectif : faire un éditeur de map pour Cold Steel 1 où on a liberté quasi TOTALE sur l'édition des maps du jeu.
-En gros, le rêve serait qu'on puisse afficher la map texturée, modélisée, avec TOUS ses props (décor), TOUS ses événements (les déclencheurs au sol visibles etc), TOUS les combats sur la map, contrôler qui est dans le combat, les téléportations d'une map à l'autre, etc.
-C'est un boulot extrêmement ambitieux mais techniquement on a déjà BEAUCOUP de briques connues qu'il suffit de réimplementer.
-Comment je propose de fonctionner : séparer en modules qui cherche le plus possible de manière indépendante leurs propres choses, et un chef d'orchestre qui les manipule comme des boites noires.
+Aucune heuristique ou détection farfelue.
 
-J'ai identifié 5 aspects importants :
-- Les scripts ("C:\Program Files (x86)\Steam\steamapps\common\Trails of Cold Steel\data\scripts")
-- Les tables ("C:\Program Files (x86)\Steam\steamapps\common\Trails of Cold Steel\data\text\dat_us")
-- Les modèles ("C:\Program Files (x86)\Steam\steamapps\common\Trails of Cold Steel\data\asset")
-- Les effets ("C:\Program Files (x86)\Steam\steamapps\common\Trails of Cold Steel\data\effects")
-- Les maps etc. ("C:\Program Files (x86)\Steam\steamapps\common\Trails of Cold Steel\data\ops")
+Codex :
+- "Le shader Phyre complet n’est pas encore activé : il manque le binding vérifié de tous les paramètres moteur ($Globals, brouillard, caméra, éclairage…)."
+- améliorer la tête des téléporteurs et autres objets qui ne sont pas des props, en coloriant de manière semi transparente leur intérieur et en les faisant plus fins, comme une dalle colorée (couleur qui doit dépendre du type de trigger)
+- Implémenter les lumières et ombres (comme dans le jeu ?)
+- Implémenter la météo ? (sera nécessaire si settée par le script)
+- Gérer l'importation des tables en ram sous forme de map probablement ?
+- Prévoir déjà l'interface avec Claude : il va nous transmettre un fichier décompilé avec son header (meta data), sa liste de fonctions (scènes) avec leur nom, et un flot d'instruction avec différentes branches conditionnelles/jump, qu'il faudra visuellement représenter par bloc.
 
+Claude :
+- Finir le 100% code : gérer les chunks des fonctions mal formées, valider system.dat
+- Gérer les tables à l'intérieur des scripts (les combats, etc) => heuristique inevitable comme on a vu.
+- Tester sur les autres scripts que scena (ai, ani,...)
+- Valider le roundtrip
+- 
+- Attaquer le flot des fonctions (les différentes branches, les jump etc).
+- Implémenter l'interface avec l'éditeur de map
 
-Il faudrait donc développer chaque aspect sous forme de dll, je pense, avec une interface avec laquelle un chef peut dialoguer pour afficher une map, les combats, etc.
-Dans le dossier doc je vais fournir du code issu de différents créateurs d'outils de la communauté de modding trails ; l'idée est de récupérer cette connaissance, pas de réinventer la roue SAUF pour le scénario, où on va laisser Claude faire une passe complète sur les fonctions des scripts.
-Je fournirai également du code du moteur PhyreEngine éventuellement, si nécessaire.
-
-Le principe de l'outil : on commence par sélectionner un script .dat.
-Ce script est associé toujours à une map (voire plusieurs, je sais plus).
-On chargera donc le modèle + textures de la map dans l'éditeur, et elle s'affichera. On ira chercher le fichier ops correspondant également, qui contient les props, la skybox, les events, etc. On chargera tout ça également. 
-Donc on ira chercher les props dans leurs archives .pkg également, on les rendra aux bons endroits, etc.
-Pour les personnages, les monstres etc, tout ça a priori dépend des flags de scénario dans le script. Chaque script est composé de fonctions, qu'on peut voir comme des scènes, ou des fonctions de dialogue liées à un seul pnj, ou des setup de combats etc.
-Si on clique sur une scène, ça déroule le flowchart de tous les blocs de commandes de la scène. Si on clique sur un bloc en particulier, ça doit charger l'état de la scène au moment de l'execution du bloc cad ça doit dérouler toute la scène, calculer les positions des différents personnages (les faire spawn s'ils sont pas présents) jsuqu'au moment du bloc qu'on a sélectionné.
-à terme il faudrait que les blocs d'animation soient joués, mais pour une beta on ne jouera pas les animations, on peut laisser les persos en bind pose. L'idée est juste de les positionner correctement.
-Aussi, la caméra également s'adapte en position etc selon où on se trouve dans le script, exactement comme les personnages. et on doit pouvoir évidemment bouger la caméra dans l'éditeur de manière free, et remplacer la caméra du bloc par les coordonées de la caméra actuelle.
-On veut aussi pouvoir positionner des nouveaux props (pour l'instant dans la beta, seulement sélectionner dans la librairie de props qu'offre le jeu, mais à terme pouvoir importer des props customs.)
-L'idée est qu'on puisse librement poser les props (chaise, etc) sur le sol, ou en z si on veut aussi, mais que ça soit facile de créer des intérieurs de maison, des trucs assez créatifs, etc.
-Changer leur rotation, leur scale, de manière vraiment simple et accessible.
-En principe ceci va se retranscrire dans les ops ; ça correspond au décor de la map.
-Par contre on devra certainement aussi pouvoir spawn des objets ou des perosnnages qui ne sont visibles que si un certain flag scénario est atteint ou quelque chose, donc faudra pouvoir préciser une condition d'existence du prop. Mais ça c'est une partie que je maîtrise pas.
-On peut peut-être déjà démarrer en définissant de quoi on a besoin pour chaque dll, créer les interfaces, et on rafinera pour l'implémentation
-
-Tout le paragraphe précédent est globalement ce que je veux en beta : un truc très rough mais qui permet déjà de faire pas mal de trucs créatifs, et a minima positionner correctement les caméras.
-
-Maintenant définissons les interfaces auxquelles les dll doivent répondre, pour pouvoir voir un peu le chantier.
-Pour les scripts, le chef d'orchestre va vouloir récupérer une liste de scènes, et pour chauqe scène les blocs commandes correspondant. Tout le calcul d'arbre (les conditions des différentes branches de dialogue etc) devra être contenu dans ce scripts.dll pour que le chef d'orchestre n'ait pas besoin de se taper l'effort de structuration.
-Pour les tables, elles contiennent des tas d'info importantes, nom de perso, nom d'items, noms de map, ... Donc pouvoir facilement récupérer toutes ces data probablement dans des structures de données adaptées pour que le chef d'orchestre puisse les query.
-Pour les maps, Qu'on puisse facilement récupérer la liste des props, etc.
-Pour les effets, on récup l'animation complète avec les keyframes, les textures impliquées, la forme du mesh etc.
-Pour les modèles, on récupère mesh, textures, animation (beta pas nécessaire); on décompresse aussi les pkg et les fichiers .phyre. pkg la doc est dispo dans doc/archives
-
-Mon plan : mettre Claude strictement sur les scripts (la partie la plus technique imo en théorie), et Codex sur tout le reste, à commencer par les modèles.
-Quand c'est possible, build les outils des gens en dll et juste les interfacer correctement. Mais si c'est pas possible, on réutilise leurs onnaissances pour faire des dll complètement modulaires injectables dans le flow
-La règle est vraiment d'être modulaire avec des boites noires 
-
-
-
+Deepseek/Gemini/à la main:
+Principalement tout ce qui n'est pas code, donc reverse engineering.
+- Développer un outil simple pour analyser tous les arguments de toutes les fonctions, avec affichage sous plusieurs formats (float, int, unsigned int, short, ...) et un clic pour committer le format des paramètres et ne plus avoir à le réanalyser ensuite, balayer tous les fichiers scénario avec jusqu'à ce que tout soit committé en terme de format. Permettre de modifier le nom de la commande si jamais pendant l'investigation des arguments on devine ce qu'elle fait (à noter qu'un op code != un nom, car on peut avoir un bit supplémentaire après l'op code qui sert à spécifier la variante de la fonction)

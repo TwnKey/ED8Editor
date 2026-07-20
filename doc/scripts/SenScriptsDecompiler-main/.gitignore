@@ -1,0 +1,13 @@
+# General ignores
+# compile_commands.json is used by clangd and clang-tidy
+builddir/
+compile_commands.json
+meson.build.user
+
+# Project specific ignores
+recompiled_files/
+SenScriptsDecompiler
+*.o
+*.autosave
+SenScriptsDecompiler.pro.user
+SenScriptsDecompiler.pro

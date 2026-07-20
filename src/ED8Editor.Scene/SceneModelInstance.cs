@@ -8,7 +8,9 @@ public sealed record SceneModelInstance(
     string AssetId,
     string Name,
     CpuModel Model,
-    Matrix4x4 Transform);
+    Matrix4x4 Transform,
+    Vector4 MaterialDiffuse = default,
+    Vector3 MaterialEmission = default);
 
 public readonly record struct SceneRay
 {
@@ -48,5 +50,10 @@ public sealed record SceneGeometryIssue(
 
 public sealed record SceneRaycastResult(
     ScenePickHit? Hit,
+    int TestedTriangles,
+    IReadOnlyList<SceneGeometryIssue> Issues);
+
+public sealed record SceneRaycastHitsResult(
+    IReadOnlyList<ScenePickHit> Hits,
     int TestedTriangles,
     IReadOnlyList<SceneGeometryIssue> Issues);

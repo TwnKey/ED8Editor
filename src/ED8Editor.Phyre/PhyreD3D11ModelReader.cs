@@ -62,7 +62,7 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
             var sceneEntry = sceneGraph.GetValueOrDefault(meshIndex);
             meshes.Add(new CpuMesh(
                 sceneEntry?.Name ?? $"{assetId}:mesh:{meshIndex}",
-                Matrix4x4.Identity,
+                sceneEntry?.LocalTransform ?? Matrix4x4.Identity,
                 primitives,
                 sceneEntry?.Purpose ?? CpuMeshPurpose.Render));
         }
@@ -75,6 +75,8 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
     {
         var materialGroup = cluster.Metadata.InstanceGroups[materialGroupIndex];
         var parameterBufferMember = FindRequiredMember(cluster, "PMaterial", "m_parameterBuffer");
+        var remapToMember = FindRequiredMember(cluster, "PMaterial", "m_remapTo");
+        var effectVariantMember = FindRequiredMember(cluster, "PMaterial", "m_effectVariant");
         var importNames = ReadAssetImportNames(cluster);
         var materials = new CpuMaterial[checked((int)materialGroup.Count)];
         for (uint materialId = 0; materialId < materialGroup.Count; materialId++)
@@ -95,7 +97,9 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
                 cluster,
                 checked((int)bufferPointer.DestinationListIndex),
                 importNames,
-                checked((int)materialId));
+                checked((int)materialId),
+                ReadRenderPassType(cluster, materialGroupIndex, materialId, remapToMember.Index),
+                ReadEffectAssetName(cluster, materialGroupIndex, materialId, effectVariantMember.Index, importNames));
         }
 
         return materials;
@@ -105,7 +109,9 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
         PhyreClusterData cluster,
         int bufferGroupIndex,
         IReadOnlyList<string> importNames,
-        int materialId)
+        int materialId,
+        string? renderPassType,
+        string? effectAssetName)
     {
         var bufferGroup = cluster.Metadata.InstanceGroups[bufferGroupIndex];
         if (bufferGroup.Count != 1)
@@ -178,7 +184,44 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
             null,
             parameters,
             textures,
-            new Dictionary<string, int>(StringComparer.Ordinal));
+            new Dictionary<string, int>(StringComparer.Ordinal),
+            renderPassType,
+            effectAssetName);
+    }
+
+    private static string? ReadRenderPassType(
+        PhyreClusterData cluster,
+        int materialGroupIndex,
+        uint materialId,
+        int remapToMemberIndex)
+    {
+        var pointer = cluster.Fixups.Pointers.SingleOrDefault(value =>
+            value.SourceListIndex == materialGroupIndex
+            && value.SourceObjectId == materialId
+            && value.IsClassDataMember
+            && value.SourceMemberId == (uint)remapToMemberIndex);
+        if (pointer is null || pointer.UserFixupId is not { } userFixupId) return null;
+        var fixup = cluster.Fixups.UserFixups[checked((int)userFixupId)];
+        return fixup.TypeName == "PSceneRenderPassType" ? fixup.Text : null;
+    }
+
+    private static string? ReadEffectAssetName(
+        PhyreClusterData cluster,
+        int materialGroupIndex,
+        uint materialId,
+        int effectVariantMemberIndex,
+        IReadOnlyList<string> importNames)
+    {
+        var pointer = cluster.Fixups.Pointers.SingleOrDefault(value =>
+            value.SourceListIndex == materialGroupIndex
+            && value.SourceObjectId == materialId
+            && value.IsClassDataMember
+            && value.SourceMemberId == (uint)effectVariantMemberIndex);
+        if (pointer?.UserFixupId is not { } userFixupId) return null;
+        var fixup = cluster.Fixups.UserFixups[checked((int)userFixupId)];
+        if (fixup.TypeName != "PAssetReferenceImport") return null;
+        var importId = ReadUserImportId(fixup);
+        return (uint)importId < importNames.Count ? importNames[importId] : null;
     }
 
     private static IReadOnlyList<string> ReadAssetImportNames(PhyreClusterData cluster)

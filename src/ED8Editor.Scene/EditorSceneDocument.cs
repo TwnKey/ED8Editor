@@ -126,6 +126,7 @@ public sealed class EditorSceneDocument
     }
 
     public event EventHandler? Changed;
+    public event EventHandler? PreviewChanged;
 
     public IReadOnlyList<EditableSceneElement> Elements
         => elements.Values.Select(value => value.ToPublic()).ToArray();
@@ -162,7 +163,7 @@ public sealed class EditorSceneDocument
             || !elements.TryGetValue(SceneElementKey.From(selection), out var element)) return false;
         var translation = element.Transform.Position - camera.Eye;
         cameras[selection.SourceIndex] = camera with { LookAt = lookAt - translation };
-        Changed?.Invoke(this, EventArgs.Empty);
+        PreviewChanged?.Invoke(this, EventArgs.Empty);
         return true;
     }
 
@@ -178,6 +179,7 @@ public sealed class EditorSceneDocument
         PushCommand(
             () => cameras[selection.SourceIndex] = before,
             () => cameras[selection.SourceIndex] = after);
+        Changed?.Invoke(this, EventArgs.Empty);
         return true;
     }
 
@@ -305,7 +307,7 @@ public sealed class EditorSceneDocument
     {
         if (!TryValidateUpdate(selection, transform, out var state)) return false;
         state.Transform = transform;
-        Changed?.Invoke(this, EventArgs.Empty);
+        PreviewChanged?.Invoke(this, EventArgs.Empty);
         return true;
     }
 
@@ -318,6 +320,7 @@ public sealed class EditorSceneDocument
         PushCommand(
             () => elements[key].Transform = originalTransform,
             () => elements[key].Transform = after);
+        Changed?.Invoke(this, EventArgs.Empty);
         return true;
     }
 
@@ -346,6 +349,8 @@ public sealed class EditorSceneDocument
             .Select(instance => instance with
             {
                 Transform = elements[new SceneElementKey(SceneElementKind.Prop, instance.Id)].Transform.ToMatrix(),
+                MaterialDiffuse = props.TryGetValue(instance.Id, out var prop) ? prop.MaterialDiffuse : instance.MaterialDiffuse,
+                MaterialEmission = props.TryGetValue(instance.Id, out prop) ? prop.MaterialEmission : instance.MaterialEmission,
             })
             .ToArray();
 
@@ -377,7 +382,7 @@ public sealed class EditorSceneDocument
         };
         var selection = new SceneElementSelection(SceneElementKind.Prop, id, name);
         var element = new ElementState(selection, SceneTransformCapabilities.All, transform);
-        var instance = new SceneModelInstance(id, assetId, name, model, transform.ToMatrix());
+        var instance = new SceneModelInstance(id, assetId, name, model, transform.ToMatrix(), prop.MaterialDiffuse, prop.MaterialEmission);
         AddPropState(prop, element, instance);
         PushCommand(
             () => RemovePropState(id),
@@ -400,7 +405,7 @@ public sealed class EditorSceneDocument
         var selection = new SceneElementSelection(SceneElementKind.Prop, id, name);
         var transform = SceneTransform.FromMapTransform(prop.Transform);
         var element = new ElementState(selection, SceneTransformCapabilities.All, transform);
-        var instance = new SceneModelInstance(id, assetId, name, model, transform.ToMatrix());
+        var instance = new SceneModelInstance(id, assetId, name, model, transform.ToMatrix(), prop.MaterialDiffuse, prop.MaterialEmission);
         AddPropState(prop, element, instance);
         PushCommand(
             () => RemovePropState(id),

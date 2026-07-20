@@ -11,6 +11,32 @@ using ED8Editor.Application;
 using ED8Editor.Rendering;
 using ED8Editor.Scene;
 
+if (args is ["--shader-api"])
+{
+    foreach (var assemblyName in new[] { "Vortice.D3DCompiler", "Vortice.Direct3D11" })
+    {
+        var assembly = System.Reflection.Assembly.Load(assemblyName);
+        foreach (var type in assembly.GetTypes().Where(value =>
+                     value.FullName?.Contains("ShaderReflection", StringComparison.Ordinal) == true
+                     || value.FullName?.Contains("ShaderDescription", StringComparison.Ordinal) == true
+                     || value.FullName?.Contains("SignatureParameter", StringComparison.Ordinal) == true
+                     || value.FullName?.Contains("ShaderParameterDescription", StringComparison.Ordinal) == true
+                     || value.FullName?.Contains("ConstantBufferDescription", StringComparison.Ordinal) == true
+                     || value.FullName?.Contains("ShaderVariableDescription", StringComparison.Ordinal) == true
+                     || value.FullName?.Contains("InputBind", StringComparison.Ordinal) == true
+                     || value.FullName == "Vortice.D3DCompiler.Compiler"))
+        {
+            Console.WriteLine($"TYPE {type.FullName} GUID={type.GUID}");
+            foreach (var constructor in type.GetConstructors()) Console.WriteLine($"  CTOR {constructor}");
+            foreach (var member in type.GetMembers(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.DeclaredOnly))
+            {
+                Console.WriteLine($"  {member.MemberType} {member}");
+            }
+        }
+    }
+    return 0;
+}
+
 if (args is ["--scene-scan", var sceneScriptPath])
 {
     var session = new EditorProjectLoader(
@@ -119,6 +145,20 @@ if (args is ["--phyre-metadata", var phyrePackagePath, var phyreEntryName])
     {
         Console.WriteLine($"  {group.ClassName ?? $"class#{group.ClassId}"}: {group.Count} (P={group.PointerFixupCount}, A={group.ArrayFixupCount}, PA={group.PointerArrayFixupCount})");
     }
+    var nodeContextGroup = metadata.InstanceGroups.SingleOrDefault(value => value.ClassName == "PNodeContext");
+    if (nodeContextGroup is not null)
+    {
+        foreach (var fixup in fixups.Arrays.Where(value => value.SourceListIndex == nodeContextGroup.Index))
+        {
+            var words = cluster.GetArrayData(nodeContextGroup.Index, fixup.Offset, checked(fixup.Count * sizeof(uint))).Span;
+            var values = new string[fixup.Count];
+            for (var index = 0; index < values.Length; index++)
+            {
+                values[index] = $"0x{BinaryPrimitives.ReadUInt32LittleEndian(words[(index * sizeof(uint))..]):X8}";
+            }
+            Console.WriteLine($"  context#{fixup.SourceObjectId}: {string.Join(", ", values)}");
+        }
+    }
 
     var diagnosticClasses = new HashSet<string>(StringComparer.Ordinal)
     {
@@ -126,11 +166,18 @@ if (args is ["--phyre-metadata", var phyrePackagePath, var phyreEntryName])
         "PDataBlockD3D11", "PDataBlockBase", "PIndexDataBlockD3D11", "PIndexDataBlockBase",
         "PVertexStream", "PRenderDataType", "PMaterial", "PMaterialSet", "PParameterBuffer",
         "PShaderParameterDefinition", "PAssetReference", "PAssetReferenceImport", "PTexture2D",
+        "PSceneRenderPass", "PEffect", "PEffectVariant", "PShader", "PShaderPass", "PShaderPassD3D11",
+        "PShaderVertexProgram", "PShaderFragmentProgram", "PShaderStreamDefinition", "PStreamInputLayoutD3D11", "PStreamInputDescD3D11",
+        "PShaderPassInfo", "PShaderParameterCaptureBufferLocation", "PShaderParameterCaptureBufferLocationTypeConstantBuffer",
+        "PNodeContext", "PContextVariantFoldingTable",
         "PTexture2DD3D11", "PTexture2DBase", "PTextureCommonBase",
     };
-    foreach (var descriptor in metadata.Classes.Where(value => diagnosticClasses.Contains(value.Name)))
+    foreach (var descriptor in metadata.Classes.Where(value => diagnosticClasses.Contains(value.Name)
+                 || value.Name.Contains("Shader", StringComparison.Ordinal)
+                 || value.Name.Contains("Context", StringComparison.Ordinal)
+                 || value.Name.Contains("RenderPass", StringComparison.Ordinal)))
     {
-        Console.WriteLine($"{descriptor.Name} ({descriptor.Size} bytes, super={descriptor.SuperClassId}):");
+        Console.WriteLine($"class#{descriptor.Index} {descriptor.Name} ({descriptor.Size} bytes, super={descriptor.SuperClassId}):");
         foreach (var member in descriptor.Members)
         {
             var arraySuffix = member.FixedArraySize == 0 ? string.Empty : $"[{member.FixedArraySize}]";
@@ -139,7 +186,8 @@ if (args is ["--phyre-metadata", var phyrePackagePath, var phyreEntryName])
     }
     var membersById = metadata.Classes.SelectMany(value => value.Members).ToDictionary(value => (uint)value.Index);
     foreach (var fixup in fixups.Arrays.Where(value =>
-                 metadata.InstanceGroups[value.SourceListIndex].ClassName is "PMesh" or "PDataBlockD3D11" or "PMaterial" or "PParameterBuffer"))
+                 metadata.InstanceGroups[value.SourceListIndex].ClassName is "PMesh" or "PDataBlockD3D11" or "PMaterial" or "PParameterBuffer"
+                    or "PShader" or "PShaderPass" or "PShaderVertexProgram" or "PShaderFragmentProgram" or "PNodeContext" or "PSceneRenderPass"))
     {
         var memberName = fixup.IsClassDataMember && membersById.TryGetValue(fixup.SourceMemberId, out var member)
             ? member.Name
@@ -147,7 +195,8 @@ if (args is ["--phyre-metadata", var phyrePackagePath, var phyreEntryName])
         Console.WriteLine($"ARRAY {metadata.InstanceGroups[fixup.SourceListIndex].ClassName}[{fixup.SourceObjectId}].{memberName}: count={fixup.Count}, offset=0x{fixup.Offset:X}");
     }
     foreach (var fixup in fixups.Pointers.Where(value =>
-                 metadata.InstanceGroups[value.SourceListIndex].ClassName is "PMesh" or "PMeshSegment" or "PDataBlockD3D11" or "PVertexStream" or "PMaterial" or "PParameterBuffer" or "PShaderParameterDefinition" or "PTexture2D"))
+                 metadata.InstanceGroups[value.SourceListIndex].ClassName is "PMesh" or "PMeshSegment" or "PDataBlockD3D11" or "PVertexStream" or "PMaterial" or "PParameterBuffer" or "PShaderParameterDefinition" or "PTexture2D" or "PEffect"
+                    or "PSceneRenderPass" or "PShader" or "PShaderPass" or "PShaderVertexProgram" or "PShaderFragmentProgram"))
     {
         var memberName = fixup.IsClassDataMember && membersById.TryGetValue(fixup.SourceMemberId, out var member)
             ? member.Name
@@ -161,19 +210,86 @@ if (args is ["--phyre-metadata", var phyrePackagePath, var phyreEntryName])
     return 0;
 }
 
+if (args is ["--phyre-effect-source", var effectPackagePath, var effectEntryName])
+{
+    var archive = new PkgArchiveReader().Read(effectPackagePath);
+    var cluster = new PhyreClusterReader().Read(archive.ReadEntry(effectEntryName));
+    var effectGroup = cluster.Metadata.InstanceGroups.Single(value => value.ClassName == "PEffect");
+    var sourceMember = cluster.Metadata.Classes.Single(value => value.Name == "PEffect").Members
+        .Single(value => value.Name == "m_effectSource");
+    var sourceFixup = cluster.Fixups.Arrays.Single(value =>
+        value.SourceListIndex == effectGroup.Index && value.SourceObjectId == 0
+        && ((value.IsClassDataMember && value.SourceMemberId == (uint)sourceMember.Index)
+            || (!value.IsClassDataMember && value.SourceOffset == sourceMember.ValueOffset)));
+    var source = cluster.GetArrayData(effectGroup.Index, sourceFixup.Offset, sourceFixup.Count).Span;
+    var zero = source.IndexOf((byte)0);
+    Console.Write(Encoding.UTF8.GetString(zero >= 0 ? source[..zero] : source));
+    return 0;
+}
+
 if (args is ["--phyre-model", var modelPackagePath, var modelEntryName])
 {
     var archive = new PkgArchiveReader().Read(modelPackagePath);
     var model = new PhyreD3D11ModelReader().Read(Path.GetFileNameWithoutExtension(modelEntryName), archive.ReadEntry(modelEntryName));
+    var effectAssetResolver = new PhyreArchiveAssetResolver();
+    var effectPassResolver = new PhyreMaterialRenderPassResolver();
+    var effectReader = new PhyreEffectRenderPassReader();
+    model = model with
+    {
+        Materials = model.Materials.Select(material =>
+        {
+            if (material.EffectAssetName is null) return material;
+            var effectEntry = effectAssetResolver.Resolve(archive.Entries, material.EffectAssetName);
+            return effectEntry is null
+                ? material
+                : effectPassResolver.Resolve(material, effectReader.ReadMetadata(archive.ReadEntry(effectEntry)));
+        }).ToArray(),
+    };
     Console.WriteLine($"Meshes     : {model.Meshes.Count}");
     Console.WriteLine($"Primitives : {model.Meshes.Sum(value => value.Primitives.Count)}");
     Console.WriteLine($"Materials  : {model.Materials.Count}");
+    var programsReported = new HashSet<CpuEffectProgram>(ReferenceEqualityComparer.Instance);
+    var shaderInspector = new D3D11ShaderProgramInspector();
     foreach (var (material, materialIndex) in model.Materials.Select((value, index) => (value, index)))
     {
-        Console.WriteLine($"material {materialIndex}: {material.SourceParameters.Count} constants, {material.SourceTextureReferences.Count} texture references");
+        Console.WriteLine($"material {materialIndex}: name={material.Name}, pass={material.RenderPassType ?? "<null>"}, phase={material.RenderPhase}, effect={material.EffectAssetName ?? "<null>"}");
+        if (material.RenderPassState is { } passState)
+        {
+            Console.WriteLine($"  blend={passState.BlendEnabled} {passState.SourceBlend}/{passState.DestinationBlend}, raster={passState.RasterizerState?.FillMode}/{passState.RasterizerState?.CullMode}, frontCCW={passState.RasterizerState?.FrontCounterClockwise}");
+        }
+        Console.WriteLine($"  {material.SourceParameters.Count} constants, {material.SourceTextureReferences.Count} texture references");
+        foreach (var parameter in material.SourceParameters)
+        {
+            Console.WriteLine($"  parameter {parameter.Key}={string.Join(",", parameter.Value.Select(value => value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)))}");
+        }
+        foreach (var effectSwitch in material.EffectSwitches ?? new Dictionary<string, string>())
+        {
+            Console.WriteLine($"  switch {effectSwitch.Key}={effectSwitch.Value}");
+        }
         foreach (var reference in material.SourceTextureReferences)
         {
             Console.WriteLine($"  {reference.Key} -> {reference.Value}");
+        }
+        if (material.EffectProgram is { } program && programsReported.Add(program))
+        {
+            foreach (var pass in program.SceneRenderPasses.Values)
+            {
+                Console.WriteLine($"  program pass {pass.Name}: {pass.Permutations.Count} permutations");
+                foreach (var (permutation, permutationIndex) in pass.Permutations.Select((value, index) => (value, index)))
+                {
+                    var vertex = shaderInspector.Inspect(permutation.VertexProgram, D3D11ShaderStage.Vertex);
+                    var fragment = shaderInspector.Inspect(permutation.FragmentProgram, D3D11ShaderStage.Fragment);
+                    Console.WriteLine($"    permutation {permutationIndex}: VS {permutation.VertexProgram.Bytecode.Length} bytes [{string.Join(", ", vertex.Inputs.Select(value => $"{value.SemanticName}{value.SemanticIndex}"))}], PS {permutation.FragmentProgram.Bytecode.Length} bytes");
+                    foreach (var stage in new[] { vertex, fragment })
+                    {
+                        Console.WriteLine($"      {stage.Stage}: cbuffers [{string.Join(", ", stage.ConstantBuffers.Select(value => $"{value.Name}@b{value.BindPoint}:{value.Size}"))}], resources [{string.Join(", ", stage.Resources.Where(value => value.Type != Vortice.Direct3D.ShaderInputType.ConstantBuffer).Select(value => $"{value.Name}@{value.BindPoint}:{value.Type}"))}]");
+                        foreach (var buffer in stage.ConstantBuffers)
+                        {
+                            Console.WriteLine($"        {buffer.Name}: {string.Join(", ", buffer.Variables.Select(value => $"{value.Name}+{value.Offset}:{value.Size}"))}");
+                        }
+                    }
+                }
+            }
         }
     }
     foreach (var (mesh, meshIndex) in model.Meshes.Select((value, index) => (value, index)))
@@ -277,7 +393,7 @@ var tests = new (string Name, Action Run)[]
     ("rejects an invalid marker", RejectsInvalidMarker),
     ("rejects an unterminated identifier", RejectsUnterminatedIdentifier),
     ("reads OPS props and preserves source data", ReadsOpsProps),
-    ("keeps the OPS vertical axis upright", KeepsOpsVerticalAxisUpright),
+    ("keeps OPS transforms in the Phyre scene basis", KeepsOpsTransformsInPhyreSceneBasis),
     ("creates scene instances at OPS prop transforms", CreatesSceneInstancesAtOpsTransforms),
     ("rejects malformed OPS vectors", RejectsMalformedOpsVector),
     ("resolves the requested localized asset variant", ResolvesLocalizedAsset),
@@ -292,14 +408,20 @@ var tests = new (string Name, Action Run)[]
     ("reads Phyre packed class members", ReadsPhyrePackedClassMembers),
     ("decompresses Phyre pointer and array fixups", DecompressesPhyreFixups),
     ("raycasts transformed scene triangles exactly", RaycastsTransformedSceneTriangles),
+    ("returns every model hit in depth order", ReturnsEveryModelHitInDepthOrder),
     ("reports unsupported picking geometry", ReportsUnsupportedPickingGeometry),
     ("reports truncated picking vertex data", ReportsTruncatedPickingVertexData),
     ("reports truncated picking index data", ReportsTruncatedPickingIndexData),
     ("calculates transformed scene bounds", CalculatesTransformedSceneBounds),
     ("creates a center viewport ray", CreatesCenterViewportRay),
     ("validates explicit viewport lighting", ValidatesViewportLighting),
-    ("derives viewport alpha testing from Phyre materials", DerivesViewportMaterialSettings),
+    ("derives viewport behavior from Phyre effect switches", DerivesViewportMaterialSettings),
+    ("resolves Phyre archive asset paths", ResolvesPhyreArchiveAssetPaths),
+    ("resolves Phyre material render phases", ResolvesPhyreMaterialRenderPhases),
+    ("selects Phyre shader permutations from declared contexts", SelectsPhyreShaderPermutationContexts),
+    ("selects authored environment variants like the game", SelectsAuthoredEnvironmentVariants),
     ("supports editor camera orbit and free flight", KeepsEditorCameraOrbitCentered),
+    ("smooths accumulated editor camera dolly input", SmoothsEditorCameraDollyInput),
     ("builds typed OPS overlay geometry", BuildsTypedOpsOverlayGeometry),
     ("picks exact OPS volume geometry", PicksExactOpsVolumeGeometry),
     ("undoes and redoes scene document transforms", UndoesAndRedoesSceneDocumentTransforms),
@@ -332,6 +454,47 @@ foreach (var test in tests)
 }
 
 return failures == 0 ? 0 : 1;
+
+static void SelectsPhyreShaderPermutationContexts()
+{
+    var stage = new CpuShaderStageProgram(new byte[] { 1 }, 16, 0);
+    var noLight = new CpuShaderPermutation(stage, stage, Array.Empty<CpuShaderInput>(),
+        new CpuShaderContext(0, new Dictionary<string, uint>(StringComparer.Ordinal)
+        {
+            ["NUM_LIGHTS"] = 0,
+            ["INSTANCING_ENABLED"] = 0,
+            ["SHADER_LOD_LEVEL"] = 0,
+        }));
+    var lit = noLight with
+    {
+        Context = new CpuShaderContext(1, new Dictionary<string, uint>(StringComparer.Ordinal)
+        {
+            ["NUM_LIGHTS"] = 0x11,
+            ["INSTANCING_ENABLED"] = 0,
+            ["SHADER_LOD_LEVEL"] = 0,
+        }),
+    };
+    var program = new CpuEffectProgram(
+        new Dictionary<string, CpuSceneRenderPassProgram>(StringComparer.Ordinal)
+        {
+            ["Opaque"] = new CpuSceneRenderPassProgram("Opaque", new[] { noLight, lit }),
+        },
+        new[] { "NUM_LIGHTS", "INSTANCING_ENABLED", "SHADER_LOD_LEVEL" },
+        new[] { noLight.Context!, lit.Context! });
+    var material = new CpuMaterial(
+        "test", Vector4.One, null,
+        new Dictionary<string, float[]>(), new Dictionary<string, string>(), new Dictionary<string, int>(),
+        ResolvedRenderPassName: "Opaque", EffectProgram: program);
+    var selector = new D3D11ShaderPermutationSelector();
+    var selected = selector.Select(material, D3D11ShaderContextPolicy.ViewerWithoutDynamicLights);
+    Equal(true, selected.IsSupported);
+    Equal(true, ReferenceEquals(noLight, selected.Permutation));
+
+    var unknownProgram = program with { ContextSwitches = program.ContextSwitches!.Append("UNREGISTERED_CONTEXT").ToArray() };
+    var unsupported = selector.Select(material with { EffectProgram = unknownProgram }, D3D11ShaderContextPolicy.ViewerWithoutDynamicLights);
+    Equal(false, unsupported.IsSupported);
+    Equal(true, unsupported.UnsupportedReason!.Contains("UNREGISTERED_CONTEXT", StringComparison.Ordinal));
+}
 
 static void ReadsValidHeader()
 {
@@ -418,27 +581,27 @@ static void ReadsOpsProps()
         Equal("chair", prop.Name);
         Equal(0x283u, prop.Flags!.Value);
         Equal("kept", prop.SourceAttributes["custom"]);
-        Near(-2.5f, prop.Transform.Position.X);
+        Near(2.5f, prop.Transform.Position.X);
         Near(1f, MathF.Abs(Quaternion.Dot(Quaternion.Identity, prop.Transform.Rotation)));
         Equal(2, scene.Volumes.Count);
         var entry = scene.Volumes.Single(value => value.Kind == MapVolumeKind.Entry);
         Equal("event_box", entry.Name);
         Equal("a0100", entry.DestinationMap!);
-        Near(-4f, entry.Transform.Position.X);
+        Near(4f, entry.Transform.Position.X);
         Near(3f, entry.Transform.Scale.Y);
         Near(1f, entry.Transform.Rotation.W);
         Equal(1, scene.Points.Count);
-        Near(-7f, scene.Points[0].Position.X);
+        Near(7f, scene.Points[0].Position.X);
         Near(2.5f, scene.Points[0].Radius!.Value);
         Equal(1, scene.Cameras.Count);
-        Near(-10f, scene.Cameras[0].Eye.X);
-        Near(-13f, scene.Cameras[0].LookAt.X);
+        Near(10f, scene.Cameras[0].Eye.X);
+        Near(13f, scene.Cameras[0].LookAt.X);
         Equal(1, scene.Sounds.Count);
         Equal(MapSoundKind.Point, scene.Sounds[0].Kind);
-        Near(-16f, scene.Sounds[0].Position.X);
+        Near(16f, scene.Sounds[0].Position.X);
         Near(12.5f, scene.Sounds[0].Range);
         Equal(1, scene.Lights.Count);
-        Near(-19f, scene.Lights[0].Position.X);
+        Near(19f, scene.Lights[0].Position.X);
         Near(8f, scene.Lights[0].OuterRange);
         Equal(xml.Length, scene.OriginalBytes.Count);
     }
@@ -495,17 +658,24 @@ static void CreatesSceneInstancesAtOpsTransforms()
     Near(2f, scaledX.Length());
 }
 
-static void KeepsOpsVerticalAxisUpright()
+static void KeepsOpsTransformsInPhyreSceneBasis()
 {
-    const string xml = "<Ops><MapObjects><AssetObject asset=\"O_LAMP\" name=\"lamp\" pos=\"0,0,0\" rot=\"0,1.570796,0\" scl=\"1,1,1\" /></MapObjects></Ops>";
+    const string xml = "<Ops><MapObjects><AssetObject asset=\"O_LAMP\" name=\"lamp\" pos=\"2,3,4\" rot=\"0,1.570796,0\" scl=\"1,1,1\" /></MapObjects></Ops>";
     var path = WriteTemporaryOps(xml);
     try
     {
         var prop = new OpsReader().Read(path).Props.Single();
+        Near(2f, prop.Transform.Position.X);
+        Near(3f, prop.Transform.Position.Y);
+        Near(4f, prop.Transform.Position.Z);
         var transformedUp = Vector3.Transform(Vector3.UnitY, prop.Transform.Rotation);
         Near(0f, transformedUp.X);
         Near(1f, transformedUp.Y);
         Near(0f, transformedUp.Z);
+        var transformedForward = Vector3.Transform(Vector3.UnitZ, prop.Transform.Rotation);
+        Near(1f, transformedForward.X);
+        Near(0f, transformedForward.Y);
+        Near(0f, transformedForward.Z);
     }
     finally
     {
@@ -817,6 +987,21 @@ static void RaycastsTransformedSceneTriangles()
     Near(1f, result.Hit.Normal.Z);
 }
 
+static void ReturnsEveryModelHitInDepthOrder()
+{
+    var model = CreateTriangleModel("TEST", "Float32x3");
+    var front = new SceneModelInstance(10, "MAP", "map", model, Matrix4x4.Identity);
+    var behind = new SceneModelInstance(11, "PROP", "prop", model, Matrix4x4.CreateTranslation(0f, 0f, 2f));
+    var ray = new SceneRay(new Vector3(0f, 0f, -2f), Vector3.UnitZ);
+    var result = new SceneRaycaster().CastAll(ray, new[] { behind, front });
+    Equal(2, result.Hits.Count);
+    Equal(10, result.Hits[0].Instance.Id);
+    Equal(11, result.Hits[1].Instance.Id);
+    var picked = new SceneElementPicker().PickAll(ray, new[] { behind, front }, null, 0.3f);
+    Equal("map", picked[0].Selection.Name);
+    Equal("prop", picked[1].Selection.Name);
+}
+
 static void ReportsUnsupportedPickingGeometry()
 {
     var model = CreateTriangleModel("TEST", "Float16x3");
@@ -905,13 +1090,116 @@ static void DerivesViewportMaterialSettings()
         "leaves",
         new Vector4(0.8f, 0.9f, 1f, 1f),
         0,
-        new Dictionary<string, float[]> { ["AlphaThreshold"] = new[] { 0.5f } },
+        new Dictionary<string, float[]>
+        {
+            ["AlphaThreshold"] = new[] { 0.5f },
+            ["UVaMUvColor"] = new[] { 0.2f, 0.3f, 0.4f, 0.5f },
+            ["UVaMUvTexcoord"] = new[] { 0.1f, 0.2f, 2f, 3f },
+        },
         new Dictionary<string, string>(),
-        new Dictionary<string, int>());
+        new Dictionary<string, int>(),
+        EffectSwitches: new Dictionary<string, string>
+        {
+            ["ALPHA_TESTING_ENABLED"] = "1",
+            ["ALPHA_BLENDING_ENABLED"] = "1",
+            ["VERTEX_COLOR_ENABLED"] = "1",
+            ["NO_ALL_LIGHTING_ENABLED"] = "1",
+            ["GLARE_HIGHTPASS_ENABLED"] = "1",
+            ["MULTI_UV_ENANLED"] = "1",
+        });
     var settings = ViewportMaterialSettings.FromMaterial(material);
     Near(0.8f, settings.BaseColor.X);
     Near(0.5f, settings.AlphaThreshold!.Value);
+    Equal(true, settings.AlphaTestingEnabled);
+    Equal(true, settings.VertexColorEnabled);
+    Equal(true, settings.AlphaBlendingEnabled);
+    Equal(false, settings.LightingEnabled);
+    Equal(true, settings.GlareHighPassEnabled);
+    Equal(ViewportMultiUvBlendMode.Alpha, settings.MultiUvBlendMode);
+    Near(0.3f, settings.MultiUvColor.Y);
+    Near(3f, settings.MultiUvTransform.W);
     Equal(ViewportMaterialSettings.Fallback, ViewportMaterialSettings.FromMaterial(null));
+}
+
+static void ResolvesPhyreMaterialRenderPhases()
+{
+    var rasterizerState = new CpuRasterizerState(3, 2, false, 0, 0f, 0f, true, false, true, false);
+    var opaqueState = new CpuRenderPassState(false, 2, 1, 1, 2, 1, 1, 15, rasterizerState);
+    var transparentState = new CpuRenderPassState(true, 5, 6, 1, 2, 2, 5, 15, rasterizerState);
+    var passes = new Dictionary<string, CpuRenderPassState>(StringComparer.Ordinal)
+    {
+        ["Opaque"] = opaqueState,
+        ["ForceTransparent"] = transparentState,
+        ["TransparentNoDepthMask"] = transparentState,
+    };
+    var resolver = new PhyreMaterialRenderPassResolver();
+    var material = new CpuMaterial(
+        "material",
+        Vector4.One,
+        null,
+        new Dictionary<string, float[]>(),
+        new Dictionary<string, string>(),
+        new Dictionary<string, int>());
+
+    var opaque = resolver.Resolve(material, new PhyreEffectMetadata(
+        passes, new Dictionary<string, string>()));
+    Equal(CpuMaterialRenderPhase.Opaque, opaque.RenderPhase);
+    Equal(opaqueState, opaque.RenderPassState!);
+
+    var glare = resolver.Resolve(material, new PhyreEffectMetadata(
+        passes, new Dictionary<string, string> { ["GLARE_HIGHTPASS_ENABLED"] = "1" }));
+    Equal(CpuMaterialRenderPhase.EffectTransparent, glare.RenderPhase);
+    Equal(transparentState, glare.RenderPassState!);
+
+    var transparent = resolver.Resolve(material with { RenderPassType = "ForceTransparent" },
+        new PhyreEffectMetadata(passes, new Dictionary<string, string>()));
+    Equal(CpuMaterialRenderPhase.Transparent, transparent.RenderPhase);
+    Equal(transparentState, transparent.RenderPassState!);
+
+    var authoredDefault = resolver.Resolve(material with { RenderPassType = "Default" },
+        new PhyreEffectMetadata(
+            passes,
+            new Dictionary<string, string> { ["GLARE_HIGHTPASS_ENABLED"] = "1" },
+            "TransparentNoDepthMask"));
+    Equal(CpuMaterialRenderPhase.EffectTransparent, authoredDefault.RenderPhase);
+    Equal(transparentState, authoredDefault.RenderPassState!);
+
+    var unspecifiedPass = resolver.Resolve(material,
+        new PhyreEffectMetadata(passes, new Dictionary<string, string>(), "TransparentNoDepthMask"));
+    Equal(CpuMaterialRenderPhase.Opaque, unspecifiedPass.RenderPhase);
+    Equal(opaqueState, unspecifiedPass.RenderPassState!);
+
+    var explicitlyOpaqueGlare = resolver.Resolve(material with { RenderPassType = "Opaque" },
+        new PhyreEffectMetadata(
+            passes, new Dictionary<string, string> { ["GLARE_HIGHTPASS_ENABLED"] = "1" }));
+    Equal(CpuMaterialRenderPhase.Opaque, explicitlyOpaqueGlare.RenderPhase);
+    Equal(opaqueState, explicitlyOpaqueGlare.RenderPassState!);
+}
+
+static void SelectsAuthoredEnvironmentVariants()
+{
+    Equal(SceneEnvironmentVariant.Daylight, SceneEnvironmentVariantSelector.FromProfileName("default"));
+    Equal(SceneEnvironmentVariant.Evening, SceneEnvironmentVariantSelector.FromProfileName("evening"));
+    Equal(SceneEnvironmentVariant.Night, SceneEnvironmentVariantSelector.GetAuthoredVariant("light_night")!.Value);
+    Equal(true, SceneEnvironmentVariantSelector.IsVisible("lamp", SceneEnvironmentVariant.Daylight));
+    Equal(true, SceneEnvironmentVariantSelector.IsVisible("light_daylight", SceneEnvironmentVariant.Daylight));
+    Equal(false, SceneEnvironmentVariantSelector.IsVisible("light_evening", SceneEnvironmentVariant.Daylight));
+    Equal(false, SceneEnvironmentVariantSelector.IsVisible("light_night", SceneEnvironmentVariant.Daylight));
+    Equal(true, SceneEnvironmentVariantSelector.IsVisible("sky_night", SceneEnvironmentVariant.Night));
+    Equal(false, SceneEnvironmentVariantSelector.IsVisible("sky_night", SceneEnvironmentVariant.Daylight));
+}
+
+static void ResolvesPhyreArchiveAssetPaths()
+{
+    var expected = new PackageEntry(2, "ed8.fx#ABC.phyre", 10, 10, 0, PackageCompressionType.None);
+    var entries = new[]
+    {
+        new PackageEntry(1, "model.phyre", 10, 10, 0, PackageCompressionType.None),
+        expected,
+    };
+    var resolver = new PhyreArchiveAssetResolver();
+    Equal(expected, resolver.Resolve(entries, "shaders/ed8.fx#ABC")!);
+    Equal(expected, resolver.Resolve(entries, "ed8.fx#ABC.phyre")!);
 }
 
 static void KeepsEditorCameraOrbitCentered()
@@ -957,6 +1245,23 @@ static void KeepsEditorCameraOrbitCentered()
     Near(downwardDirection.X, stableCamera.Forward.X);
     Near(downwardDirection.Y, stableCamera.Forward.Y);
     Near(downwardDirection.Z, stableCamera.Forward.Z);
+}
+
+static void SmoothsEditorCameraDollyInput()
+{
+    var smoother = new EditorCameraDollySmoother();
+    smoother.Add(10f);
+    var first = smoother.Advance(1f / 60f);
+    Equal(true, first > 0f && first < 10f);
+    Equal(true, smoother.RemainingDistance > 0f);
+    var accumulated = first;
+    for (var frame = 0; frame < 120; frame++) accumulated += smoother.Advance(1f / 60f);
+    Near(10f, accumulated, 0.001f);
+    Near(0f, smoother.RemainingDistance, 0.001f);
+    smoother.Add(-5f);
+    Equal(true, smoother.Advance(1f / 60f) < 0f);
+    smoother.Reset();
+    Near(0f, smoother.RemainingDistance);
 }
 
 static void BuildsTypedOpsOverlayGeometry()
@@ -1043,12 +1348,19 @@ static void UndoesAndRedoesSceneDocumentTransforms()
             ["O_TEST"] = new("O_TEST", AssetModelLoadStatus.Loaded, model, null),
         });
     var document = new EditorSceneDocument(session);
+    var previewChanges = 0;
+    var committedChanges = 0;
+    document.PreviewChanged += (_, _) => previewChanges++;
+    document.Changed += (_, _) => committedChanges++;
     Equal(false, document.IsDirty);
     var selection = new SceneElementSelection(SceneElementKind.Prop, 0, "editable");
     var original = document.Find(selection)!.Transform;
     document.PreviewTransform(selection, original with { Position = new Vector3(8, 4, 5) });
+    Equal(1, previewChanges);
+    Equal(0, committedChanges);
     Equal(false, document.IsDirty);
     Equal(true, document.CommitPreview(selection, original));
+    Equal(1, committedChanges);
     Equal(true, document.IsDirty);
     Near(8f, document.CreateMapSnapshot()!.Props[0].Transform.Position.X);
     Equal(true, document.Undo());

@@ -15,8 +15,14 @@ public sealed class SceneRaycaster
 
     public SceneRaycastResult Cast(SceneRay ray, IEnumerable<SceneModelInstance> instances)
     {
+        var result = CastAll(ray, instances);
+        return new SceneRaycastResult(result.Hits.FirstOrDefault(), result.TestedTriangles, result.Issues);
+    }
+
+    public SceneRaycastHitsResult CastAll(SceneRay ray, IEnumerable<SceneModelInstance> instances)
+    {
         ArgumentNullException.ThrowIfNull(instances);
-        ScenePickHit? nearest = null;
+        var nearestByInstance = new Dictionary<int, ScenePickHit>();
         var testedTriangles = 0;
         var issues = new List<SceneGeometryIssue>();
         foreach (var instance in instances)
@@ -53,9 +59,10 @@ public sealed class SceneRaycaster
                         var c = Vector3.Transform(decoder.Read(buffer, attribute, indexC), transform);
                         testedTriangles++;
                         if (Intersect(ray, a, b, c, out var distance)
-                            && (nearest is null || distance < nearest.Distance))
+                            && (!nearestByInstance.TryGetValue(instance.Id, out var nearest)
+                                || distance < nearest.Distance))
                         {
-                            nearest = new ScenePickHit(
+                            nearestByInstance[instance.Id] = new ScenePickHit(
                                 instance,
                                 meshIndex,
                                 primitiveIndex,
@@ -69,7 +76,10 @@ public sealed class SceneRaycaster
                 }
             }
         }
-        return new SceneRaycastResult(nearest, testedTriangles, issues);
+        return new SceneRaycastHitsResult(
+            nearestByInstance.Values.OrderBy(value => value.Distance).ToArray(),
+            testedTriangles,
+            issues);
     }
 
     private static bool TryEnumerateTriangles(

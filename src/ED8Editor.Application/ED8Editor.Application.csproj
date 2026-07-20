@@ -2,5 +2,6 @@
   <ItemGroup>
     <ProjectReference Include="..\ED8Editor.Core\ED8Editor.Core.csproj" />
     <ProjectReference Include="..\ED8Editor.ScriptHeaders\ED8Editor.ScriptHeaders.csproj" />
+    <ProjectReference Include="..\ED8Editor.Phyre\ED8Editor.Phyre.csproj" />
   </ItemGroup>
 </Project>

@@ -8,4 +8,11 @@ public sealed record CpuMaterial(
     int? BaseColorTextureIndex,
     IReadOnlyDictionary<string, float[]> SourceParameters,
     IReadOnlyDictionary<string, string> SourceTextureReferences,
-    IReadOnlyDictionary<string, int> TextureBindings);
+    IReadOnlyDictionary<string, int> TextureBindings,
+    string? RenderPassType = null,
+    string? EffectAssetName = null,
+    CpuRenderPassState? RenderPassState = null,
+    IReadOnlyDictionary<string, string>? EffectSwitches = null,
+    CpuMaterialRenderPhase RenderPhase = CpuMaterialRenderPhase.Opaque,
+    string? ResolvedRenderPassName = null,
+    CpuEffectProgram? EffectProgram = null);

@@ -1,4 +1,5 @@
 using ED8Editor.Core;
+using ED8Editor.Phyre;
 using ED8Editor.ScriptHeaders;
 
 namespace ED8Editor.Application;
@@ -52,6 +53,52 @@ public sealed class EditorProjectLoader
         }
         var resolution = assetResolverFactory.Create(gameDataPath).Resolve(assetId, preference);
         return LoadModel(LoadManifest(resolution));
+    }
+
+    public Task<IReadOnlyDictionary<string, CpuModel>> LoadEffectMetadataAsync(
+        EditorSession session,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        return Task.Run(() => LoadEffectMetadata(session, cancellationToken), cancellationToken);
+    }
+
+    private IReadOnlyDictionary<string, CpuModel> LoadEffectMetadata(
+        EditorSession session,
+        CancellationToken cancellationToken)
+    {
+        var updated = new Dictionary<string, CpuModel>(StringComparer.OrdinalIgnoreCase);
+        foreach (var load in session.AssetModels.Values.Where(value => value.Model is not null))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!session.AssetManifests.TryGetValue(load.AssetId, out var manifest)
+                || manifest.Manifest is null || packageArchiveReader is null) continue;
+            var archive = packageArchiveReader.Read(manifest.Manifest.SourcePackagePath);
+            var model = BindEffectMetadata(load.Model!, archive);
+            if (model.Materials.Any(value => value.EffectSwitches is not null)) updated[load.AssetId] = model;
+        }
+        return updated;
+    }
+
+    private CpuModel BindEffectMetadata(CpuModel model, IPackageArchive archive)
+    {
+        var reader = new PhyreEffectRenderPassReader();
+        var passResolver = new PhyreMaterialRenderPassResolver();
+        var assetResolver = new PhyreArchiveAssetResolver();
+        var effects = new Dictionary<string, PhyreEffectMetadata>(StringComparer.OrdinalIgnoreCase);
+        var materials = model.Materials.Select(material =>
+        {
+            if (material.EffectAssetName is null) return material;
+            var entry = assetResolver.Resolve(archive.Entries, material.EffectAssetName);
+            if (entry is null) return material;
+            if (!effects.TryGetValue(entry.Name, out var effect))
+            {
+                effect = reader.ReadMetadata(archive.ReadEntry(entry));
+                effects.Add(entry.Name, effect);
+            }
+            return passResolver.Resolve(material, effect);
+        }).ToArray();
+        return model with { Materials = materials };
     }
 
     private IReadOnlyDictionary<string, AssetModelLoad> LoadModels(

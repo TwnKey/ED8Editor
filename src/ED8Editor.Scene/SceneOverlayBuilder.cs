@@ -3,7 +3,7 @@ using ED8Editor.Core;
 
 namespace ED8Editor.Scene;
 
-public sealed record SceneOverlayLine(Vector3 Start, Vector3 End, Vector4 Color);
+public sealed record SceneOverlayLine(Vector3 Start, Vector3 End, Vector4 Color, float Thickness = 1f);
 
 public sealed record SceneOverlayOptions(
     bool ShowEntryVolumes = true,

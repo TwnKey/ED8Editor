@@ -28,7 +28,9 @@ public sealed record D3D11SceneInstance(
     D3D11ModelResources Model,
     Matrix4x4 Transform,
     bool IsSelected,
-    bool IsPreview = false);
+    bool IsPreview = false,
+    Vector4 MaterialDiffuse = default,
+    Vector3 MaterialEmission = default);
 
 public sealed record D3D11TextureResources(
     CpuTexture Source,
@@ -51,15 +53,28 @@ public sealed class D3D11ModelResources : IDisposable
         AssetId = assetId;
         Meshes = meshes;
         Textures = textures;
-        Materials = materials;
+        Materials = materials.ToList();
         AllocatedBytes = allocatedBytes;
     }
 
     public string AssetId { get; }
     public IReadOnlyList<D3D11MeshResources> Meshes { get; }
     public IReadOnlyList<D3D11TextureResources> Textures { get; }
-    public IReadOnlyList<D3D11MaterialResources> Materials { get; }
+    public List<D3D11MaterialResources> Materials { get; }
     public long AllocatedBytes { get; }
+
+    public void UpdateMaterialSources(CpuModel model)
+    {
+        if (!model.AssetId.Equals(AssetId, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("The model asset does not match these GPU resources.", nameof(model));
+        if (model.Materials.Count != Materials.Count)
+            throw new ArgumentException("The model material count does not match these GPU resources.", nameof(model));
+        for (var index = 0; index < Materials.Count; index++)
+        {
+            if (Materials[index] is not D3D11MaterialResources material) continue;
+            Materials[index] = material with { Source = model.Materials[index] };
+        }
+    }
 
     public void Dispose()
     {
