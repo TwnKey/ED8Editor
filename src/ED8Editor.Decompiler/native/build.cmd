@@ -20,3 +20,5 @@ del cs1_decompiler.exp 2>nul
 del cs1_decompiler.lib 2>nul
 echo.
 echo OK -> cs1_decompiler.dll
+
+cmd /k

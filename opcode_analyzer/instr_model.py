@@ -3,10 +3,24 @@
 # Fournit : chargement, decodage par matching de branches (avec plages d'octets par champ),
 # collecte d'echantillons depuis un corpus, statistiques heuristiques par champ,
 # edition du 'read' (retype / split / merge, largeur preservee), sauvegarde.
-import json, struct, os, glob
+import json, struct, os, glob, re
 
 FIXW = {'u8':1,'s8':1,'u16':2,'s16':2,'u32':4,'s32':4,'f32':4,'ptr32':4}
 SCALARS = set(FIXW)
+
+def _eval_cond(cond, ctx):
+    """Evalue une condition d'expression (ex. '(unsigned char)control_byte2[0] < 0x4')."""
+    e = cond.replace('&&', ' and ').replace('||', ' or ')
+    e = re.sub(r'\(unsigned char\)|\(short\)|\(int\)|\(uint\)|\(unsigned\)', '', e)
+    e = re.sub(r'control_byte2\[0\]|\bcontrol_byte2\b', str(ctx.get('sel2', -1)), e)
+    e = re.sub(r'control_byte\[0\]|\bcode\b', str(ctx.get('sel', -1)), e)
+    e = re.sub(r'\bcontrol\b', str(ctx.get('control', -1)), e)
+    if re.search(r'[A-Za-z_]', re.sub(r'0x[0-9a-fA-F]+', '', e)):
+        return None
+    try:
+        return eval(e)
+    except Exception:
+        return None
 
 # ---- helpers binaires (identiques a l'outil/au jeu) ----
 def read_cstr(b, p):
@@ -135,11 +149,13 @@ class Field:
         self.node = node; self.off = off; self.length = length; self.raw = raw
 
 class Sample:
-    __slots__ = ('file','func','offset','fields','data','ui')
-    def __init__(self, file, func, offset, fields, data, ui):
+    __slots__ = ('file','func','offset','fields','data','ui','fstart','fend','path')
+    def __init__(self, file, func, offset, fields, data, ui, fstart=0, fend=0, path=None):
         self.file = file; self.func = func; self.offset = offset; self.fields = fields
         self.data = data   # octets de l'instruction complete (opcode + operandes)
         self.ui = ui
+        self.fstart = fstart; self.fend = fend   # plage de la fonction contenante
+        self.path = path                          # chemin complet du .dat
 
 class Model:
     def __init__(self, json_path):
@@ -176,8 +192,19 @@ class Model:
                     L, lvl = r; p += L
                 # champ synthetique 'loop' couvrant tout le groupe (non editable finement ici)
                 continue
-            if 'switch' in n or 'switch_peek' in n or 'if' in n or 'ifval' in n:
-                return None  # ne doit pas arriver dans un read a plat
+            if 'if' in n:
+                val = _eval_cond(n['if']['cond'], ctx)
+                if val is None:
+                    return None
+                body = n['if']['then'] if val else n['if'].get('else', [])
+                r = self._decode_nodes(body, path, lvl, b, p, e, ctx, out_fields)
+                if r == 'MISMATCH' or r is None:
+                    return r
+                sub_len, lvl = r
+                p += sub_len
+                continue
+            if 'switch' in n or 'switch_peek' in n or 'ifval' in n:
+                return None  # ne doit pas arriver dans un read a plat (tout est eclate)
             t = n['t']; role = n.get('role')
             if t in FIXW:
                 w = FIXW[t]
@@ -186,6 +213,9 @@ class Model:
                 if role in ('selector', 'sel16', 'peek'):
                     want = path[lvl] if lvl < len(path) else None; lvl += 1
                     if isinstance(want, int) and val != want: return 'MISMATCH'
+                if role == 'selector':
+                    if 'sel' not in ctx: ctx['sel'] = raw[0]
+                    else: ctx['sel2'] = raw[0]
                 if role == 'count': ctx['count'] = raw[0]
                 if role == 'sel16': ctx['sel16'] = raw[0] | (raw[1] << 8)
                 if t == 's16' and 'control' not in ctx: ctx['control'] = raw[0] | (raw[1] << 8)
@@ -195,7 +225,7 @@ class Model:
                 if c is None: return None
                 out_fields.append(Field(n, p, c, list(b[p:p+c]))); ctx['laststr'] = c; p += c
             elif t == 'expr':
-                c = skip_expr(b, p)
+                c = self._expr_len(b, p, e)
                 if c is None: return None
                 out_fields.append(Field(n, p, c, list(b[p:p+c]))); p += c
             elif t == 'dialog':
@@ -213,6 +243,23 @@ class Model:
             else:
                 return None
         return (p - i0, lvl)
+
+    def _expr_len(self, b, p, e):
+        """Longueur d'une expression, en decodant l'instruction imbriquee du redispatch (0x1c).
+        (skip_expr module-level traite 0x1c comme 5 octets fixes, ce qui est FAUX.)"""
+        i = p
+        while i < e:
+            x = b[i]
+            if x == 0x01:
+                return (i + 1) - p
+            if x == 0x1c:
+                r = self.decode_instr(b, i + 1, e, False)
+                if r is None:
+                    return None
+                i += 1 + r[2]
+                continue
+            i += 1 + EXPR_PAYLOAD.get(x, 0)
+        return None
 
     def decode_instr(self, b, p, e, ui):
         """Decode l'instruction a l'offset p. Renvoie (instr_index, [Field], length) ou None."""
@@ -233,16 +280,48 @@ class Model:
             return (ri, fields, 1 + L)
         return None
 
+    @staticmethod
+    def _is_trailing_pad(b, p, e):
+        """Vrai si tout de p a e n'est que des 0x00 (padding d'alignement de fin de fonction)."""
+        q = p
+        while q < e:
+            if b[q] != 0:
+                return False
+            q += 1
+        return p < e
+
     def decode_function(self, b, s, e, ui):
-        """Decode une fonction entiere. Renvoie liste [(instr_index,[Field],offset)] ou None si echec."""
+        """Decode une fonction entiere. Renvoie liste [(instr_index,[Field],offset)] ou None si echec.
+        Le padding d'alignement de fin (00 jusqu'a e) est ignore (pas une instruction)."""
         out = []; p = s
         while p < e:
+            if b[p] == 0 and self._is_trailing_pad(b, p, e):
+                return out  # code termine, le reste est du padding
             r = self.decode_instr(b, p, e, ui)
             if r is None: return None
             ri, fields, L = r
             if L <= 0: return None
             out.append((ri, fields, p)); p += L
-        return out if p == e else None
+        return out
+
+    def decode_function_trace(self, b, s, e, ui):
+        """Best-effort pour le debug. Renvoie (rows, fail_offset, pad_start) ou
+        rows = [(name, offset, length, opcode)] ;
+        fail_offset = offset du decrochage (opcode invalide) ou None ;
+        pad_start = offset ou commence le padding d'alignement de fin, ou None."""
+        rows = []; p = s
+        while p < e:
+            if b[p] == 0 and self._is_trailing_pad(b, p, e):
+                return rows, None, p  # padding de fin
+            r = self.decode_instr(b, p, e, ui)
+            if r is None:
+                return rows, p, None
+            ri, fields, length = r
+            if length <= 0:
+                return rows, p, None
+            rows.append((self.instructions[ri]['name'], p, length, b[p]))
+            p += length
+        return rows, None, None
 
     # --- scan corpus : remplit self.samples ---
     def scan_corpus(self, folder, max_samples=200, progress=None):
@@ -258,8 +337,9 @@ class Model:
             ui = base in self.ui_files
             for (k, nm, s, e) in h['funcs']:
                 if e > len(b) or s >= e: continue
+                if not nm or nm.startswith('__'): continue  # fonctions sans nom = tables de donnees (comme le decompilo)
                 dec = self.decode_function(b, s, e, ui)
-                if dec is None: continue      # fonction data/table -> ignore
+                if dec is None: continue      # fonction data/table (ex. chunk) -> ignore
                 for (ri, fields, off) in dec:
                     name = self.instructions[ri]['name']
                     lst = self.samples[name]
@@ -269,7 +349,7 @@ class Model:
                         # re-decode sur data -> offsets 0-based coherents
                         rr = self.decode_instr(bytearray(data), 0, len(data), ui)
                         f0 = rr[1] if rr else fields
-                        lst.append(Sample(os.path.basename(fp), nm, off, f0, data, ui))
+                        lst.append(Sample(os.path.basename(fp), nm, off, f0, data, ui, s, e, fp))
         return {n: len(v) for n, v in self.samples.items() if v}
 
     def redecode_samples(self, name):
@@ -283,21 +363,44 @@ class Model:
 
     # --- statistiques heuristiques par champ (sur les echantillons) ---
     FLOAT_HI = set(range(0x3A, 0x46)) | set(range(0xBA, 0xC6))
+    def flat_read(self, read):
+        """Feuilles editables du read avec leur chemin, en depliant les if/ifval (then, else).
+        Chaque element = (path, node). (loop reste une feuille unique.)"""
+        out = []
+        def rec(nodes, prefix):
+            for i, n in enumerate(nodes):
+                if 'if' in n:
+                    rec(n['if']['then'], prefix + [i, 'then'])
+                    if n['if'].get('else'): rec(n['if']['else'], prefix + [i, 'else'])
+                elif 'ifval' in n:
+                    rec(n['ifval']['then'], prefix + [i, 'then'])
+                    if n['ifval'].get('else'): rec(n['ifval']['else'], prefix + [i, 'else'])
+                else:
+                    out.append((prefix + [i], n))
+        rec(read, [])
+        return out
+
+    def _resolve_parent(self, read, path):
+        """(liste_parente, index) pour un chemin [idx, branch, idx, ...]."""
+        nodes = read; i = 0
+        while i < len(path) - 1:
+            node = nodes[path[i]]; branch = path[i + 1]
+            cont = node.get('if') or node.get('ifval') or node.get('loop')
+            nodes = cont[branch]; i += 2
+        return nodes, path[-1]
+
     def field_stats(self, name):
-        """Renvoie une liste (une entree par champ du read) de dicts de stats/suggestions."""
+        """Une entree par feuille editable du read (if/ifval deplies)."""
         ins = self.instructions[self.idx_by_name[name]]
         samples = self.samples.get(name, [])
-        # nombre de champs = longueur du read a plat (les loop comptent comme 1, ignore ici)
-        nread = len(ins['read'])
+        leaves = self.flat_read(ins['read'])
         stats = []
-        # aligne par index de champ decode (les fields decodes suivent l'ordre du read, hors loop)
-        for fi in range(nread):
-            node = ins['read'][fi]
+        for fi, (path, node) in enumerate(leaves):
             t = node.get('t'); role = node.get('role')
             col = []
             for smp in samples:
                 if fi < len(smp.fields): col.append(smp.fields[fi].raw)
-            st = {'idx': fi, 'type': t, 'role': role, 'n': len(col)}
+            st = {'idx': fi, 'path': path, 'type': t, 'role': role, 'n': len(col)}
             if not col:
                 stats.append(st); continue
             widths = set(len(r) for r in col)
@@ -328,23 +431,25 @@ class Model:
         return stats
 
     # --- editions du read (largeur preservee => roundtrip garanti) ---
-    def retype(self, name, field_idx, new_type):
-        node = self.instructions[self.idx_by_name[name]]['read'][field_idx]
-        old = node.get('t')
+    def retype(self, name, path, new_type):
+        read = self.instructions[self.idx_by_name[name]]['read']
+        parent, idx = self._resolve_parent(read, path)
+        node = parent[idx]; old = node.get('t')
+        if new_type == 'bytes':
+            raise ValueError("pour creer un bytes, utilise merge")
         if old in SCALARS and new_type in SCALARS and FIXW[old] != FIXW[new_type]:
             raise ValueError("retype scalaire de largeur differente : utilise split/merge")
         if old == 'bytes' and new_type in SCALARS and node.get('size') != FIXW[new_type]:
             raise ValueError("bytes de taille %d != %s : split d'abord" % (node.get('size'), new_type))
         node.pop('size', None)
         node['t'] = new_type
-        if new_type == 'bytes':  # cas inverse gere par split/merge
-            raise ValueError("pour creer un bytes, utilise merge")
         return True
 
-    def split(self, name, field_idx, first_len):
+    def split(self, name, path, first_len):
         """Coupe un champ fixe (bytes ou scalaire) en deux a l'octet first_len."""
         read = self.instructions[self.idx_by_name[name]]['read']
-        node = read[field_idx]; t = node.get('t')
+        parent, idx = self._resolve_parent(read, path)
+        node = parent[idx]; t = node.get('t')
         if t in SCALARS: w = FIXW[t]
         elif t == 'bytes': w = node['size']
         else: raise ValueError("champ non fractionnable (%s)" % t)
@@ -352,31 +457,29 @@ class Model:
         a = {'t': 'bytes', 'size': first_len} if first_len != 1 else {'t': 'u8'}
         rem = w - first_len
         bnode = {'t': 'bytes', 'size': rem} if rem != 1 else {'t': 'u8'}
-        # preserve un role eventuel sur le 1er morceau uniquement
         if node.get('role'): a['role'] = node['role']
-        read[field_idx:field_idx+1] = [a, bnode]
+        parent[idx:idx+1] = [a, bnode]
         return True
 
-    def split_range(self, name, field_idx, a, b):
-        """Coupe un champ fixe en [0:a][a:b][b:w]. a,b = octets dans le champ.
-        Le morceau du milieu [a:b] est le nouvel operande a typer. Renvoie son index."""
+    def split_range(self, name, path, a, b):
+        """Coupe un champ fixe en [0:a][a:b][b:w]. Renvoie le CHEMIN du morceau du milieu."""
         read = self.instructions[self.idx_by_name[name]]['read']
-        node = read[field_idx]; t = node.get('t')
+        parent, idx = self._resolve_parent(read, path)
+        node = parent[idx]; t = node.get('t')
         if t in SCALARS: w = FIXW[t]
         elif t == 'bytes': w = node['size']
         else: raise ValueError("champ non fractionnable (%s)" % t)
         if not (0 <= a < b <= w): raise ValueError("selection invalide (%d..%d sur %d)" % (a, b, w))
         def mk(n): return {'t': 'u8'} if n == 1 else {'t': 'bytes', 'size': n}
-        pieces = []
-        mid_idx = field_idx
+        pieces = []; mid = idx
         if a > 0:
             p0 = mk(a)
-            if node.get('role'): p0['role'] = node['role']   # le role reste sur le 1er morceau
-            pieces.append(p0); mid_idx += 1
-        pieces.append(mk(b - a))            # nouvel operande (milieu)
+            if node.get('role'): p0['role'] = node['role']
+            pieces.append(p0); mid += 1
+        pieces.append(mk(b - a))
         if b < w: pieces.append(mk(w - b))
-        read[field_idx:field_idx+1] = pieces
-        return mid_idx
+        parent[idx:idx+1] = pieces
+        return path[:-1] + [mid]
 
     def set_validated(self, name, val=True):
         self.instructions[self.idx_by_name[name]]['validated'] = bool(val)
@@ -384,19 +487,20 @@ class Model:
     def is_validated(self, name):
         return bool(self.instructions[self.idx_by_name[name]].get('validated'))
 
-    def merge(self, name, field_idx):
-        """Fusionne field_idx et field_idx+1 en un bloc bytes (les deux doivent etre de largeur fixe)."""
+    def merge(self, name, path):
+        """Fusionne le champ et le suivant (dans le meme bloc) en un bloc bytes."""
         read = self.instructions[self.idx_by_name[name]]['read']
-        if field_idx+1 >= len(read): raise ValueError("pas de champ suivant")
+        parent, idx = self._resolve_parent(read, path)
+        if idx+1 >= len(parent): raise ValueError("pas de champ suivant dans ce bloc")
         def wof(n):
             if n.get('t') in SCALARS: return FIXW[n['t']]
             if n.get('t') == 'bytes': return n['size']
             return None
-        w1 = wof(read[field_idx]); w2 = wof(read[field_idx+1])
+        w1 = wof(parent[idx]); w2 = wof(parent[idx+1])
         if w1 is None or w2 is None: raise ValueError("fusion possible seulement entre champs de largeur fixe")
         merged = {'t': 'bytes', 'size': w1 + w2}
-        if read[field_idx].get('role'): merged['role'] = read[field_idx]['role']
-        read[field_idx:field_idx+2] = [merged]
+        if parent[idx].get('role'): merged['role'] = parent[idx]['role']
+        parent[idx:idx+2] = [merged]
         return True
 
     def save(self, path=None):

@@ -55,6 +55,7 @@ class InstrEditor:
         self.sel_field = None
         self._drag_a = None
         self._drag_b = None
+        self._field_paths = {}
         self._build_ui()
         if os.path.exists(self.json_path):
             self._load_json(self.json_path)
@@ -105,6 +106,7 @@ class InstrEditor:
         ttk.Button(nav, text="ech. ▶", command=lambda: self._nav_sample(1)).pack(side=tk.LEFT, padx=3)
         self.sample_lbl = tk.StringVar(value="")
         ttk.Label(nav, textvariable=self.sample_lbl).pack(side=tk.LEFT, padx=8)
+        ttk.Button(nav, text="🔍 Voir la fonction (hex)", command=self._open_function_view).pack(side=tk.RIGHT, padx=4)
 
         self.hex_canvas = tk.Canvas(right, height=120, bg="white", highlightthickness=0)
         self.hex_canvas.pack(fill=tk.X, pady=4)
@@ -331,12 +333,18 @@ class InstrEditor:
 
     def _fill_field_table(self):
         self.ftree.delete(*self.ftree.get_children())
+        self._field_paths = {}
         if not self.cur_name: return
-        stats = self.model.field_stats(self.cur_name) if self.counts.get(self.cur_name) else None
         ins = self._cur_instr()
-        for fi, node in enumerate(ins["read"]):
+        leaves = self.model.flat_read(ins["read"])  # deplie les if/loop
+        stats = self.model.field_stats(self.cur_name) if self.counts.get(self.cur_name) else None
+        for fi, (path, node) in enumerate(leaves):
+            self._field_paths[fi] = path
             t = node.get("t"); role = node.get("role") or ""
             w = M.FIXW.get(t, node.get("size", "")) if t != "string" else "var"
+            # indente si le champ est dans un if (chemin plus long que 1)
+            depth = (len(path) - 1) // 2
+            label = ("  " * depth) + str(t)
             st = stats[fi] if stats and fi < len(stats) else None
             statstr = ""; sug = ""
             if st:
@@ -346,7 +354,7 @@ class InstrEditor:
                 if "ascii_frac" in st: parts.append("ascii=%.0f%%" % (st["ascii_frac"] * 100))
                 if st.get("float_examples"): parts.append("ex=%s" % st["float_examples"])
                 statstr = "  ".join(parts); sug = st.get("suggestion") or ""
-            self.ftree.insert("", tk.END, iid=str(fi), values=(fi, t, role, w, statstr, sug))
+            self.ftree.insert("", tk.END, iid=str(fi), values=(fi, label, role, w, statstr, sug))
 
     def _on_pick_field(self, _e):
         sel = self.ftree.selection()
@@ -366,24 +374,27 @@ class InstrEditor:
         self._fill_field_table(); self._draw_hex()
         self.status.set("Modifie (non sauve). N'oublie pas de sauver le JSON.")
 
+    def _path(self):
+        return self._field_paths.get(self.sel_field)
+
     def _do_retype(self):
         if not self._need_field(): return
         try:
-            self.model.retype(self.cur_name, self.sel_field, self.type_var.get()); self._after_edit()
+            self.model.retype(self.cur_name, self._path(), self.type_var.get()); self._after_edit()
         except Exception as ex:
             messagebox.showwarning("Retype", str(ex))
 
     def _do_split(self):
         if not self._need_field(): return
         try:
-            self.model.split(self.cur_name, self.sel_field, int(self.split_var.get())); self._after_edit()
+            self.model.split(self.cur_name, self._path(), int(self.split_var.get())); self._after_edit()
         except Exception as ex:
             messagebox.showwarning("Split", str(ex))
 
     def _do_merge(self):
         if not self._need_field(): return
         try:
-            self.model.merge(self.cur_name, self.sel_field); self._after_edit()
+            self.model.merge(self.cur_name, self._path()); self._after_edit()
         except Exception as ex:
             messagebox.showwarning("Merge", str(ex))
 
@@ -398,13 +409,105 @@ class InstrEditor:
         f = smp.fields[fi]
         ra = a - f.off; rb = b - f.off
         try:
-            mid = self.model.split_range(self.cur_name, fi, ra, rb)
-            self._drag_a = self._drag_b = None; self.sel_field = mid
+            midpath = self.model.split_range(self.cur_name, self._field_paths[fi], ra, rb)
+            self._drag_a = self._drag_b = None
             self._after_edit()
-            self.ftree.selection_set(str(mid)); self.ftree.see(str(mid))
-            self.status.set("Nouvel opérande créé (champ %d) — type-le maintenant." % mid)
+            # retrouve l'index plat du morceau du milieu apres redecoupage
+            leaves = self.model.flat_read(self._cur_instr()["read"])
+            self.sel_field = next((i for i, (p, _) in enumerate(leaves) if p == midpath), fi)
+            self.ftree.selection_set(str(self.sel_field)); self.ftree.see(str(self.sel_field))
+            self._draw_hex()
+            self.status.set("Nouvel opérande créé — type-le maintenant.")
         except Exception as ex:
             messagebox.showwarning("Découpe", str(ex))
+
+    def _open_function_view(self):
+        s = self._samples()
+        if not s:
+            messagebox.showinfo("Fonction", "Aucun échantillon."); return
+        smp = s[self.sample_idx % len(s)]
+        path = smp.path or (os.path.join(self.folder, smp.file) if self.folder else None)
+        if not path or not os.path.exists(path):
+            messagebox.showwarning("Fonction", "Fichier introuvable: %s" % (path or "?")); return
+        try:
+            data = bytearray(open(path, "rb").read())
+        except Exception as ex:
+            messagebox.showwarning("Fonction", str(ex)); return
+        fs, fe = smp.fstart, smp.fend
+        rows, fail, pad_start = self.model.decode_function_trace(data, fs, fe, smp.ui)
+
+        win = tk.Toplevel(self.root)
+        win.title("Fonction %s  (%s)  0x%X-0x%X" % (smp.func, smp.file, fs, fe))
+        win.geometry("1000x640")
+        info = "Instructions lues: %d" % len(rows)
+        if fail is not None:
+            info += "   —   DÉCROCHAGE à 0x%X (opcode 0x%02X non décodable)" % (fail, data[fail])
+            infocol = "#B71C1C"
+        elif pad_start is not None:
+            info += "   —   code lu ✓, padding d'alignement à partir de 0x%X" % pad_start
+            infocol = "#1B5E20"
+        else:
+            info += "   —   fonction lue jusqu'au bout ✓"
+            infocol = "#1B5E20"
+        ttk.Label(win, text=info, foreground=infocol, font=("", 10, "bold")).pack(anchor=tk.W, padx=6, pady=3)
+
+        frame = ttk.Frame(win); frame.pack(fill=tk.BOTH, expand=True)
+        canvas = tk.Canvas(frame, bg="white", highlightthickness=0)
+        vs = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=vs.set)
+        vs.pack(side=tk.RIGHT, fill=tk.Y); canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # carte octet -> (index instruction, name) ; -1 = zone non lue (apres decrochage)
+        owner = [-1] * (fe - fs)
+        names = {}
+        for idx, (name, off, length, opc) in enumerate(rows):
+            names[idx] = name
+            for i in range(off - fs, min(off - fs + length, fe - fs)):
+                owner[i] = idx
+        cur_idx = None
+        for idx, (name, off, length, opc) in enumerate(rows):
+            if off <= smp.offset < off + length:
+                cur_idx = idx; break
+
+        PER = 24; CW = 26; RH = 26; X0 = 46; Y0 = 8
+        shades = ("#E3F2FD", "#FFF9C4")  # alternance pour distinguer les instructions
+        n = fe - fs
+        for i in range(n):
+            row = i // PER; col = i % PER
+            cx = X0 + col * CW; cy = Y0 + row * RH
+            oidx = owner[i]
+            if oidx < 0:
+                abs_off = fs + i
+                if pad_start is not None and abs_off >= pad_start:
+                    fill = "#ECEFF1"  # padding d'alignement en gris
+                else:
+                    fill = "#FFCDD2"  # zone non lue (data / apres decrochage) en rouge clair
+            else:
+                fill = shades[oidx % 2]
+            outline = "#BBB"
+            if cur_idx is not None and oidx == cur_idx:
+                outline = "red"
+            canvas.create_rectangle(cx, cy, cx + CW - 2, cy + RH - 6, fill=fill,
+                                    outline=outline, width=(2 if outline == "red" else 1))
+            canvas.create_text(cx + CW // 2 - 1, cy + (RH - 6) // 2, text="%02X" % data[fs + i],
+                               font=("Consolas", 9))
+            # etiquette du nom au debut de chaque instruction
+            if oidx >= 0 and (i == 0 or owner[i - 1] != oidx):
+                canvas.create_text(cx + 1, cy - 1, anchor=tk.SW, text=names.get(oidx, ""),
+                                   font=("", 6), fill="#333")
+            # offset en debut de ligne
+            if col == 0:
+                canvas.create_text(2, cy + (RH - 6) // 2, anchor=tk.W,
+                                   text="%05X" % (fs + i), font=("Consolas", 7), fill="#888")
+        # marqueur de decrochage
+        if fail is not None:
+            i = fail - fs
+            row = i // PER; col = i % PER
+            cx = X0 + col * CW; cy = Y0 + row * RH
+            canvas.create_line(cx, cy - 3, cx, cy + RH - 3, fill="#B71C1C", width=3)
+            canvas.create_text(cx + 2, cy - 3, anchor=tk.SW, text="DÉCROCHAGE", font=("", 7, "bold"), fill="#B71C1C")
+        total_rows = (n + PER - 1) // PER
+        canvas.configure(scrollregion=(0, 0, X0 + PER * CW + 10, Y0 + total_rows * RH + 20))
 
     def _do_validate(self):
         if not self.cur_name: return
