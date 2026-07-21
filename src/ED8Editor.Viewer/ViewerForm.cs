@@ -43,6 +43,7 @@ public sealed class ViewerForm : Form
     private readonly ToolStripButton translateToolButton = new("Move (1)") { ToolTipText = "Translate the selected object" };
     private readonly ToolStripButton rotateToolButton = new("Rotate (2)") { ToolTipText = "Rotate the selected object" };
     private readonly ToolStripButton scaleToolButton = new("Scale (3)") { ToolTipText = "Scale the selected object" };
+    private readonly ToolStripButton scriptsToolButton = new("Scripts") { ToolTipText = "Ouvrir l'éditeur de scripts (scènes, tables, flot d'instructions)" };
     private readonly Panel scenePanel = new() { Dock = DockStyle.Left, Width = 340, Padding = new Padding(8) };
     private readonly GroupBox sceneOutlinerGroup = new()
     {
@@ -187,12 +188,15 @@ public sealed class ViewerForm : Form
             translateToolButton,
             rotateToolButton,
             scaleToolButton,
+            new ToolStripSeparator(),
+            scriptsToolButton,
         });
         Controls.Add(gizmoToolStrip);
         gizmoToolStrip.BringToFront();
         translateToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Translate);
         rotateToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Rotate);
         scaleToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Scale);
+        scriptsToolButton.Click += (_, _) => OpenScriptEditor();
         SetGizmoMode(GizmoMode.Translate);
         assetSearch.TextChanged += (_, _) => FilterAssetCatalog();
         addAssetButton.Click += async (_, _) => await AddSelectedAssetAsync();
@@ -696,6 +700,29 @@ public sealed class ViewerForm : Form
         rotateToolButton.Checked = mode == GizmoMode.Rotate;
         scaleToolButton.Checked = mode == GizmoMode.Scale;
         RefreshOverlay();
+    }
+
+    private ScriptEditorForm? scriptEditor;
+
+    private void OpenScriptEditor()
+    {
+        var editor = scriptEditor;
+        if (editor is null || editor.IsDisposed)
+        {
+            editor = new ScriptEditorForm();
+            scriptEditor = editor;
+            editor.Show(this);
+        }
+        else
+        {
+            editor.BringToFront();
+        }
+
+        var path = session.Script.Header.SourcePath;
+        if (!string.IsNullOrEmpty(path) && System.IO.File.Exists(path))
+        {
+            editor.LoadDat(path);
+        }
     }
 
     private void ClearSelection()

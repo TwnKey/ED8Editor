@@ -75,6 +75,10 @@ struct Node{
   int role=0;           // 0 aucun, 1 selector, 2 count, 3 sel16
   int size=0;           // BYTES
   int to=0;             // FILL
+  std::string name;     // libelle humain de l'operande (optionnel)
+  std::string sem;      // type semantique : color/position/vec2/vec3/vec4/file/tbl/func_index/func_name
+  std::string semArg;   // parametre du sem : extension(s), "tbl:type", ...
+  int semSpan=1;        // nb d'operandes consecutifs groupes par ce sem (ex position=3 floats)
   std::shared_ptr<SwitchN> sw;
   std::shared_ptr<IfN> iff;
   std::shared_ptr<IfValN> ifv;
@@ -107,6 +111,10 @@ static Node buildNode(const Val& nd){
   const std::string& t=nd.get("t")->asStr();
   if(nd.has("role")){ const std::string&r=nd.get("role")->asStr();
     n.role = r=="selector"?1 : r=="count"?2 : r=="sel16"?3 : r=="peek"?4 : 0; }
+  if(nd.has("name")&&nd.get("name")->t==Val::STR) n.name=nd.get("name")->asStr();
+  if(nd.has("sem")&&nd.get("sem")->t==Val::STR) n.sem=nd.get("sem")->asStr();
+  if(nd.has("sem_arg")&&nd.get("sem_arg")->t==Val::STR) n.semArg=nd.get("sem_arg")->asStr();
+  if(nd.has("sem_span")) n.semSpan=(int)nd.get("sem_span")->asInt();
   if(t=="string"){n.k=Node::STR;} else if(t=="expr"){n.k=Node::EXPR;}
   else if(t=="dialog"){n.k=Node::DIALOG;} else if(t=="bytes"){n.k=Node::BYTES;n.size=(int)nd.get("size")->asInt();}
   else if(t=="fill"){n.k=Node::FILL;n.to=(int)nd.get("to")->asInt();}
@@ -184,7 +192,7 @@ struct Arg{
 };
 struct Instr{ int reg=-1; int op=0; std::vector<long> path; std::vector<Arg> args; long id=-1; long origOff=0; };
 struct RegInstr{ std::string name, opname; int op=0; bool ui=false; std::vector<long> path;
-                 std::vector<std::string> argTypes; NodeList read; };
+                 std::vector<std::string> argTypes, argNames, argSems, argSemArgs; std::vector<int> argSemSpans; NodeList read; };
 
 struct Registry{
   NodeList opread[160]; bool hasop[160]={false};
@@ -204,18 +212,22 @@ struct Registry{
 static Registry G;
 
 // schema d'arguments visibles (scan lineaire best-effort du read aplati)
-static void schemaScan(const NodeList& nl, std::vector<std::string>& out){
+static void schemaPush(RegInstr& r, const std::string& ty, const Node& n){
+  r.argTypes.push_back(ty); r.argNames.push_back(n.name); r.argSems.push_back(n.sem);
+  r.argSemArgs.push_back(n.semArg); r.argSemSpans.push_back(n.semSpan);
+}
+static void schemaScan(const NodeList& nl, RegInstr& r){
   for(auto&n:nl){
     switch(n.k){
-      case Node::SCALAR: if(n.role!=1) out.push_back(n.t); break; // selector cache
-      case Node::STR: out.push_back("string"); break;
-      case Node::EXPR: out.push_back("expr"); break;
-      case Node::DIALOG: out.push_back("dialog"); break;
-      case Node::BYTES: out.push_back("bytes"); break;
+      case Node::SCALAR: if(n.role!=1) schemaPush(r,n.t,n); break; // selector cache
+      case Node::STR: schemaPush(r,"string",n); break;
+      case Node::EXPR: schemaPush(r,"expr",n); break;
+      case Node::DIALOG: schemaPush(r,"dialog",n); break;
+      case Node::BYTES: schemaPush(r,"bytes",n); break;
       case Node::FILL: break;
-      case Node::IF: schemaScan(n.iff->then_,out); break;
-      case Node::IFVAL: schemaScan(n.ifv->then_,out); break;
-      case Node::LOOP: out.push_back("list"); break;
+      case Node::IF: schemaScan(n.iff->then_,r); break;
+      case Node::IFVAL: schemaScan(n.ifv->then_,r); break;
+      case Node::LOOP: schemaPush(r,"list",n); break;
       case Node::SWITCH: break; // n'apparait pas dans un read aplati d'instruction
     }
   }
@@ -231,7 +243,7 @@ static bool loadDoc(const std::string& json){
     for(auto&s:iv.get("selectors")->arr){ const Val* vv=s.get("value");
       if(vv->t==Val::STR){ r.path.push_back(vv->asStr()=="default"?-1000:-1001); } // default=-1000, other=-1001
       else r.path.push_back(vv->asInt()); }
-    NodeList rl=buildNodes(*iv.get("read")); schemaScan(rl,r.argTypes); r.read=rl;
+    NodeList rl=buildNodes(*iv.get("read")); schemaScan(rl,r); r.read=rl;
     G.byPath[Registry::key(r.op,r.path,r.ui)]=(int)G.regs.size(); G.regs.push_back(std::move(r));
   }
   // candidats par opcode, tries : moins de sentinelles (default/other) d'abord
@@ -341,7 +353,11 @@ static bool encodeFlat(const NodeList& nl,const std::vector<Arg>&args,size_t&ai,
       if(!encodeFlat(take?n.ifv->then_:n.ifv->else_,args,ai,c,out))return false; continue; }
     if(n.k==Node::LOOP){ if(ai>=args.size())return false; const Arg&a=args[ai++];
       for(auto&grp:a.groups){ size_t gai=0; if(!encodeFlat(n.lp->body,grp,gai,c,out))return false; } continue; }
-    if(n.k==Node::SCALAR){ if(ai>=args.size())return false; const Arg&a=args[ai++]; long val=a.ival; enc_scalar(n.t,a,out);
+    if(n.k==Node::SCALAR){ if(ai>=args.size())return false; Arg a=args[ai++];
+      // count (role 2) : derive du nombre reel d'iterations de la boucle suivante (auto-sync
+      // apres ajout/suppression d'iteration). Roundtrip preserve : groups.size()==count d'origine.
+      if(n.role==2 && ai<args.size() && args[ai].kind==7) a.ival=(long)args[ai].groups.size();
+      long val=a.ival; enc_scalar(n.t,a,out);
       if(n.role==1){ if(!c.haveSel){c.sel=val;c.haveSel=true;} else c.sel2=val; }
       if(n.role==2)c.count=val; if(n.role==3)c.sel16=val&0xffff; if(n.t=="s16"&&c.control<0)c.control=val&0xffff; continue; }
     if(n.k==Node::STR){ if(ai>=args.size())return false; const Arg&a=args[ai++]; out.insert(out.end(),a.raw.begin(),a.raw.end()); out.push_back(0); c.laststr=(long)a.raw.size()+1; continue; }
@@ -358,12 +374,160 @@ static bool encodeInstr(const Instr& in,bool ui,std::vector<uint8_t>&out){
 }
 } // namespace cs1i
 
+// ================= Tables de donnees (portage de table_parsers.py) =================
+// Les fonctions non-code portant un nom de table (guess_type_by_name) sont des
+// structures de donnees, pas du code. On les decode en champs types (chaque champ
+// garde ses octets bruts -> re-serialisation = concat = roundtrip 0-diff). Si le
+// parse structure ne colle pas au format Ghidra, on marque stale (perime/malforme,
+// typiquement les fichiers debug 'al*') et on preserve un blob opaque.
+namespace cs1tbl {
+struct TField{ std::string type; long ival=0; double fval=0; std::vector<uint8_t> raw; std::string text; int fill=-1; long off=0; };
+struct Table{ std::string kind; int id=-1; bool opaque=false; bool stale=false; std::vector<TField> fields; long dataEnd=0; };
+
+static bool typeForName(const std::string& nm, std::string& kind, int& id){
+  if(nm.empty())return false;
+  struct M{const char* n;int id;};
+  static const M exact[]={{"CreateMonsters",256},{"EffectsInstr",257},{"ActionTable",258},
+    {"AlgoTable",259},{"WeaponAttTable",260},{"BreakTable",261},{"SummonTable",262},
+    {"ReactionTable",263},{"PartTable",264},{"AnimeClipTable",265},{"FieldMonsterData",266},
+    {"FieldFollowData",267},{"AddCollision",271}};
+  for(auto&m:exact) if(nm==m.n){ kind=m.n; id=m.id; return true; }
+  if(nm.rfind("FC_auto",0)==0){ kind="FC_autoX"; id=268; return true; }
+  if(nm.rfind("BookData",0)==0){
+    // BookData<N>_<M> : M==99 -> Book99 sinon BookX
+    size_t us=nm.rfind('_'); std::string mm = us!=std::string::npos? nm.substr(us+1):"";
+    if(mm=="99"){ kind="BookData99"; id=269; } else { kind="BookDataX"; id=270; }
+    return true;
+  }
+  return false;
+}
+
+struct TR{
+  const uint8_t* b; long p=0, size; bool ok=true;
+  TR(const uint8_t* b_, long len):b(b_),size(len){}
+  bool chk(long n){ if(n<0||p+n>size){ ok=false; return false; } return true; }
+  TField raw(long n,const char* ty){ TField f; f.type=ty; f.off=p; if(!chk(n))return f; f.raw.assign(b+p,b+p+n); p+=n; return f; }
+  TField u8(){ TField f=raw(1,"u8"); if(ok&&!f.raw.empty())f.ival=f.raw[0]; return f; }
+  TField s16(){ TField f=raw(2,"s16"); if(ok)f.ival=(int16_t)(f.raw[0]|(f.raw[1]<<8)); return f; }
+  TField s32(){ TField f=raw(4,"s32"); if(ok)f.ival=(int32_t)(f.raw[0]|(f.raw[1]<<8)|(f.raw[2]<<16)|((uint32_t)f.raw[3]<<24)); return f; }
+  TField f32(){ TField f=raw(4,"f32"); if(ok){ uint32_t u=f.raw[0]|(f.raw[1]<<8)|(f.raw[2]<<16)|((uint32_t)f.raw[3]<<24); float v; memcpy(&v,&u,4); f.fval=v; } return f; }
+  TField str(){ TField f; f.type="string"; f.off=p; long s=p; while(p<size&&b[p]!=0)p++; if(p>=size){ok=false;return f;} p++; f.raw.assign(b+s,b+p); f.text.assign((const char*)b+s,(size_t)(p-1-s)); return f; }
+  void strfill(std::vector<TField>&F,long width,const char* ft="fill"){ TField s=str(); F.push_back(s); if(!ok)return; long pad=width-(long)s.raw.size(); if(pad<0){ok=false;return;} TField fl=raw(pad,ft); fl.fill=(int)width; F.push_back(fl); }
+  uint8_t peek_u8(){ if(p>=size){ok=false;return 0;} return b[p]; }
+  int16_t peek_s16(){ if(p+2>size){ok=false;return 0;} return (int16_t)(b[p]|(b[p+1]<<8)); }
+  uint16_t peek_u16(){ if(p+2>size){ok=false;return 0;} return (uint16_t)(b[p]|(b[p+1]<<8)); }
+  int32_t peek_s32(){ if(p+4>size){ok=false;return 0;} return (int32_t)(b[p]|(b[p+1]<<8)|(b[p+2]<<16)|((uint32_t)b[p+3]<<24)); }
+};
+
+// ------- schemas de record (blocs fixes retypables, pilotes par cs1_tables.json) -------
+struct SchemaField{ std::string type; int size; };
+static std::map<std::string,std::vector<SchemaField>> g_defSchema, g_ovSchema;
+static void initSchemas(){ if(!g_defSchema.empty())return;
+  g_defSchema["AlgoTable"]={{"s16",2},{"s16",2},{"s16",2},{"bytes",14},{"s32",4},{"s32",4},{"bytes",4}};
+  g_defSchema["ActionTableFixed"]={{"bytes",42}};
+  g_defSchema["FieldMonsterPrefix"]={{"s32",4},{"s16",2},{"s16",2}};
+  g_defSchema["FieldFollowData"]={{"f32",4},{"f32",4},{"f32",4},{"f32",4},{"f32",4}};
+  g_defSchema["AddCollisionRow"]={{"s32",4},{"f32",4},{"f32",4},{"f32",4},{"f32",4},{"f32",4}};
+  g_defSchema["ReactionRow"]={{"s16",2},{"s16",2},{"s16",2},{"s16",2},{"s16",2},{"s16",2}};
+}
+static int schemaLen(const std::string&n){ initSchemas(); int s=0; for(auto&f:g_defSchema[n])s+=f.size; return s; }
+static const std::vector<SchemaField>& effSchema(const std::string&n){ initSchemas();
+  auto it=g_ovSchema.find(n); if(it!=g_ovSchema.end()){ int s=0; for(auto&f:it->second)s+=f.size; if(s==schemaLen(n)) return it->second; }
+  return g_defSchema[n]; }
+static TField readTyped(TR&r,const std::string&t,int size){ TField f=r.raw(size,t.c_str()); if(!r.ok||(int)f.raw.size()<size)return f; const uint8_t*b=f.raw.data();
+  if(t=="u8")f.ival=b[0]; else if(t=="s8")f.ival=(int8_t)b[0];
+  else if(t=="u16")f.ival=(uint16_t)(b[0]|(b[1]<<8)); else if(t=="s16")f.ival=(int16_t)(b[0]|(b[1]<<8));
+  else if(t=="u32")f.ival=(int32_t)(uint32_t)(b[0]|(b[1]<<8)|(b[2]<<16)|((uint32_t)b[3]<<24));
+  else if(t=="s32")f.ival=(int32_t)(b[0]|(b[1]<<8)|(b[2]<<16)|((uint32_t)b[3]<<24));
+  else if(t=="f32"){ uint32_t u=b[0]|(b[1]<<8)|(b[2]<<16)|((uint32_t)b[3]<<24); float v; memcpy(&v,&u,4); f.fval=v; }
+  return f; }
+static void readSchema(TR&r,const char*name,std::vector<TField>&F){ for(auto&sf:effSchema(name)) F.push_back(readTyped(r,sf.type,sf.size)); }
+// parseur JSON minimal pour {"nom":[["type",N],...],...}
+static void loadSchemaJson(const char* js){ g_ovSchema.clear(); if(!js)return; std::string s=js; size_t i=0;
+  while(i<s.size()){ size_t q1=s.find('"',i); if(q1==std::string::npos)break; size_t q2=s.find('"',q1+1); if(q2==std::string::npos)break;
+    std::string key=s.substr(q1+1,q2-q1-1); i=q2+1; size_t lb=s.find('[',i); if(lb==std::string::npos)break;
+    std::vector<SchemaField> fields; size_t k=lb+1;
+    while(k<s.size()){ if(s[k]==']')break;
+      if(s[k]=='['){ size_t t1=s.find('"',k); size_t t2=s.find('"',t1+1); std::string ty=s.substr(t1+1,t2-t1-1);
+        size_t comma=s.find(',',t2); size_t rb=s.find(']',comma); int num=atoi(s.substr(comma+1,rb-comma-1).c_str());
+        fields.push_back({ty,num}); k=rb+1; } else k++; }
+    if(!fields.empty()) g_ovSchema[key]=fields; i=k; }
+}
+
+// chaque parseur remplit F et renvoie ok ; s'appuie sur TR
+static bool p_FieldMonsterData(TR&r,std::vector<TField>&F){ readSchema(r,"FieldMonsterPrefix",F); while(r.ok&&r.peek_s32()!=1) F.push_back(r.f32()); return r.ok; }
+static bool p_FieldFollowData(TR&r,std::vector<TField>&F){ readSchema(r,"FieldFollowData",F); return r.ok; }
+static bool p_FC_autoX(TR&r,std::vector<TField>&F){ F.push_back(r.str()); return r.ok; }
+static bool p_BookData99(TR&r,std::vector<TField>&F){ F.push_back(r.s16()); F.push_back(r.s16()); return r.ok; }
+static bool p_BookDataX(TR&r,std::vector<TField>&F){ int16_t ctrl=r.peek_s16(); F.push_back(r.s16()); if(!r.ok)return false;
+  if(ctrl>0){ F.push_back(r.s16()); r.strfill(F,0x10,"bytes"); for(int i=0;i<10;i++)F.push_back(r.s16()); F.push_back(r.str()); }
+  else { if(r.ok&&r.peek_u8()!=1) F.push_back(r.str()); } return r.ok; }
+static bool p_WeaponAtt(TR&r,std::vector<TField>&F){ F.push_back(r.raw(4,"bytes")); return r.ok; }
+static bool p_AddCollision(TR&r,std::vector<TField>&F){ int n=r.peek_u8(); F.push_back(r.u8()); for(int i=0;i<n&&r.ok;i++) readSchema(r,"AddCollisionRow",F); return r.ok; }
+static bool p_PartTable(TR&r,std::vector<TField>&F){ int n=r.peek_u8(); F.push_back(r.u8()); for(int i=0;i<n&&r.ok;i++){ F.push_back(r.s32()); r.strfill(F,0x20); r.strfill(F,0x20); } return r.ok; }
+static bool p_ReactionTable(TR&r,std::vector<TField>&F){ uint16_t n=r.peek_u16(); F.push_back(r.s16()); for(int i=0;i<n&&r.ok;i++) readSchema(r,"ReactionRow",F); return r.ok; }
+static bool p_SummonTable(TR&r,std::vector<TField>&F){ int n=r.peek_u8(); F.push_back(r.u8()); int cnt=0; while(cnt<n&&r.ok){ uint16_t sh=r.peek_u16(); F.push_back(r.s16()); if(sh==0xFFFF)break; F.push_back(r.u8()); F.push_back(r.u8()); r.strfill(F,0x20); cnt++; } return r.ok; }
+static bool p_BreakTable(TR&r,std::vector<TField>&F){ int cnt=0; while(r.ok){ TField sf=r.s16(); F.push_back(sf); if((int16_t)sf.ival==0)break; F.push_back(r.s16()); if(++cnt>=0x40)break; } F.push_back(r.raw(2,"bytes")); return r.ok; }
+static bool p_AnimeClipTable(TR&r,std::vector<TField>&F){ while(r.ok&&r.peek_s32()!=0){ F.push_back(r.s32()); r.strfill(F,0x20); r.strfill(F,0x20); } F.push_back(r.s32()); F.push_back(r.s16()); return r.ok; }
+static bool p_EffectsInstr(TR&r,std::vector<TField>&F){ while(r.ok&&r.peek_u8()!=0x01){ F.push_back(r.s16()); F.push_back(r.s16()); F.push_back(r.s32()); r.strfill(F,0x20); } return r.ok; }
+// ActionTable (Ghidra FUN_004906f0) : count(1) + count*(42 fixes + str[0x20] + str[0x30])
+static bool p_ActionTable(TR&r,std::vector<TField>&F){ int n=r.peek_u8(); F.push_back(r.u8()); for(int i=0;i<n&&r.ok;i++){ readSchema(r,"ActionTableFixed",F); r.strfill(F,0x20); r.strfill(F,0x30); } return r.ok; }
+// AlgoTable (Ghidra FUN_0048d2c0) : count(1) + count*record(0x20), decoupe pilotee par schema
+static bool p_AlgoTable(TR&r,std::vector<TField>&F){ int n=r.peek_u8(); F.push_back(r.u8()); for(int i=0;i<n&&r.ok;i++) readSchema(r,"AlgoTable",F); return r.ok; }
+// CreateMonsters (le plus complexe)
+static bool p_CreateMonsters(TR&r,std::vector<TField>&F,long end){ long initial=r.p; int32_t first=r.peek_s32();
+  if(first==-1){ F.push_back(r.raw(0x1C,"bytes")); return r.ok; }
+  r.strfill(F,0x10); F.push_back(r.s32()); for(int i=0;i<6;i++)F.push_back(r.s16());
+  while(r.ok){ F.push_back(r.s32());
+    for(int c=0;c<8;c++) r.strfill(F,0x10);
+    for(int ib=0;ib<8;ib++) F.push_back(r.u8());
+    if(r.ok&&r.peek_u8()==0) F.push_back(r.raw(8,"bytes")); else r.strfill(F,12,"bytes");
+    if(!r.ok)break; first=r.peek_s32();
+    if(!((first!=-1)&&(r.p!=end-4)))break; }
+  if(r.ok&&r.p==end-4){ if(r.peek_s32()!=1){r.ok=false;} return r.ok; }
+  if(r.ok)F.push_back(r.raw(0x1C,"bytes")); (void)initial; return r.ok; }
+
+// Decode une table : structure Ghidra si consommation exacte jusqu'au terminateur
+// op1(0x01)+padding ; sinon blob opaque + stale.
+static void decode(const std::string& name,const uint8_t* b,long len,Table& out){
+  std::string kind; int id; if(!typeForName(name,kind,id))return;
+  out.kind=kind; out.id=id;
+  TR r(b,len); std::vector<TField> F; bool ok=false;
+  if(kind=="FieldMonsterData")ok=p_FieldMonsterData(r,F);
+  else if(kind=="FieldFollowData")ok=p_FieldFollowData(r,F);
+  else if(kind=="FC_autoX")ok=p_FC_autoX(r,F);
+  else if(kind=="BookData99")ok=p_BookData99(r,F);
+  else if(kind=="BookDataX")ok=p_BookDataX(r,F);
+  else if(kind=="WeaponAttTable")ok=p_WeaponAtt(r,F);
+  else if(kind=="AddCollision")ok=p_AddCollision(r,F);
+  else if(kind=="PartTable")ok=p_PartTable(r,F);
+  else if(kind=="ReactionTable")ok=p_ReactionTable(r,F);
+  else if(kind=="SummonTable")ok=p_SummonTable(r,F);
+  else if(kind=="BreakTable")ok=p_BreakTable(r,F);
+  else if(kind=="AnimeClipTable")ok=p_AnimeClipTable(r,F);
+  else if(kind=="EffectsInstr")ok=p_EffectsInstr(r,F);
+  else if(kind=="ActionTable")ok=p_ActionTable(r,F);
+  else if(kind=="AlgoTable")ok=p_AlgoTable(r,F);
+  else if(kind=="CreateMonsters")ok=p_CreateMonsters(r,F,len);
+  // verif terminaison : reste (b[p..len]) = 0x01 optionnel + zeros
+  bool cleanEnd=false; if(ok){ long q=len; while(q>r.p&&b[q-1]==0)q--; cleanEnd=(q==r.p)||(q==r.p+1&&b[r.p]==0x01); }
+  if(ok&&cleanEnd){ out.opaque=false; out.stale=false; out.dataEnd=r.p; out.fields=std::move(F); return; }
+  // repli : blob opaque (perime/malforme) — retire terminateur op1 + padding de fin
+  long q=len; while(q>0&&b[q-1]==0)q--; if(q>0&&b[q-1]==0x01)q--;
+  TField blob; blob.type="bytes"; blob.off=0; blob.raw.assign(b,b+q);
+  out.opaque=true; out.stale=true; out.dataEnd=q; out.fields.clear(); out.fields.push_back(blob);
+}
+} // namespace cs1tbl
+
 // ================= Couche C ABI =================
 namespace cs1i {
 struct IDoc{ cs1ed::Doc* base=nullptr; std::string scene; bool ui=false;
              std::vector<std::vector<Instr>> dec; std::vector<char> isCode;
+             std::vector<char> isTable; std::vector<cs1tbl::Table> tables;
              long nextId=0; std::vector<long> funcEndId;
-             std::vector<long> origStart, origEnd; };
+             std::vector<long> origStart, origEnd;
+             std::vector<uint8_t> origHeader; long paOff=0; // header original (byte-perfect) + offset de la table de ptr
+             int origNb=0; long origFnpos=0, origPa=0; }; // pour reconstruire fidelement si nb change (add/remove)
 // resout recursivement les ptr32 -> targetId via off2id ; sinon laisse brut (isRef=false)
 static void resolveRefs(std::vector<Arg>& args, std::map<long,long>& off2id){
   for(auto&a:args){
@@ -381,6 +545,9 @@ using namespace cs1i;
 
 // ---- Registre ----
 CS1_API int32_t cs1i_load_registry(const char* json_utf8){ if(!json_utf8)return 0; return loadDoc(std::string(json_utf8))?1:0; }
+// Charge le schema editable des records de tables (cs1_tables.json). Optionnel : sans
+// appel, les schemas par defaut (Ghidra) sont utilises. Renvoie 1.
+CS1_API int32_t cs1i_load_tables_schema(const char* json_utf8){ cs1tbl::loadSchemaJson(json_utf8); return 1; }
 CS1_API int32_t cs1i_reg_count(){ return (int32_t)G.regs.size(); }
 CS1_API const char* cs1i_reg_name(int32_t i){ if(i<0||i>=(int)G.regs.size())return nullptr; return G.regs[i].name.c_str(); }
 CS1_API const char* cs1i_reg_opname(int32_t i){ if(i<0||i>=(int)G.regs.size())return nullptr; return G.regs[i].opname.c_str(); }
@@ -394,11 +561,27 @@ CS1_API IDoc* cs1i_open(const uint8_t* data,int32_t len,const char* filename){
   IDoc* d=new IDoc(); d->base=cs1_doc_load(data,len); if(!d->base){delete d;return nullptr;}
   d->scene=baseName(filename); d->ui=G.isUiFile(d->scene);
   int nf=cs1_doc_func_count(d->base); d->dec.resize(nf); d->isCode.resize(nf,0);
+  d->isTable.resize(nf,0); d->tables.resize(nf);
   d->funcEndId.resize(nf,-1); d->origStart.resize(nf,0); d->origEnd.resize(nf,0);
   for(int i=0;i<nf;i++){ long ost=d->base->funcs[i].ostart; d->origStart[i]=ost; d->origEnd[i]=ost+(long)d->base->funcs[i].bytes.size();
+    const char* nm=cs1_doc_func_name(d->base,i); std::string tk; int tid;
+    // Routage PAR NOM (comme guess_type_by_name / le modele Python) : une fonction
+    // nommee-table est TOUJOURS une table, jamais du code -- meme si ses octets
+    // seraient decodables en opcodes (cas des tables malformees/perimees).
+    if(nm && cs1tbl::typeForName(nm,tk,tid)){
+      const uint8_t* fb=cs1_doc_func_bytes(d->base,i); int fl=cs1_doc_func_size(d->base,i);
+      cs1tbl::decode(nm,fb,fl,d->tables[i]); d->isTable[i]=1; continue; }
     int ty=cs1_doc_func_type(d->base,i);
     if(ty==0){ const uint8_t* fb=cs1_doc_func_bytes(d->base,i); int fl=cs1_doc_func_size(d->base,i);
       std::vector<Instr> v; if(decodeFunc(fb,fl,d->ui,ost,v)){ d->dec[i]=std::move(v); d->isCode[i]=1; } } }
+  // header original conserve verbatim (byte-perfect) : tout ce qui precede la 1re fonction.
+  // paOff = ptr_area (table des offsets de fonctions @0x08), repatchee a la serialisation.
+  d->origNb=nf;
+  if(nf>0 && d->origStart[0]>0 && d->origStart[0]<=len){
+    d->origHeader.assign(data, data+d->origStart[0]);
+    auto R=[&](int o){ return (long)(data[o]|(data[o+1]<<8)|(data[o+2]<<16)|((uint32_t)data[o+3]<<24)); };
+    d->origFnpos=R(0x04); d->origPa=R(0x08); d->paOff=d->origPa;
+  }
   // ids stables + carte offset->id (instructions + fin de fonction)
   std::map<long,long> off2id;
   for(int i=0;i<nf;i++){ if(!d->isCode[i])continue;
@@ -414,6 +597,55 @@ CS1_API int32_t cs1i_func_count(IDoc* d){ return d?(int32_t)d->dec.size():0; }
 CS1_API const char* cs1i_func_name(IDoc* d,int32_t i){ return d?cs1_doc_func_name(d->base,i):nullptr; }
 CS1_API int32_t cs1i_func_is_code(IDoc* d,int32_t i){ if(!d||i<0||i>=(int)d->isCode.size())return 0; return d->isCode[i]; }
 
+// ---- Tables de donnees (structure separee du code, exposee a l'editeur) ----
+static cs1tbl::Table* tbl(IDoc* d,int i){ if(!d||i<0||i>=(int)d->isTable.size()||!d->isTable[i])return nullptr; return &d->tables[i]; }
+CS1_API int32_t cs1i_func_is_table(IDoc* d,int32_t i){ return tbl(d,i)?1:0; }
+CS1_API const char* cs1i_table_kind(IDoc* d,int32_t i){ cs1tbl::Table*t=tbl(d,i); return t?t->kind.c_str():nullptr; }
+CS1_API int32_t cs1i_table_id(IDoc* d,int32_t i){ cs1tbl::Table*t=tbl(d,i); return t?t->id:-1; }
+CS1_API int32_t cs1i_table_is_stale(IDoc* d,int32_t i){ cs1tbl::Table*t=tbl(d,i); return (t&&t->stale)?1:0; }
+CS1_API int32_t cs1i_table_field_count(IDoc* d,int32_t i){ cs1tbl::Table*t=tbl(d,i); return t?(int32_t)t->fields.size():-1; }
+static cs1tbl::TField* tfld(IDoc* d,int i,int j){ cs1tbl::Table*t=tbl(d,i); if(!t||j<0||j>=(int)t->fields.size())return nullptr; return &t->fields[j]; }
+CS1_API const char* cs1i_table_field_type(IDoc* d,int32_t i,int32_t j){ cs1tbl::TField*f=tfld(d,i,j); return f?f->type.c_str():nullptr; }
+CS1_API long cs1i_table_field_i(IDoc* d,int32_t i,int32_t j){ cs1tbl::TField*f=tfld(d,i,j); return f?f->ival:0; }
+CS1_API double cs1i_table_field_f(IDoc* d,int32_t i,int32_t j){ cs1tbl::TField*f=tfld(d,i,j); return f?f->fval:0; }
+CS1_API const char* cs1i_table_field_text(IDoc* d,int32_t i,int32_t j){ cs1tbl::TField*f=tfld(d,i,j); return (f&&f->type=="string")?f->text.c_str():nullptr; }
+CS1_API int32_t cs1i_table_field_bytes(IDoc* d,int32_t i,int32_t j,uint8_t* out,int32_t cap){ cs1tbl::TField*f=tfld(d,i,j); if(!f)return -1; int n=(int)f->raw.size(); if(out&&cap>0){ int c=n<cap?n:cap; memcpy(out,f->raw.data(),c); } return n; }
+
+// ---- Edition de champs de table (scalaire/f32/string-largeur-fixe = taille preservee) ----
+CS1_API int32_t cs1i_table_set_field_i(IDoc* d,int32_t i,int32_t j,long v){ cs1tbl::TField*f=tfld(d,i,j); if(!f)return 0;
+  if(f->type=="u8"){ f->raw.assign(1,(uint8_t)(v&0xff)); f->ival=(uint8_t)(v&0xff); return 1; }
+  if(f->type=="s16"){ f->raw={(uint8_t)(v&0xff),(uint8_t)((v>>8)&0xff)}; f->ival=(int16_t)(v&0xffff); return 1; }
+  if(f->type=="s32"){ f->raw={(uint8_t)(v&0xff),(uint8_t)((v>>8)&0xff),(uint8_t)((v>>16)&0xff),(uint8_t)((v>>24)&0xff)}; f->ival=(int32_t)v; return 1; }
+  return 0; }
+CS1_API int32_t cs1i_table_set_field_f(IDoc* d,int32_t i,int32_t j,double v){ cs1tbl::TField*f=tfld(d,i,j); if(!f||f->type!="f32")return 0;
+  float fv=(float)v; uint32_t u; memcpy(&u,&fv,4); f->raw={(uint8_t)(u&0xff),(uint8_t)((u>>8)&0xff),(uint8_t)((u>>16)&0xff),(uint8_t)((u>>24)&0xff)}; f->fval=fv; return 1; }
+// string : si suivi d'un champ 'fill' (champ largeur fixe), on rebalance le fill -> taille du record inchangee.
+// sinon (string libre type FC_autoX) la taille varie -> serialize reflowe (offsets + sauts recalcules).
+CS1_API int32_t cs1i_table_set_field_text(IDoc* d,int32_t i,int32_t j,const char* s){ cs1tbl::Table*t=tbl(d,i); if(!t||!s||j<0||j>=(int)t->fields.size())return 0;
+  cs1tbl::TField& f=t->fields[j]; if(f.type!="string")return 0;
+  std::vector<uint8_t> nr((const uint8_t*)s,(const uint8_t*)s+strlen(s)); nr.push_back(0);
+  if(j+1<(int)t->fields.size() && t->fields[j+1].fill>=0){ int width=t->fields[j+1].fill;
+    if((long)nr.size()>width)return 0; // ne rentre pas dans le champ largeur fixe
+    f.raw=nr; f.text=s; t->fields[j+1].raw.assign(width-(long)nr.size(),0); return 1; }
+  f.raw=nr; f.text=s; return 1; }
+CS1_API int32_t cs1i_table_set_field_bytes(IDoc* d,int32_t i,int32_t j,const uint8_t* b,int32_t n){ cs1tbl::TField*f=tfld(d,i,j); if(!f||!b||n<0)return 0; f->raw.assign(b,b+n); return 1; }
+
+// ---- Ajout/suppression de CHAMPS dans une table (pour ajouter/retirer des lignes) ----
+// Ajouter une ligne = inserer la sequence de champs du record puis incrementer le count
+// (via set_field_i). La taille de la table change -> serialize relocalise le fichier.
+CS1_API int32_t cs1i_table_field_insert(IDoc* d,int32_t i,int32_t at,const char* type,int32_t size){
+  cs1tbl::Table*t=tbl(d,i); if(!t||!type||size<0)return 0; if(at<0)at=0; if(at>(int)t->fields.size())at=(int)t->fields.size();
+  cs1tbl::TField f; f.type=type; f.raw.assign(size,0);
+  t->fields.insert(t->fields.begin()+at,f); t->dataEnd+=size; return 1; }
+CS1_API int32_t cs1i_table_field_delete(IDoc* d,int32_t i,int32_t j){
+  cs1tbl::Table*t=tbl(d,i); if(!t||j<0||j>=(int)t->fields.size())return 0;
+  t->dataEnd-=(long)t->fields[j].raw.size(); t->fields.erase(t->fields.begin()+j); return 1; }
+// Longueur (octets) d'un record de schema donne (pour dimensionner l'insertion d'une ligne).
+CS1_API int32_t cs1i_schema_record_len(const char* name){ if(!name)return -1; auto& s=cs1tbl::effSchema(name); int n=0; for(auto&f:s)n+=f.size; return n; }
+CS1_API int32_t cs1i_schema_field_count(const char* name){ if(!name)return -1; return (int)cs1tbl::effSchema(name).size(); }
+CS1_API const char* cs1i_schema_field_type(const char* name,int32_t j){ if(!name)return nullptr; auto& s=cs1tbl::effSchema(name); if(j<0||j>=(int)s.size())return nullptr; return s[j].type.c_str(); }
+CS1_API int32_t cs1i_schema_field_size(const char* name,int32_t j){ if(!name)return -1; auto& s=cs1tbl::effSchema(name); if(j<0||j>=(int)s.size())return -1; return s[j].size; }
+
 // ---- Instructions d'une fonction ----
 static Instr* pick(IDoc*d,int f,int k){ if(!d||f<0||f>=(int)d->dec.size())return nullptr; auto&v=d->dec[f]; if(k<0||k>=(int)v.size())return nullptr; return &v[k]; }
 CS1_API int32_t cs1i_func_ninstr(IDoc* d,int32_t f){ if(!d||f<0||f>=(int)d->dec.size())return -1; return (int32_t)d->dec[f].size(); }
@@ -423,6 +655,17 @@ CS1_API const char* cs1i_instr_name(IDoc* d,int32_t f,int32_t k){ Instr*in=pick(
 CS1_API int32_t cs1i_instr_argc(IDoc* d,int32_t f,int32_t k){ Instr*in=pick(d,f,k); if(!in)return -1; return visibleCount(in->args); }
 CS1_API const char* cs1i_instr_argtype(IDoc* d,int32_t f,int32_t k,int32_t a){ Instr*in=pick(d,f,k); if(!in)return nullptr; int r=visibleToReal(in->args,a); if(r<0)return nullptr;
   const Arg&x=in->args[r]; if(x.kind==0)return x.type.c_str(); return x.kind==1?"string":x.kind==2?"expr":x.kind==3?"dialog":"bytes"; }
+// annotations semantiques de l'operande visible a (definies dans le json, indexees en ordre visible)
+static const RegInstr* instrReg(IDoc*d,int f,int k){ Instr*in=pick(d,f,k); if(!in||in->reg<0||in->reg>=(int)G.regs.size())return nullptr; return &G.regs[in->reg]; }
+CS1_API const char* cs1i_instr_argname(IDoc* d,int32_t f,int32_t k,int32_t a){ const RegInstr*r=instrReg(d,f,k); if(!r||a<0||a>=(int)r->argNames.size())return nullptr; const std::string&s=r->argNames[a]; return s.empty()?nullptr:s.c_str(); }
+CS1_API const char* cs1i_instr_argsem(IDoc* d,int32_t f,int32_t k,int32_t a){ const RegInstr*r=instrReg(d,f,k); if(!r||a<0||a>=(int)r->argSems.size())return nullptr; const std::string&s=r->argSems[a]; return s.empty()?nullptr:s.c_str(); }
+CS1_API const char* cs1i_instr_argsem_arg(IDoc* d,int32_t f,int32_t k,int32_t a){ const RegInstr*r=instrReg(d,f,k); if(!r||a<0||a>=(int)r->argSemArgs.size())return nullptr; const std::string&s=r->argSemArgs[a]; return s.empty()?nullptr:s.c_str(); }
+CS1_API int32_t cs1i_instr_argsem_span(IDoc* d,int32_t f,int32_t k,int32_t a){ const RegInstr*r=instrReg(d,f,k); if(!r||a<0||a>=(int)r->argSemSpans.size())return 1; return r->argSemSpans[a]; }
+// idem au niveau registre (definition), sans instance
+CS1_API const char* cs1i_reg_argname(int32_t i,int32_t j){ if(i<0||i>=(int)G.regs.size()||j<0||j>=(int)G.regs[i].argNames.size())return nullptr; const std::string&s=G.regs[i].argNames[j]; return s.empty()?nullptr:s.c_str(); }
+CS1_API const char* cs1i_reg_argsem(int32_t i,int32_t j){ if(i<0||i>=(int)G.regs.size()||j<0||j>=(int)G.regs[i].argSems.size())return nullptr; const std::string&s=G.regs[i].argSems[j]; return s.empty()?nullptr:s.c_str(); }
+CS1_API const char* cs1i_reg_argsem_arg(int32_t i,int32_t j){ if(i<0||i>=(int)G.regs.size()||j<0||j>=(int)G.regs[i].argSemArgs.size())return nullptr; const std::string&s=G.regs[i].argSemArgs[j]; return s.empty()?nullptr:s.c_str(); }
+CS1_API int32_t cs1i_reg_argsem_span(int32_t i,int32_t j){ if(i<0||i>=(int)G.regs.size()||j<0||j>=(int)G.regs[i].argSemSpans.size())return 1; return G.regs[i].argSemSpans[j]; }
 CS1_API long cs1i_instr_argi(IDoc* d,int32_t f,int32_t k,int32_t a){ Instr*in=pick(d,f,k); if(!in)return 0; int r=visibleToReal(in->args,a); return r<0?0:in->args[r].ival; }
 CS1_API double cs1i_instr_argf(IDoc* d,int32_t f,int32_t k,int32_t a){ Instr*in=pick(d,f,k); if(!in)return 0; int r=visibleToReal(in->args,a); return r<0?0:in->args[r].fval; }
 CS1_API int32_t cs1i_instr_argbytes(IDoc* d,int32_t f,int32_t k,int32_t a,uint8_t* out,int32_t cap){ Instr*in=pick(d,f,k); if(!in)return -1; int r=visibleToReal(in->args,a); if(r<0)return -1;
@@ -534,6 +777,38 @@ CS1_API int32_t cs1i_instr_move(IDoc* d,int32_t f,int32_t from,int32_t to){
   if(from<0||from>=(int)v.size()||to<0||to>=(int)v.size())return 0;
   cs1i::Instr t=std::move(v[from]); v.erase(v.begin()+from); v.insert(v.begin()+to,std::move(t)); return 1;
 }
+// ---- Ajout / suppression de FONCTIONS entieres (tables) ----
+// Supprime la fonction f (et toutes ses metadonnees). Le nb de fonctions change ->
+// la serialisation reconstruira le header fidelement.
+CS1_API int32_t cs1i_func_remove(IDoc* d,int32_t f){
+  if(!d||f<0||f>=(int)d->dec.size())return 0;
+  d->base->funcs.erase(d->base->funcs.begin()+f);
+  d->dec.erase(d->dec.begin()+f); d->isCode.erase(d->isCode.begin()+f);
+  d->isTable.erase(d->isTable.begin()+f); d->tables.erase(d->tables.begin()+f);
+  d->origStart.erase(d->origStart.begin()+f); d->origEnd.erase(d->origEnd.begin()+f);
+  d->funcEndId.erase(d->funcEndId.begin()+f);
+  return 1;
+}
+// Insere une nouvelle table nommee 'name' a l'index pos, avec 'bytes' comme contenu
+// initial (le contenu de la table, hors terminateur -- un op1 + padding sont ajoutes).
+// Renvoie l'index de la nouvelle fonction, ou -1.
+CS1_API int32_t cs1i_table_add(IDoc* d,int32_t pos,const char* name,const uint8_t* bytes,int32_t len){
+  if(!d||!name)return -1; std::string tk; int tid; if(!cs1tbl::typeForName(name,tk,tid))return -1;
+  int nf=(int)d->dec.size(); if(pos<0)pos=nf; if(pos>nf)pos=nf;
+  // octets complets de la fonction = contenu + terminateur op1 + padding d'alignement 4
+  std::vector<uint8_t> fbytes; if(bytes&&len>0)fbytes.assign(bytes,bytes+len); fbytes.push_back(0x01);
+  while(fbytes.size()%4)fbytes.push_back(0x00);
+  cs1ed::Func nfn; nfn.name=name; nfn.named=true; nfn.type=tid; nfn.bytes=fbytes; nfn.hasRawPtrs=false; nfn.ostart=0; nfn.decoded=false;
+  d->base->funcs.insert(d->base->funcs.begin()+pos,std::move(nfn));
+  d->dec.insert(d->dec.begin()+pos,std::vector<cs1i::Instr>());
+  d->isCode.insert(d->isCode.begin()+pos,0);
+  cs1tbl::Table t; cs1tbl::decode(name,d->base->funcs[pos].bytes.data(),(long)d->base->funcs[pos].bytes.size(),t);
+  d->isTable.insert(d->isTable.begin()+pos,1);
+  d->tables.insert(d->tables.begin()+pos,std::move(t));
+  d->origStart.insert(d->origStart.begin()+pos,-1); d->origEnd.insert(d->origEnd.begin()+pos,-1);
+  d->funcEndId.insert(d->funcEndId.begin()+pos,d->nextId++);
+  return pos;
+}
 // definit une cible de saut de maniere SYMBOLIQUE : (tf,ti) instruction cible, ti<0 = fin de fonction tf
 CS1_API int32_t cs1i_instr_set_jump(IDoc* d,int32_t f,int32_t k,int32_t a,int32_t tf,int32_t ti){
   cs1i::Instr* in=pick(d,f,k); if(!in)return 0; int r=visibleToReal(in->args,a);
@@ -543,6 +818,32 @@ CS1_API int32_t cs1i_instr_set_jump(IDoc* d,int32_t f,int32_t k,int32_t a,int32_
   in->args[r].isRef=true; in->args[r].targetId=tid; return 1;
 }
 
+// ---- Iterations de boucle (instructions a corps repete, ex op6 ; kind==7) ----
+// Le champ count est auto-synchronise a l'encodage : ajouter/retirer une iteration suffit.
+static cs1i::Arg* loopArg(IDoc*d,int f,int k,int a){ cs1i::Instr*in=pick(d,f,k); if(!in)return nullptr; int r=visibleToReal(in->args,a); if(r<0)return nullptr; cs1i::Arg&x=in->args[r]; return x.kind==7?&x:nullptr; }
+CS1_API int32_t cs1i_arg_is_loop(IDoc*d,int32_t f,int32_t k,int32_t a){ return loopArg(d,f,k,a)?1:0; }
+CS1_API int32_t cs1i_arg_loop_count(IDoc*d,int32_t f,int32_t k,int32_t a){ cs1i::Arg*x=loopArg(d,f,k,a); return x?(int32_t)x->groups.size():-1; }
+// duplique l'iteration 'it' (copie inseree juste apres) -> pratique pour "ajouter une ligne"
+CS1_API int32_t cs1i_arg_loop_dup(IDoc*d,int32_t f,int32_t k,int32_t a,int32_t it){ cs1i::Arg*x=loopArg(d,f,k,a); if(!x||it<0||it>=(int)x->groups.size())return 0; x->groups.insert(x->groups.begin()+it+1,x->groups[it]); return 1; }
+CS1_API int32_t cs1i_arg_loop_remove(IDoc*d,int32_t f,int32_t k,int32_t a,int32_t it){ cs1i::Arg*x=loopArg(d,f,k,a); if(!x||it<0||it>=(int)x->groups.size())return 0; x->groups.erase(x->groups.begin()+it); return 1; }
+CS1_API int32_t cs1i_arg_loop_elem_argc(IDoc*d,int32_t f,int32_t k,int32_t a,int32_t it){ cs1i::Arg*x=loopArg(d,f,k,a); if(!x||it<0||it>=(int)x->groups.size())return -1; return (int32_t)x->groups[it].size(); }
+CS1_API long cs1i_arg_loop_elem_i(IDoc*d,int32_t f,int32_t k,int32_t a,int32_t it,int32_t e){ cs1i::Arg*x=loopArg(d,f,k,a); if(!x||it<0||it>=(int)x->groups.size())return 0; auto&g=x->groups[it]; if(e<0||e>=(int)g.size())return 0; return g[e].ival; }
+CS1_API int32_t cs1i_arg_loop_set_elem_i(IDoc*d,int32_t f,int32_t k,int32_t a,int32_t it,int32_t e,long v){ cs1i::Arg*x=loopArg(d,f,k,a); if(!x||it<0||it>=(int)x->groups.size())return 0; auto&g=x->groups[it]; if(e<0||e>=(int)g.size()||g[e].kind!=0)return 0; g[e].ival=v; return 1; }
+
+// ---- Construction/remplacement d'EXPRESSION (popup editeur) ----
+// Expression = suite postfixe de jetons (operandes + operateurs), terminee par 0x01.
+// Sous-ops operandes : 0x00 push(u32), 0x1e flag(u16), 0x1f reg(u8), 0x20 sys(u8),
+// 0x21 query(u16+u8), 0x23 work(u8). Operateurs 0x02..0x1d (payload 0). Terminateur auto.
+CS1_API int32_t cs1i_arg_expr_clear(IDoc*d,int32_t f,int32_t k,int32_t a){ cs1i::Arg*x=exprArg(d,f,k,a); if(!x)return 0;
+  x->expr.clear(); cs1i::ExprElem t; t.subop=0x01; x->expr.push_back(t); return 1; }
+CS1_API int32_t cs1i_arg_expr_push(IDoc*d,int32_t f,int32_t k,int32_t a,int32_t subop,long value){ cs1i::Arg*x=exprArg(d,f,k,a); if(!x)return 0;
+  if(subop==0x1c||subop==0x01)return 0;
+  cs1i::ExprElem el; el.subop=(uint8_t)subop; int pl=cs1i::exprPayload((uint8_t)subop);
+  for(int b=0;b<pl;b++) el.payload.push_back((uint8_t)((value>>(8*b))&0xff));
+  if(!x->expr.empty() && x->expr.back().subop==0x01) x->expr.insert(x->expr.end()-1,std::move(el));
+  else x->expr.push_back(std::move(el));
+  return 1; }
+
 CS1_API const uint8_t* cs1i_serialize(IDoc* d,int32_t* outlen){
   if(!d){ if(outlen)*outlen=0; return nullptr; }
   int nf=(int)d->dec.size(); auto& F=d->base->funcs;
@@ -550,15 +851,33 @@ CS1_API const uint8_t* cs1i_serialize(IDoc* d,int32_t* outlen){
   // pass1 : encode + offsets internes
   for(int f=0;f<nf;f++){
     if(d->isCode[f]){ std::vector<uint8_t> buf; for(auto&in:d->dec[f]){ ioff[f].push_back((long)buf.size()); if(!encodeInstr(in,d->ui,buf)){ if(outlen)*outlen=0; return nullptr; } } fb[f]=std::move(buf); }
+    else if(f<(int)d->isTable.size() && d->isTable[f]){ // table : champs (edites) + queue d'origine (terminateur op1 + padding)
+      std::vector<uint8_t> buf; for(auto&fld:d->tables[f].fields) buf.insert(buf.end(),fld.raw.begin(),fld.raw.end());
+      long de=d->tables[f].dataEnd; if(de>=0 && de<=(long)F[f].bytes.size()) buf.insert(buf.end(),F[f].bytes.begin()+de,F[f].bytes.end());
+      fb[f]=std::move(buf); }
     else fb[f]=F[f].bytes;
   }
+  // Deux cas :
+  //  - nb inchange : header ORIGINAL conserve verbatim (byte-perfect), on ne repatchera
+  //    que la table des offsets de fonctions.
+  //  - nb change (add/remove de table) : reconstruction FIDELE, en preservant l'ordre des
+  //    sections d'origine (filename avant ou apres les tables, style scena vs al*).
+  bool keepHeader = !d->origHeader.empty() && nf==d->origNb;
   std::string scene=d->base->scene; uint32_t nsize=(uint32_t)scene.size()+1, nb=nf;
   uint32_t names_len=0; for(int k=0;k<nf;k++) names_len+=(uint32_t)F[k].name.size()+1;
-  uint32_t ptr_area=0x20+nsize, names_pos_area=ptr_area+nb*4;
-  uint32_t funcs_meta_end=names_pos_area+nb*2+names_len;
-  int mult=4; if(nb>0 && !F[0].name.empty() && F[0].name[0]=='_') mult=0x10;
-  uint32_t pad=((funcs_meta_end+mult-1)/mult)*mult - funcs_meta_end;
-  uint32_t funcs_start=funcs_meta_end+pad;
+  uint32_t rb_fnpos=0x20, rb_pa=0, rb_nameptr=0, rb_namestr=0; // positions reconstruites
+  uint32_t funcs_start;
+  if(keepHeader){ funcs_start=(uint32_t)d->origStart[0]; }
+  else {
+    bool fileFirst = d->origHeader.empty() ? true : (d->origFnpos <= d->origPa);
+    uint32_t off=0x20;
+    uint32_t fileLen=nsize, tblLen=nb*4+nb*2+names_len;
+    if(fileFirst){ rb_fnpos=off; off+=fileLen; rb_pa=off; rb_nameptr=rb_pa+nb*4; rb_namestr=rb_nameptr+nb*2; off+=tblLen; }
+    else { rb_pa=off; rb_nameptr=rb_pa+nb*4; rb_namestr=rb_nameptr+nb*2; off+=tblLen; rb_fnpos=off; off+=fileLen; }
+    uint32_t funcs_meta_end=off;
+    int mult=4; if(nb>0 && !F[0].name.empty() && F[0].name[0]=='_') mult=0x10;
+    funcs_start=funcs_meta_end + (((funcs_meta_end+mult-1)/mult)*mult - funcs_meta_end);
+  }
   std::vector<uint32_t> addrs(nf); uint32_t acc=funcs_start;
   for(int k=0;k<nf;k++){ addrs[k]=acc; acc+=(uint32_t)fb[k].size(); }
   // id -> nouvel offset absolu
@@ -570,20 +889,29 @@ CS1_API const uint8_t* cs1i_serialize(IDoc* d,int32_t* outlen){
   for(int f=0;f<nf;f++){ if(d->isCode[f]){
       for(auto&in:d->dec[f]) fixRefs(in.args,id2new,d,addrs);
       std::vector<uint8_t> buf; for(auto&in:d->dec[f]) encodeInstr(in,d->ui,buf); fb[f]=std::move(buf);
-    } else { // fonctions non decodees : relocation uniforme (comme l'ancien serialize) pour type 0/-1
+    } else if(d->origStart[f]>=0){ // fonctions non decodees d'origine : relocation uniforme pour type 0/-1
       long delta=(long)addrs[f]-d->origStart[f];
       if(delta!=0 && (F[f].type==0||F[f].type==-1)) cs1_reloc_jumps(fb[f],delta,d->origStart[f],d->origStart[f]+(long)fb[f].size());
     } }
   // assemblage fichier
   std::vector<uint8_t> h;
-  auto P32=[&](uint32_t x){h.push_back(x&0xff);h.push_back((x>>8)&0xff);h.push_back((x>>16)&0xff);h.push_back((x>>24)&0xff);};
-  auto P16=[&](uint16_t x){h.push_back(x&0xff);h.push_back((x>>8)&0xff);};
-  P32(0x20);P32(0x20);P32(ptr_area);P32(nb*4);P32(names_pos_area);P32(nb);P32(funcs_meta_end);P32(0xABCDEF00);
-  for(char ch:scene)h.push_back((uint8_t)ch); h.push_back(0);
-  for(int k=0;k<nf;k++)P32(addrs[k]);
-  uint32_t noff=0; for(int k=0;k<nf;k++){ P16((uint16_t)(names_pos_area+nb*2+noff)); noff+=(uint32_t)F[k].name.size()+1; }
-  for(int k=0;k<nf;k++){ for(char ch:F[k].name)h.push_back((uint8_t)ch); h.push_back(0); }
-  for(uint32_t i=0;i<pad;i++)h.push_back(0);
+  auto wr32=[&](std::vector<uint8_t>&v,long p,uint32_t x){ if(p>=0&&p+4<=(long)v.size()){ v[p]=x&0xff;v[p+1]=(x>>8)&0xff;v[p+2]=(x>>16)&0xff;v[p+3]=(x>>24)&0xff; } };
+  if(keepHeader){
+    // header ORIGINAL verbatim + repatch de la table des offsets de fonctions -> byte-perfect
+    h=d->origHeader;
+    for(int k=0;k<nf;k++) wr32(h,d->paOff+4*k,addrs[k]);
+  } else {
+    // reconstruction fidele (nb a change) : header 0x20 + sections dans l'ordre d'origine.
+    h.assign(funcs_start, 0);
+    auto W32=[&](long p,uint32_t x){ h[p]=x&0xff;h[p+1]=(x>>8)&0xff;h[p+2]=(x>>16)&0xff;h[p+3]=(x>>24)&0xff; };
+    auto W16=[&](long p,uint16_t x){ h[p]=x&0xff;h[p+1]=(x>>8)&0xff; };
+    W32(0x00,0x20); W32(0x04,rb_fnpos); W32(0x08,rb_pa); W32(0x0C,nb*4);
+    W32(0x10,rb_nameptr); W32(0x14,nb); W32(0x18,rb_namestr+names_len); W32(0x1C,0xABCDEF00);
+    for(uint32_t i=0;i<nsize-1;i++) h[rb_fnpos+i]=(uint8_t)scene[i]; // filename (null deja a 0)
+    for(int k=0;k<nf;k++) W32(rb_pa+4*k,addrs[k]);                   // table des offsets de fonctions
+    uint32_t noff=0; for(int k=0;k<nf;k++){ W16(rb_nameptr+2*k,(uint16_t)(rb_namestr+noff)); noff+=(uint32_t)F[k].name.size()+1; }
+    noff=0; for(int k=0;k<nf;k++){ for(char ch:F[k].name) h[rb_namestr+noff++]=(uint8_t)ch; h[rb_namestr+noff++]=0; }
+  }
   for(int k=0;k<nf;k++) h.insert(h.end(),fb[k].begin(),fb[k].end());
   d->base->ser=std::move(h);
   if(outlen)*outlen=(int32_t)d->base->ser.size();

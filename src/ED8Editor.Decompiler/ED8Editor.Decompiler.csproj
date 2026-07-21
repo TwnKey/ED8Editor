@@ -15,6 +15,10 @@
     <None Include="cs1_instructions.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <!-- Schema editable des records de tables (optionnel : retypage). -->
+    <None Include="cs1_tables.json" Condition="Exists('cs1_tables.json')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <!-- La DLL native, une fois construite via native\build.cmd, est copiee aussi. -->
     <None Include="native\cs1_decompiler.dll" Condition="Exists('native\cs1_decompiler.dll')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>

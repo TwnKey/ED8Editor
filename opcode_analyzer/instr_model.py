@@ -8,6 +8,22 @@ import json, struct, os, glob, re
 FIXW = {'u8':1,'s8':1,'u16':2,'s16':2,'u32':4,'s32':4,'f32':4,'ptr32':4}
 SCALARS = set(FIXW)
 
+# Noms de fonctions qui sont des TABLES de donnees (d'apres guess_type_by_name du decompilo).
+# Elles ne sont pas du code : on les ignore au scan (le decompilo les route vers des parseurs de tables).
+TABLE_NAMES = {
+    'ActionTable', 'AlgoTable', 'WeaponAttTable', 'BreakTable', 'SummonTable',
+    'ReactionTable', 'PartTable', 'AnimeClipTable', 'FieldMonsterData', 'FieldFollowData',
+    'CreateMonsters', 'AddCollision', 'FieldMonsterList', 'FieldFollowList',
+}
+TABLE_PREFIXES = ('FC_auto', 'BookData')
+
+def is_table_name(nm):
+    if not nm:
+        return True
+    if nm in TABLE_NAMES:
+        return True
+    return nm.startswith(TABLE_PREFIXES) or nm.startswith('__')
+
 def _eval_cond(cond, ctx):
     """Evalue une condition d'expression (ex. '(unsigned char)control_byte2[0] < 0x4')."""
     e = cond.replace('&&', ' and ').replace('||', ' or ')
@@ -166,6 +182,13 @@ class Model:
         self.note = d.get('_note', '')
         self.instructions = d['instructions']   # liste de dicts (name, op, read, selectors, scope...)
         self.samples = {}                        # name -> [Sample]
+        # schema editable des records de tables (retypage/decoupe), a cote du json
+        self.tables_schema_path = os.path.join(os.path.dirname(os.path.abspath(json_path)), 'cs1_tables.json')
+        try:
+            import table_parsers as _TP
+            _TP.load_schema(self.tables_schema_path)
+        except Exception:
+            pass
         self._reindex()
 
     def _reindex(self):
@@ -290,6 +313,60 @@ class Model:
             q += 1
         return p < e
 
+    def decode_table(self, name, b, s, e):
+        """Decode une fonction-TABLE en structure (separee du code). Renvoie
+        dict{kind,id,fields,opaque,data_end,start,end}. Parse structure si on est
+        sur (consommation exacte jusqu'au terminateur op1+padding) ; sinon repli en
+        blob opaque -> round-trip garanti, jamais interprete comme du code."""
+        import table_parsers as TP
+        tt = TP.table_type_for_name(name)
+        if tt is None:
+            return None
+        kind, tid = tt
+        try:
+            k2, t2, fields, np = TP.parse_table(name, b, s, e)
+            concat = b''.join(f['raw'] for f in fields)
+            rest = bytes(b[np:e]).rstrip(b'\x00')
+            if concat == bytes(b[s:np]) and rest in (b'', b'\x01'):
+                return {'kind': kind, 'id': tid, 'fields': fields, 'opaque': False,
+                        'stale': False, 'data_end': np, 'start': s, 'end': e}
+        except TP.TableParseError:
+            pass
+        # repli : blob opaque. Pour une table de type CONNU qui ne colle pas au
+        # format Ghidra, c'est un fichier PERIME/MALFORME (count qui ne matche pas les
+        # octets, record trop court) -- typiquement les fichiers de debug Falcom 'al*'.
+        # Le jeu les lit mecaniquement (ou sort si count=0) mais la donnee est du rebut.
+        q = e
+        while q > s and b[q - 1] == 0:
+            q -= 1
+        if q > s and b[q - 1] == 0x01:
+            q -= 1
+        blob = [{'type': 'bytes', 'off': s, 'size': q - s, 'raw': bytes(b[s:q])}]
+        return {'kind': kind, 'id': tid, 'fields': blob,
+                'opaque': True, 'stale': True, 'data_end': q, 'start': s, 'end': e,
+                'note': 'perime/malforme (ne suit pas le format Ghidra ; non lu ou rebut debug)'}
+
+    def tables_in_file(self, path):
+        """Liste les fonctions-tables d'un fichier .dat, decodees en champs types.
+        Renvoie [dict{name,off,end,kind,id,opaque,stale,fields}]."""
+        import table_parsers as TP
+        b = bytearray(open(path, 'rb').read())
+        try:
+            h = parse_header(b)
+        except Exception:
+            return []
+        out = []
+        for (k, nm, s, e) in h['funcs']:
+            if TP.table_type_for_name(nm) is None or e > len(b) or s >= e or nm == '':
+                continue
+            td = self.decode_table(nm, b, s, e)
+            if td is None:
+                continue
+            rec = {'name': nm, 'off': s, 'end': e}
+            rec.update(td)
+            out.append(rec)
+        return out
+
     def decode_function(self, b, s, e, ui):
         """Decode une fonction entiere. Renvoie liste [(instr_index,[Field],offset)] ou None si echec.
         Le padding d'alignement de fin (00 jusqu'a e) est ignore (pas une instruction)."""
@@ -324,9 +401,12 @@ class Model:
         return rows, None, None
 
     # --- scan corpus : remplit self.samples ---
-    def scan_corpus(self, folder, max_samples=200, progress=None):
+    def scan_corpus(self, folder, max_samples=200, progress=None, recursive=True):
         self.samples = {ins['name']: [] for ins in self.instructions}
-        files = sorted(glob.glob(os.path.join(folder, '*.dat')))
+        if recursive:
+            files = sorted(glob.glob(os.path.join(folder, '**', '*.dat'), recursive=True))
+        else:
+            files = sorted(glob.glob(os.path.join(folder, '*.dat')))
         for fi, fp in enumerate(files):
             if progress: progress(fi, len(files), os.path.basename(fp))
             try:
@@ -337,7 +417,7 @@ class Model:
             ui = base in self.ui_files
             for (k, nm, s, e) in h['funcs']:
                 if e > len(b) or s >= e: continue
-                if not nm or nm.startswith('__'): continue  # fonctions sans nom = tables de donnees (comme le decompilo)
+                if is_table_name(nm): continue  # sans nom ou nom de table = donnees (comme le decompilo)
                 dec = self.decode_function(b, s, e, ui)
                 if dec is None: continue      # fonction data/table (ex. chunk) -> ignore
                 for (ri, fields, off) in dec:
@@ -429,6 +509,34 @@ class Model:
             st['suggestion'] = sug
             stats.append(st)
         return stats
+
+    # --- annotations semantiques d'un operande (name / sem / sem_arg / sem_span) ---
+    SEM_TYPES = ('', 'color', 'position', 'vec2', 'vec3', 'vec4', 'file', 'tbl', 'func_index', 'func_name')
+
+    def field_meta(self, name, path):
+        read = self.instructions[self.idx_by_name[name]]['read']
+        parent, idx = self._resolve_parent(read, path)
+        node = parent[idx]
+        return {'name': node.get('name', ''), 'sem': node.get('sem', ''),
+                'sem_arg': node.get('sem_arg', ''), 'sem_span': node.get('sem_span', 1)}
+
+    def set_field_meta(self, name, path, label=None, sem=None, sem_arg=None, sem_span=None):
+        """Pose/retire les annotations semantiques sur le nœud read (persiste au JSON)."""
+        read = self.instructions[self.idx_by_name[name]]['read']
+        parent, idx = self._resolve_parent(read, path)
+        node = parent[idx]
+        def setk(k, v, empty):
+            if v is None: return
+            if v == empty: node.pop(k, None)
+            else: node[k] = v
+        setk('name', label, '')
+        setk('sem', sem, '')
+        setk('sem_arg', sem_arg, '')
+        if sem_span is not None:
+            sp = int(sem_span)
+            if sp <= 1: node.pop('sem_span', None)
+            else: node['sem_span'] = sp
+        return True
 
     # --- editions du read (largeur preservee => roundtrip garanti) ---
     def retype(self, name, path, new_type):

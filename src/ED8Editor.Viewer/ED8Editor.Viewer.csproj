@@ -8,6 +8,7 @@
     <ProjectReference Include="..\ED8Editor.Application\ED8Editor.Application.csproj" />
     <ProjectReference Include="..\ED8Editor.Assets\ED8Editor.Assets.csproj" />
     <ProjectReference Include="..\ED8Editor.Core\ED8Editor.Core.csproj" />
+    <ProjectReference Include="..\ED8Editor.Decompiler\ED8Editor.Decompiler.csproj" />
     <ProjectReference Include="..\ED8Editor.Ops\ED8Editor.Ops.csproj" />
     <ProjectReference Include="..\ED8Editor.Packages\ED8Editor.Packages.csproj" />
     <ProjectReference Include="..\ED8Editor.Phyre\ED8Editor.Phyre.csproj" />

@@ -49,6 +49,16 @@ public sealed class ScriptDecompiler
                 throw new InvalidOperationException("Echec du chargement du registre d'instructions.");
             }
 
+            // schema editable des records de tables (optionnel, a cote du document)
+            var schemaPath = Path.Combine(Path.GetDirectoryName(path) ?? ".", "cs1_tables.json");
+            if (File.Exists(schemaPath))
+            {
+                var sj = File.ReadAllBytes(schemaPath);
+                var st = new byte[sj.Length + 1];
+                Array.Copy(sj, st, sj.Length);
+                NativeMethods.cs1i_load_tables_schema(st);
+            }
+
             _registryLoaded = true;
         }
     }
@@ -85,11 +95,46 @@ public sealed class ScriptDecompiler
         {
             var name = Str(NativeMethods.cs1i_func_name(doc, f)) ?? $"func_{f}";
             var isCode = NativeMethods.cs1i_func_is_code(doc, f) != 0;
+            var isTable = NativeMethods.cs1i_func_is_table(doc, f) != 0;
             var instructions = isCode ? BuildInstructions(doc, f) : Array.Empty<DecompiledInstruction>();
-            functions.Add(new DecompiledFunction(f, name, isCode, instructions));
+            var table = isTable ? BuildTable(doc, f) : null;
+            functions.Add(new DecompiledFunction(f, name, isCode, instructions, table));
         }
 
         return new DecompiledScript(scene, functions);
+    }
+
+    private static DecompiledTable BuildTable(IntPtr doc, int f)
+    {
+        var kind = Str(NativeMethods.cs1i_table_kind(doc, f)) ?? "Table";
+        var id = NativeMethods.cs1i_table_id(doc, f);
+        var stale = NativeMethods.cs1i_table_is_stale(doc, f) != 0;
+        var count = NativeMethods.cs1i_table_field_count(doc, f);
+        var fields = new List<TableField>(count < 0 ? 0 : count);
+        for (var j = 0; j < count; j++)
+        {
+            var type = Str(NativeMethods.cs1i_table_field_type(doc, f, j)) ?? "bytes";
+            var raw = TableFieldBytes(doc, f, j);
+            var text = type == "string" ? Str(NativeMethods.cs1i_table_field_text(doc, f, j)) : null;
+            var iv = NativeMethods.cs1i_table_field_i(doc, f, j);
+            var fv = NativeMethods.cs1i_table_field_f(doc, f, j);
+            fields.Add(new TableField(j, type, iv, fv, text, raw));
+        }
+
+        return new DecompiledTable(kind, id, stale, fields);
+    }
+
+    private static byte[] TableFieldBytes(IntPtr doc, int f, int j)
+    {
+        var n = NativeMethods.cs1i_table_field_bytes(doc, f, j, null, 0);
+        if (n <= 0)
+        {
+            return Array.Empty<byte>();
+        }
+
+        var buffer = new byte[n];
+        NativeMethods.cs1i_table_field_bytes(doc, f, j, buffer, n);
+        return buffer;
     }
 
     private static IReadOnlyList<DecompiledInstruction> BuildInstructions(IntPtr doc, int f)
@@ -134,16 +179,23 @@ public sealed class ScriptDecompiler
 
     private static InstructionArgument BuildArgument(IntPtr doc, int f, int k, int a, string type)
     {
+        var nm = Str(NativeMethods.cs1i_instr_argname(doc, f, k, a));
+        var sem = Str(NativeMethods.cs1i_instr_argsem(doc, f, k, a));
+        var semArg = Str(NativeMethods.cs1i_instr_argsem_arg(doc, f, k, a));
+        var span = NativeMethods.cs1i_instr_argsem_span(doc, f, k, a);
+
         if (type == "expr")
         {
-            return new InstructionArgument(a, "expr", type, 0, 0, Array.Empty<byte>(), BuildExpression(doc, f, k, a));
+            return new InstructionArgument(a, "expr", type, 0, 0, Array.Empty<byte>(),
+                BuildExpression(doc, f, k, a), nm, sem, semArg, span);
         }
 
         if (ScalarTypes.Contains(type))
         {
             var iv = NativeMethods.cs1i_instr_argi(doc, f, k, a);
             var fv = NativeMethods.cs1i_instr_argf(doc, f, k, a);
-            return new InstructionArgument(a, "scalar", type, iv, fv, Array.Empty<byte>(), null);
+            return new InstructionArgument(a, "scalar", type, iv, fv, Array.Empty<byte>(),
+                null, nm, sem, semArg, span);
         }
 
         // string / dialog / bytes : contenu brut
@@ -154,7 +206,7 @@ public sealed class ScriptDecompiler
             "dialog" => "dialog",
             _ => "bytes",
         };
-        return new InstructionArgument(a, kind, type, 0, 0, raw, null);
+        return new InstructionArgument(a, kind, type, 0, 0, raw, null, nm, sem, semArg, span);
     }
 
     private static IReadOnlyList<ExprElement> BuildExpression(IntPtr doc, int f, int k, int a)

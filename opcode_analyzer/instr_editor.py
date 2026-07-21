@@ -4,7 +4,7 @@
 # sequence d'octets -> sauver directement dans cs1_instructions.json.
 #
 # Lancement : python instr_editor.py   (ou run_editor.cmd)
-import os, sys, json
+import os, sys, json, glob
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -75,6 +75,8 @@ class InstrEditor:
         ttk.Entry(top, textvariable=self.folder_var, width=42).pack(side=tk.LEFT, padx=3)
         ttk.Button(top, text="...", command=self._browse).pack(side=tk.LEFT)
         ttk.Button(top, text="Scanner", command=self._scan).pack(side=tk.LEFT, padx=3)
+        ttk.Button(top, text="📊 Tables", command=self._open_tables_view).pack(side=tk.LEFT, padx=3)
+        ttk.Button(top, text="🧬 Schémas tables", command=self._open_schema_editor).pack(side=tk.LEFT, padx=3)
         ttk.Separator(top, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
         ttk.Button(top, text="⬇ Sauver le JSON", command=self._save).pack(side=tk.LEFT)
 
@@ -146,6 +148,23 @@ class InstrEditor:
         ttk.Separator(edit, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
         ttk.Button(edit, text="✂ Créer opérande (sélection)", command=self._do_split_selection).pack(side=tk.LEFT, padx=3)
 
+        # barre semantique (name + sem + parametre + span)
+        sem = ttk.LabelFrame(right, text="Sémantique de l'opérande (pour l'éditeur : sélecteur adapté)", padding=5)
+        sem.pack(fill=tk.X, pady=3)
+        ttk.Label(sem, text="Nom:").pack(side=tk.LEFT)
+        self.opname_var = tk.StringVar()
+        ttk.Entry(sem, textvariable=self.opname_var, width=16).pack(side=tk.LEFT, padx=3)
+        ttk.Label(sem, text="Sem:").pack(side=tk.LEFT)
+        self.sem_var = tk.StringVar(value="")
+        ttk.Combobox(sem, textvariable=self.sem_var, values=list(M.Model.SEM_TYPES), width=11, state="readonly").pack(side=tk.LEFT, padx=3)
+        ttk.Label(sem, text="Param (ext / tbl:type):").pack(side=tk.LEFT)
+        self.semarg_var = tk.StringVar()
+        ttk.Entry(sem, textvariable=self.semarg_var, width=14).pack(side=tk.LEFT, padx=3)
+        ttk.Label(sem, text="Span:").pack(side=tk.LEFT)
+        self.semspan_var = tk.StringVar(value="1")
+        ttk.Spinbox(sem, from_=1, to=16, textvariable=self.semspan_var, width=4).pack(side=tk.LEFT, padx=3)
+        ttk.Button(sem, text="Appliquer", command=self._do_set_sem).pack(side=tk.LEFT, padx=6)
+
         val = ttk.Frame(right); val.pack(fill=tk.X, pady=2)
         ttk.Button(val, text="✓✓ Valider cette instruction (définitif)", command=self._do_validate).pack(side=tk.LEFT)
         self.valid_var = tk.StringVar(value="")
@@ -175,9 +194,10 @@ class InstrEditor:
         if not os.path.isdir(folder):
             messagebox.showwarning("Corpus", "Dossier introuvable."); return
         self.folder = folder; self.settings["script_folder"] = folder; save_settings(self.settings)
-        def prog(i, n, name): self.status.set("Scan %d/%d : %s" % (i+1, n, name)); self.root.update_idletasks()
-        self.counts = self.model.scan_corpus(folder, max_samples=300, progress=prog)
-        self.status.set("Scan termine : %d instructions avec echantillons." % len(self.counts))
+        def prog(i, n, name): self.status.set("Scan %d/%d (sous-dossiers inclus) : %s" % (i+1, n, name)); self.root.update_idletasks()
+        self.counts = self.model.scan_corpus(folder, max_samples=300, progress=prog, recursive=True)
+        nf = len(glob.glob(os.path.join(folder, '**', '*.dat'), recursive=True))
+        self.status.set("Scan termine : %d .dat (tous sous-dossiers), %d instructions avec echantillons." % (nf, len(self.counts)))
         self._refresh_list()
 
     # ---------- liste instructions ----------
@@ -361,7 +381,27 @@ class InstrEditor:
         if not sel: return
         try: self.sel_field = int(sel[0])
         except Exception: self.sel_field = None
+        # charge les annotations semantiques du champ selectionne
+        try:
+            p = self._path()
+            if p is not None and self.cur_name:
+                m = self.model.field_meta(self.cur_name, p)
+                self.opname_var.set(m['name']); self.sem_var.set(m['sem'])
+                self.semarg_var.set(m['sem_arg']); self.semspan_var.set(str(m['sem_span']))
+        except Exception:
+            pass
         self._draw_hex()
+
+    def _do_set_sem(self):
+        if not self._need_field(): return
+        try:
+            self.model.set_field_meta(self.cur_name, self._path(),
+                                      label=self.opname_var.get(), sem=self.sem_var.get(),
+                                      sem_arg=self.semarg_var.get(), sem_span=self.semspan_var.get())
+            self._after_edit()
+            self.status.set("Sémantique posée. Clique « Sauver le JSON » pour écrire.")
+        except Exception as ex:
+            messagebox.showwarning("Sémantique", str(ex))
 
     # ---------- editions ----------
     def _need_field(self):
@@ -508,6 +548,164 @@ class InstrEditor:
             canvas.create_text(cx + 2, cy - 3, anchor=tk.SW, text="DÉCROCHAGE", font=("", 7, "bold"), fill="#B71C1C")
         total_rows = (n + PER - 1) // PER
         canvas.configure(scrollregion=(0, 0, X0 + PER * CW + 10, Y0 + total_rows * RH + 20))
+
+    def _open_tables_view(self):
+        if not self.model:
+            messagebox.showinfo("Tables", "Charge d'abord le JSON."); return
+        folder = self.folder_var.get().strip() or self.folder
+        if not folder or not os.path.isdir(folder):
+            messagebox.showwarning("Tables", "Choisis un dossier corpus d'abord."); return
+
+        win = tk.Toplevel(self.root)
+        win.title("Tables de données — %s" % folder)
+        win.geometry("1080x680")
+
+        # index : fichiers contenant au moins une table (scan recursif)
+        files = sorted(glob.glob(os.path.join(folder, '**', '*.dat'), recursive=True))
+
+        pw = ttk.PanedWindow(win, orient=tk.HORIZONTAL); pw.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        left = ttk.Frame(pw); pw.add(left, weight=1)
+        ttk.Label(left, text="Fichiers (double-clic)").pack(anchor=tk.W)
+        flt = tk.StringVar()
+        ttk.Entry(left, textvariable=flt, width=24).pack(fill=tk.X)
+        flist = tk.Listbox(left, width=30, activestyle="none")
+        flist.pack(fill=tk.BOTH, expand=True)
+        fsb = ttk.Scrollbar(left, orient=tk.VERTICAL, command=flist.yview); flist.configure(yscrollcommand=fsb.set)
+        fsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        right = ttk.Frame(pw); pw.add(right, weight=3)
+        hdr = ttk.Label(right, text="Sélectionne un fichier", font=("", 10, "bold"))
+        hdr.pack(anchor=tk.W, padx=4, pady=2)
+        cols = ("val", "type", "value", "hex")
+        tv = ttk.Treeview(right, columns=cols, show="tree headings")
+        tv.heading("#0", text="Table / champ"); tv.column("#0", width=280)
+        for c, t, w in (("val", "détail", 150), ("type", "type", 70), ("value", "valeur", 150), ("hex", "octets", 320)):
+            tv.heading(c, text=t); tv.column(c, width=w)
+        tv.pack(fill=tk.BOTH, expand=True, padx=2)
+        tsb = ttk.Scrollbar(right, orient=tk.VERTICAL, command=tv.yview); tv.configure(yscrollcommand=tsb.set)
+        tsb.pack(side=tk.RIGHT, fill=tk.Y)
+        tv.tag_configure("stale", foreground="#B71C1C")
+        tv.tag_configure("ok", foreground="#1B5E20")
+
+        # cache : quels fichiers ont des tables (calcul paresseux a l'affichage de la liste)
+        def refill_list(*_):
+            needle = flt.get().lower()
+            flist.delete(0, tk.END)
+            self._tbl_files = []
+            for fp in files:
+                bn = os.path.basename(fp)
+                if needle and needle not in bn.lower():
+                    continue
+                flist.insert(tk.END, bn); self._tbl_files.append(fp)
+        flt.trace_add("write", refill_list)
+        refill_list()
+
+        def show_file(evt=None):
+            sel = flist.curselection()
+            if not sel:
+                return
+            fp = self._tbl_files[sel[0]]
+            tv.delete(*tv.get_children())
+            try:
+                tables = self.model.tables_in_file(fp)
+            except Exception as ex:
+                hdr.config(text="Erreur: %s" % ex); return
+            ns = sum(1 for t in tables if t.get('stale'))
+            hdr.config(text="%s — %d table(s), dont %d périmée(s)" % (os.path.basename(fp), len(tables), ns))
+            for t in tables:
+                stale = t.get('stale')
+                badge = "  ⚠ PÉRIMÉ/MALFORMÉ" if stale else ""
+                node = tv.insert("", tk.END,
+                                 text="%s @0x%X%s" % (t['name'], t['off'], badge),
+                                 values=("%d champs" % len(t['fields']), t['kind'], "stale" if stale else "conforme", ""),
+                                 open=not stale, tags=("stale" if stale else "ok",))
+                for j, f in enumerate(t['fields']):
+                    raw = f.get('raw', b'')
+                    hexs = raw.hex() if len(raw) <= 24 else raw[:24].hex() + "…"
+                    if f['type'] == 'string':
+                        val = '"%s"' % f.get('text', '')
+                    elif f['type'] == 'f32':
+                        val = "%g" % f.get('value', 0)
+                    elif 'value' in f:
+                        val = str(f['value'])
+                    else:
+                        val = ""
+                    tv.insert(node, tk.END, text="  [%d]" % j,
+                              values=("%d o" % len(raw), f['type'], val, hexs))
+        flist.bind("<<ListboxSelect>>", show_file)
+        flist.bind("<Double-Button-1>", show_file)
+
+    def _open_schema_editor(self):
+        import table_parsers as TP
+        win = tk.Toplevel(self.root); win.title("Schémas de tables (retypage des blocs fixes)")
+        win.geometry("780x520")
+        top = ttk.Frame(win); top.pack(fill=tk.X, padx=4, pady=4)
+        ttk.Label(top, text="Schéma:").pack(side=tk.LEFT)
+        names = TP.editable_schemas()
+        svar = tk.StringVar(value=names[0])
+        ttk.Combobox(top, textvariable=svar, values=names, width=22, state="readonly").pack(side=tk.LEFT, padx=4)
+        info = ttk.Label(win, text="", foreground="#555"); info.pack(anchor=tk.W, padx=6)
+
+        cols = ("idx", "off", "type", "size")
+        tv = ttk.Treeview(win, columns=cols, show="headings", height=14)
+        for c, t, w in (("idx", "#", 40), ("off", "offset", 70), ("type", "type", 120), ("size", "taille", 70)):
+            tv.heading(c, text=t); tv.column(c, width=w)
+        tv.pack(fill=tk.BOTH, expand=True, padx=6, pady=4)
+
+        TYPES = ["u8", "s8", "u16", "s16", "u32", "s32", "f32", "bytes"]
+
+        def refresh():
+            nm = svar.get(); tv.delete(*tv.get_children())
+            off = 0
+            for i, (typ, sz) in enumerate(TP.get_schema(nm)):
+                tv.insert("", tk.END, iid=str(i), values=(i, "0x%X" % off, typ, sz)); off += sz
+            tot = TP.schema_len(nm)
+            ov = nm in TP._SCHEMA_OVERRIDE
+            info.config(text="Longueur du record : %d octets%s" % (tot, "   —   (personnalisé)" if ov else "   —   (défaut Ghidra)"))
+        svar.trace_add("write", lambda *a: refresh()); refresh()
+
+        def sel_idx():
+            s = tv.selection(); return int(s[0]) if s else None
+
+        def do_retype():
+            i = sel_idx()
+            if i is None: return
+            nt = tvar.get()
+            try: TP.schema_retype(svar.get(), i, nt); refresh()
+            except Exception as ex: messagebox.showwarning("Retyper", str(ex))
+        def do_split():
+            i = sel_idx()
+            if i is None: return
+            try: n = int(splen.get())
+            except Exception: return
+            try: TP.schema_split(svar.get(), i, n); refresh()
+            except Exception as ex: messagebox.showwarning("Découper", str(ex))
+        def do_merge():
+            i = sel_idx()
+            if i is None: return
+            try: TP.schema_merge(svar.get(), i); refresh()
+            except Exception as ex: messagebox.showwarning("Fusionner", str(ex))
+        def do_reset():
+            TP._SCHEMA_OVERRIDE.pop(svar.get(), None); refresh()
+        def do_save():
+            try:
+                TP.save_schema(self.model.tables_schema_path)
+                messagebox.showinfo("Schémas", "Écrit dans:\n%s" % self.model.tables_schema_path)
+            except Exception as ex: messagebox.showerror("Schémas", str(ex))
+
+        bar = ttk.Frame(win); bar.pack(fill=tk.X, padx=6, pady=4)
+        tvar = tk.StringVar(value="f32")
+        ttk.Label(bar, text="→").pack(side=tk.LEFT)
+        ttk.Combobox(bar, textvariable=tvar, values=TYPES, width=7, state="readonly").pack(side=tk.LEFT, padx=2)
+        ttk.Button(bar, text="Retyper", command=do_retype).pack(side=tk.LEFT, padx=2)
+        ttk.Separator(bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
+        ttk.Label(bar, text="découpe à:").pack(side=tk.LEFT); splen = tk.StringVar(value="4")
+        ttk.Entry(bar, textvariable=splen, width=5).pack(side=tk.LEFT, padx=2)
+        ttk.Button(bar, text="Découper", command=do_split).pack(side=tk.LEFT, padx=2)
+        ttk.Button(bar, text="Fusionner+suivant", command=do_merge).pack(side=tk.LEFT, padx=2)
+        ttk.Separator(bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
+        ttk.Button(bar, text="Défaut", command=do_reset).pack(side=tk.LEFT, padx=2)
+        ttk.Button(bar, text="⬇ Sauver cs1_tables.json", command=do_save).pack(side=tk.RIGHT, padx=2)
 
     def _do_validate(self):
         if not self.cur_name: return
