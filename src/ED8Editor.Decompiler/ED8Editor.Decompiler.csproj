@@ -22,6 +22,9 @@
     <!-- La DLL native, une fois construite via native\build.cmd, est copiee aussi. -->
     <None Include="native\cs1_decompiler.dll" Condition="Exists('native\cs1_decompiler.dll')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      <Link>cs1_decompiler.dll</Link>
+      <TargetPath>cs1_decompiler.dll</TargetPath>
     </None>
   </ItemGroup>
 

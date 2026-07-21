@@ -7,3 +7,6 @@ dist/
 *.exe
 *.pdb
 *.build
+*.exp
+*.lib
+*.obj

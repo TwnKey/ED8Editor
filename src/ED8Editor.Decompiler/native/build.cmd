@@ -10,7 +10,7 @@ if errorlevel 1 (
   echo [ERREUR] cl.exe introuvable. Ouvre "x64 Native Tools Command Prompt for VS" puis relance.
   exit /b 1
 )
-cl /nologo /std:c++17 /O2 /EHsc /D_CRT_SECURE_NO_WARNINGS /LD cs1_instr_api.cpp /Fe:cs1_decompiler.dll
+cl /nologo /std:c++17 /utf-8 /O2 /EHsc /D_CRT_SECURE_NO_WARNINGS /LD cs1_instr_api.cpp /Fe:cs1_decompiler.dll
 if errorlevel 1 (
   echo [ERREUR] compilation echouee.
   exit /b 1
@@ -19,6 +19,4 @@ del *.obj 2>nul
 del cs1_decompiler.exp 2>nul
 del cs1_decompiler.lib 2>nul
 echo.
-echo OK -> cs1_decompiler.dll
-
-cmd /k
+echo OK: cs1_decompiler.dll

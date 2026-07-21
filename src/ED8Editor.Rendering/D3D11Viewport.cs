@@ -234,9 +234,13 @@ public sealed class D3D11Viewport : IDisposable
     private ID3D11Texture2D? depthTexture;
     private ID3D11DepthStencilView? depthView;
     private ID3D11Buffer? debugLineBuffer;
+    private ID3D11Buffer? debugTriangleBuffer;
+    private readonly ID3D11BlendState overlayBlendState;
     private IReadOnlyList<D3D11DebugLine> debugLines = Array.Empty<D3D11DebugLine>();
+    private IReadOnlyList<D3D11DebugTriangle> debugTriangles = Array.Empty<D3D11DebugTriangle>();
     private int debugLineVertexCapacity;
     private int debugLineVertexCount;
+    private int debugTriangleVertexCapacity;
     private int width;
     private int height;
     private Vector4 clearColor = new(0.035f, 0.045f, 0.065f, 1f);
@@ -312,6 +316,23 @@ public sealed class D3D11Viewport : IDisposable
             CullMode = CullMode.None,
             DepthClipEnable = true,
         });
+        overlayBlendState = graphics.Device.CreateBlendState(new BlendDescription
+        {
+            RenderTarget =
+            {
+                [0] = new RenderTargetBlendDescription
+                {
+                    BlendEnable = true,
+                    SourceBlend = Blend.SourceAlpha,
+                    DestinationBlend = Blend.InverseSourceAlpha,
+                    BlendOperation = BlendOperation.Add,
+                    SourceBlendAlpha = Blend.One,
+                    DestinationBlendAlpha = Blend.InverseSourceAlpha,
+                    BlendOperationAlpha = BlendOperation.Add,
+                    RenderTargetWriteMask = ColorWriteEnable.All,
+                },
+            },
+        });
         bloomPipeline = new D3D11BloomPipeline(graphics);
         Resize(width, height);
     }
@@ -353,6 +374,12 @@ public sealed class D3D11Viewport : IDisposable
                 throw new ArgumentOutOfRangeException(nameof(lines), "Debug line thickness must be finite and positive.");
         }
         debugLines = lines.ToArray();
+    }
+
+    public void SetDebugTriangles(IReadOnlyList<D3D11DebugTriangle> triangles)
+    {
+        ArgumentNullException.ThrowIfNull(triangles);
+        debugTriangles = triangles.ToArray();
     }
 
     public void SetClearColor(Vector4 color)
@@ -407,6 +434,8 @@ public sealed class D3D11Viewport : IDisposable
         context.PSSetConstantBuffer(0, perDrawBuffer);
         context.PSSetSampler(0, sampler);
         DrawScenePhase(instances, camera, CpuMaterialRenderPhase.Transparent);
+        context.OMSetBlendState(overlayBlendState, new Color4(0f, 0f, 0f, 0f), uint.MaxValue);
+        DrawDebugTriangles(camera);
         context.OMSetBlendState(null, new Color4(0f, 0f, 0f, 0f), uint.MaxValue);
         DrawDebugLines(camera);
 
@@ -448,6 +477,8 @@ public sealed class D3D11Viewport : IDisposable
         bloomPipeline.Dispose();
         foreach (var layout in inputLayouts.Values) layout.Dispose();
         debugLineBuffer?.Dispose();
+        debugTriangleBuffer?.Dispose();
+        overlayBlendState.Dispose();
         coloredInputLayout.Dispose();
         rasterizer.Dispose();
         sampler.Dispose();
@@ -496,6 +527,43 @@ public sealed class D3D11Viewport : IDisposable
         context.Draw(debugLineVertexCount, 0);
     }
 
+    private unsafe void DrawDebugTriangles(ViewportCamera camera)
+    {
+        if (debugTriangles.Count == 0) return;
+        var matrix = camera.View * camera.Projection;
+        var vertices = new List<DebugLineVertex>(debugTriangles.Count * 3);
+        foreach (var triangle in debugTriangles)
+        {
+            var a = Vector4.Transform(new Vector4(triangle.A, 1f), matrix);
+            var b = Vector4.Transform(new Vector4(triangle.B, 1f), matrix);
+            var c = Vector4.Transform(new Vector4(triangle.C, 1f), matrix);
+            if (a.W <= 0f || b.W <= 0f || c.W <= 0f) continue;
+            vertices.Add(new DebugLineVertex(a, triangle.Color));
+            vertices.Add(new DebugLineVertex(b, triangle.Color));
+            vertices.Add(new DebugLineVertex(c, triangle.Color));
+        }
+        if (vertices.Count == 0) return;
+        EnsureDebugTriangleBuffer(vertices.Count);
+        var mapped = graphics.Context.Map(debugTriangleBuffer!, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
+        var data = CollectionsMarshal.AsSpan(vertices);
+        fixed (DebugLineVertex* source = data)
+        {
+            Buffer.MemoryCopy(source, (void*)mapped.DataPointer,
+                (long)debugTriangleVertexCapacity * Marshal.SizeOf<DebugLineVertex>(),
+                (long)data.Length * Marshal.SizeOf<DebugLineVertex>());
+        }
+        graphics.Context.Unmap(debugTriangleBuffer!, 0);
+        var context = graphics.Context;
+        context.RSSetState(rasterizer);
+        context.IASetInputLayout(coloredInputLayout);
+        context.IASetVertexBuffer(0, debugTriangleBuffer!, Marshal.SizeOf<DebugLineVertex>(), 0);
+        context.IASetPrimitiveTopology(Vortice.Direct3D.PrimitiveTopology.TriangleList);
+        context.VSSetShader(coloredVertexShader);
+        context.PSSetShader(coloredPixelShader);
+        context.PSSetShaderResource(0, null!);
+        context.Draw(data.Length, 0);
+    }
+
     private DebugLineVertex[] BuildDebugLineTriangles(ViewportCamera camera)
     {
         var matrix = camera.View * camera.Projection;
@@ -539,6 +607,18 @@ public sealed class D3D11Viewport : IDisposable
         debugLineVertexCapacity = Math.Max(requiredVertexCount, Math.Max(256, debugLineVertexCapacity * 2));
         debugLineBuffer = graphics.Device.CreateBuffer(new BufferDescription(
             checked(debugLineVertexCapacity * Marshal.SizeOf<DebugLineVertex>()),
+            BindFlags.VertexBuffer,
+            ResourceUsage.Dynamic,
+            CpuAccessFlags.Write));
+    }
+
+    private void EnsureDebugTriangleBuffer(int requiredVertexCount)
+    {
+        if (debugTriangleBuffer is not null && debugTriangleVertexCapacity >= requiredVertexCount) return;
+        debugTriangleBuffer?.Dispose();
+        debugTriangleVertexCapacity = Math.Max(requiredVertexCount, Math.Max(256, debugTriangleVertexCapacity * 2));
+        debugTriangleBuffer = graphics.Device.CreateBuffer(new BufferDescription(
+            checked(debugTriangleVertexCapacity * Marshal.SizeOf<DebugLineVertex>()),
             BindFlags.VertexBuffer,
             ResourceUsage.Dynamic,
             CpuAccessFlags.Write));

@@ -298,6 +298,14 @@ public sealed class PhyreEffectRenderPassReader
             var valueCount = ReadArrayCount(cluster, contextGroupIndex, contextId, packedSwitchesMember);
             if (valueCount != switchCount)
                 throw new InvalidPhyreException($"Effect context {localContext} has {valueCount} values for {switchCount} switches.");
+            if (valueCount == 0)
+            {
+                // Phyre does not emit an array fixup for an empty packed-switch array.
+                contexts[localContext] = new CpuShaderContext(
+                    checked((int)localContext),
+                    new Dictionary<string, uint>(StringComparer.Ordinal));
+                continue;
+            }
             var valueFixup = cluster.Fixups.Arrays.Single(value =>
                 value.SourceListIndex == contextGroupIndex && value.SourceObjectId == contextId
                 && !value.IsClassDataMember

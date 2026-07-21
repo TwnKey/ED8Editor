@@ -4,6 +4,7 @@ using ED8Editor.Core;
 using ED8Editor.Ops;
 using ED8Editor.Application;
 using ED8Editor.Assets;
+using ED8Editor.Decompiler;
 using ED8Editor.Packages;
 using ED8Editor.Phyre;
 using ED8Editor.Rendering;
@@ -43,7 +44,7 @@ public sealed class ViewerForm : Form
     private readonly ToolStripButton translateToolButton = new("Move (1)") { ToolTipText = "Translate the selected object" };
     private readonly ToolStripButton rotateToolButton = new("Rotate (2)") { ToolTipText = "Rotate the selected object" };
     private readonly ToolStripButton scaleToolButton = new("Scale (3)") { ToolTipText = "Scale the selected object" };
-    private readonly ToolStripButton scriptsToolButton = new("Scripts") { ToolTipText = "Ouvrir l'éditeur de scripts (scènes, tables, flot d'instructions)" };
+    private readonly ToolStripButton scriptsToolButton = new("Scripts") { ToolTipText = "Open the script graph tab" };
     private readonly Panel scenePanel = new() { Dock = DockStyle.Left, Width = 340, Padding = new Padding(8) };
     private readonly GroupBox sceneOutlinerGroup = new()
     {
@@ -56,13 +57,32 @@ public sealed class ViewerForm : Form
         HideSelection = false,
         FullRowSelect = true,
     };
-    private readonly Panel assetPanel = new() { Dock = DockStyle.Right, Width = 300, Padding = new Padding(8) };
+    private readonly Panel assetPanel = new() { Dock = DockStyle.Right, Width = 420, MinimumSize = new Size(280, 0) };
+    private readonly Splitter assetPanelSplitter = new()
+    {
+        Dock = DockStyle.Right,
+        Width = 6,
+        MinSize = 280,
+        MinExtra = 320,
+        BackColor = SystemColors.ControlDark,
+    };
+    private readonly TabControl rightPanelTabs = new() { Dock = DockStyle.Fill };
+    private readonly TabPage assetsTab = new("Assets / OPS");
+    private readonly TabPage scriptsTab = new("Scripts");
+    private readonly Panel assetControlsPanel = new() { Dock = DockStyle.Fill, Padding = new Padding(8) };
     private readonly TextBox assetSearch = new() { Dock = DockStyle.Top, PlaceholderText = "Search PKG assets..." };
     private readonly CheckBox snapCheckBox = new()
     {
         Dock = DockStyle.Top,
         Height = 28,
         Text = "Snap: 0.25 units / 15 degrees / 0.1 scale",
+    };
+    private readonly CheckBox showIndicatorsCheckBox = new()
+    {
+        Dock = DockStyle.Top,
+        Height = 28,
+        Text = "Show map indicators / triggers",
+        Checked = true,
     };
     private readonly ComboBox keyboardLayoutList = new()
     {
@@ -116,6 +136,7 @@ public sealed class ViewerForm : Form
     private D3D11Viewport? viewport;
     private IReadOnlyList<D3D11SceneInstance> instances = Array.Empty<D3D11SceneInstance>();
     private IReadOnlyList<SceneModelInstance> sceneInstances = Array.Empty<SceneModelInstance>();
+    private IReadOnlyList<SceneModelInstance> scriptMonsterInstances = Array.Empty<SceneModelInstance>();
     private MapScene? currentMap;
     private float sceneRadius = 10f;
     private float overlayMarkerSize = 0.3f;
@@ -161,12 +182,13 @@ public sealed class ViewerForm : Form
         MinimumSize = new Size(640, 360);
         WindowState = FormWindowState.Maximized;
         KeyPreview = true;
-        assetPanel.Controls.Add(assetList);
-        assetPanel.Controls.Add(snapCheckBox);
-        assetPanel.Controls.Add(effectMetadataStatus);
-        assetPanel.Controls.Add(environmentVariantList);
-        assetPanel.Controls.Add(keyboardLayoutList);
-        assetPanel.Controls.Add(assetSearch);
+        assetControlsPanel.Controls.Add(assetList);
+        assetControlsPanel.Controls.Add(snapCheckBox);
+        assetControlsPanel.Controls.Add(showIndicatorsCheckBox);
+        assetControlsPanel.Controls.Add(effectMetadataStatus);
+        assetControlsPanel.Controls.Add(environmentVariantList);
+        assetControlsPanel.Controls.Add(keyboardLayoutList);
+        assetControlsPanel.Controls.Add(assetSearch);
         propertyGroup.Controls.Add(propertyGrid);
         propertyGroup.Controls.Add(applyPropertiesButton);
         sceneOutlinerGroup.Controls.Add(sceneOutliner);
@@ -176,11 +198,16 @@ public sealed class ViewerForm : Form
         opsCreationGroup.Controls.Add(opsProfileEvidence);
         opsCreationGroup.Controls.Add(opsProfileList);
         opsCreationGroup.Controls.Add(addOpsElementButton);
-        assetPanel.Controls.Add(deleteButton);
-        assetPanel.Controls.Add(duplicateButton);
-        assetPanel.Controls.Add(addAssetButton);
-        assetPanel.Controls.Add(opsCreationGroup);
+        assetControlsPanel.Controls.Add(deleteButton);
+        assetControlsPanel.Controls.Add(duplicateButton);
+        assetControlsPanel.Controls.Add(addAssetButton);
+        assetControlsPanel.Controls.Add(opsCreationGroup);
+        assetsTab.Controls.Add(assetControlsPanel);
+        rightPanelTabs.TabPages.Add(assetsTab);
+        rightPanelTabs.TabPages.Add(scriptsTab);
+        assetPanel.Controls.Add(rightPanelTabs);
         Controls.Add(viewportHost);
+        Controls.Add(assetPanelSplitter);
         Controls.Add(assetPanel);
         Controls.Add(scenePanel);
         gizmoToolStrip.Items.AddRange(new ToolStripItem[]
@@ -197,8 +224,18 @@ public sealed class ViewerForm : Form
         rotateToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Rotate);
         scaleToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Scale);
         scriptsToolButton.Click += (_, _) => OpenScriptEditor();
+        rightPanelTabs.Selected += (_, eventArgs) =>
+        {
+            if (eventArgs.TabPage == scriptsTab) OpenScriptEditor();
+        };
+        viewportHost.Resize += (_, _) => ResizeViewport();
         SetGizmoMode(GizmoMode.Translate);
         assetSearch.TextChanged += (_, _) => FilterAssetCatalog();
+        showIndicatorsCheckBox.CheckedChanged += (_, _) =>
+        {
+            RefreshRenderInstances(uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase));
+            RefreshOverlay();
+        };
         addAssetButton.Click += async (_, _) => await AddSelectedAssetAsync();
         duplicateButton.Click += (_, _) => DuplicateSelectedElement();
         deleteButton.Click += (_, _) => DeleteSelectedElement();
@@ -233,6 +270,17 @@ public sealed class ViewerForm : Form
         renderTimer.Tick += (_, _) => RenderFrame();
         KeyDown += (_, eventArgs) =>
         {
+            if (assetPanel.Visible && rightPanelTabs.SelectedTab == scriptsTab
+                && scriptEditor is { ContainsFocus: true })
+            {
+                if (eventArgs.Control && eventArgs.KeyCode == Keys.S)
+                {
+                    scriptEditor.SaveCurrent(eventArgs.Shift);
+                    eventArgs.SuppressKeyPress = true;
+                    return;
+                }
+                return;
+            }
             if (eventArgs.KeyCode is Keys.D1 or Keys.D2 or Keys.D3)
             {
                 SetGizmoMode(eventArgs.KeyCode switch
@@ -393,14 +441,19 @@ public sealed class ViewerForm : Form
             effectMetadataStatus.Text = "Phyre effects: loading...";
             var effectCount = await LoadEffectMetadataAsync();
             if (IsDisposed) return;
+            var monsterCount = await LoadScriptMonstersAsync();
+            if (IsDisposed) return;
             var modelCount = session.AssetModels.Values.Count(value => value.Model is not null);
             if (effectCount >= 0)
             {
-                effectMetadataStatus.Text = $"Phyre effects: {effectCount}/{modelCount} models loaded";
+                effectMetadataStatus.Text = $"Phyre effects: {effectCount}/{modelCount}; monsters: {monsterCount}";
                 effectMetadataStatus.ForeColor = effectCount == modelCount ? Color.DarkGreen : Color.DarkOrange;
             }
             if (smokeTest)
             {
+                OpenScriptEditor();
+                PerformLayout();
+                scriptEditor?.VerifyEmbeddedInteractionSmoke();
                 RenderFrame();
                 Close();
             }
@@ -420,14 +473,24 @@ public sealed class ViewerForm : Form
     protected override void OnResize(EventArgs eventArgs)
     {
         base.OnResize(eventArgs);
-        if (WindowState != FormWindowState.Minimized && viewportHost.ClientSize.Width > 0 && viewportHost.ClientSize.Height > 0)
-        {
+        ResizeViewport();
+    }
+
+    private void ResizeViewport()
+    {
+        if (WindowState != FormWindowState.Minimized
+            && viewportHost.ClientSize.Width > 0
+            && viewportHost.ClientSize.Height > 0)
             viewport?.Resize(viewportHost.ClientSize.Width, viewportHost.ClientSize.Height);
-        }
     }
 
     protected override void OnFormClosing(FormClosingEventArgs eventArgs)
     {
+        if (scriptEditor is not null && !scriptEditor.ConfirmClose())
+        {
+            eventArgs.Cancel = true;
+            return;
+        }
         if (!smokeTest && document.IsDirty)
         {
             var result = MessageBox.Show(
@@ -529,6 +592,70 @@ public sealed class ViewerForm : Form
             effectMetadataStatus.Text = $"Phyre effects: failed — {exception.Message}";
             effectMetadataStatus.ForeColor = Color.DarkRed;
             return -1;
+        }
+    }
+
+    private async Task<int> LoadScriptMonstersAsync()
+    {
+        if (session.Script.GameDataPath is null || graphics is null) return 0;
+        try
+        {
+            var script = await Task.Run(
+                () => ScriptDecompiler.Decompile(session.Script.Header.SourcePath),
+                effectMetadataCancellation.Token);
+            var spawns = ScriptMonsterSpawnReader.Read(script);
+            foreach (var assetId in spawns.Select(value => value.AssetId)
+                         .Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                effectMetadataCancellation.Token.ThrowIfCancellationRequested();
+                if (!loadedModelsByAsset.TryGetValue(assetId, out var model))
+                {
+                    var load = await Task.Run(
+                        () => projectLoader.LoadAsset(assetId, session.Script.GameDataPath),
+                        effectMetadataCancellation.Token);
+                    if (load.Status != AssetModelLoadStatus.Loaded || load.Model is null)
+                    {
+                        Debug.WriteLine($"Could not load script monster asset '{assetId}': {load.Error}");
+                        continue;
+                    }
+                    model = load.Model;
+                    loadedModelsByAsset[assetId] = model;
+                }
+                if (uploadedModels.All(value => !value.AssetId.Equals(assetId, StringComparison.OrdinalIgnoreCase)))
+                {
+                    uploadedModels.Add(new D3D11ModelUploader(graphics.Device).Upload(model));
+                }
+            }
+
+            var loaded = new List<SceneModelInstance>();
+            for (var index = 0; index < spawns.Count; index++)
+            {
+                var spawn = spawns[index];
+                if (!loadedModelsByAsset.TryGetValue(spawn.AssetId, out var model)) continue;
+                var transform = Matrix4x4.CreateRotationY(spawn.HeadingDegrees * MathF.PI / 180f)
+                    * Matrix4x4.CreateTranslation(spawn.Position);
+                loaded.Add(new SceneModelInstance(
+                    int.MinValue + index,
+                    spawn.AssetId,
+                    $"Monster {spawn.EntityId}",
+                    model,
+                    transform,
+                    Vector4.One,
+                    Vector3.Zero));
+            }
+            scriptMonsterInstances = loaded;
+            RefreshRenderInstances(uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase));
+            return loaded.Count;
+        }
+        catch (OperationCanceledException)
+        {
+            return 0;
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException
+            or ArgumentException or InvalidOperationException)
+        {
+            Debug.WriteLine($"Could not load script monsters: {exception}");
+            return 0;
         }
     }
 
@@ -704,6 +831,15 @@ public sealed class ViewerForm : Form
 
     private ScriptEditorForm? scriptEditor;
 
+    private bool IsCameraMovementKey(Keys key) => key == Keys.ShiftKey
+        || key == Keys.S
+        || key == Keys.D
+        || key == Keys.E
+        || key == Keys.C
+        || key == Keys.Space
+        || key == (keyboardLayout == EditorKeyboardLayout.Azerty ? Keys.Z : Keys.W)
+        || key == (keyboardLayout == EditorKeyboardLayout.Azerty ? Keys.Q : Keys.A);
+
     private void OpenScriptEditor()
     {
         var editor = scriptEditor;
@@ -711,13 +847,19 @@ public sealed class ViewerForm : Form
         {
             editor = new ScriptEditorForm();
             scriptEditor = editor;
-            editor.Show(this);
-        }
-        else
-        {
-            editor.BringToFront();
+            editor.TopLevel = false;
+            editor.FormBorderStyle = FormBorderStyle.None;
+            editor.Dock = DockStyle.Fill;
+            editor.ViewportKeyDown += key =>
+            {
+                if (IsCameraMovementKey(key)) pressedKeys.Add(key);
+            };
+            editor.ViewportKeyUp += key => pressedKeys.Remove(key);
+            scriptsTab.Controls.Add(editor);
+            editor.Show();
         }
 
+        rightPanelTabs.SelectedTab = scriptsTab;
         var path = session.Script.Header.SourcePath;
         if (!string.IsNullOrEmpty(path) && System.IO.File.Exists(path))
         {
@@ -824,6 +966,18 @@ public sealed class ViewerForm : Form
                 MaterialDiffuse: value.MaterialDiffuse,
                 MaterialEmission: value.MaterialEmission))
             .ToList();
+        if (showIndicatorsCheckBox.Checked)
+        {
+            rendered.AddRange(scriptMonsterInstances
+                .Where(value => resourcesByAsset.ContainsKey(value.AssetId))
+                .Select(value => new D3D11SceneInstance(
+                    value.Id,
+                    resourcesByAsset[value.AssetId],
+                    value.Transform,
+                    false,
+                    MaterialDiffuse: value.MaterialDiffuse,
+                    MaterialEmission: value.MaterialEmission)));
+        }
         if (placement is { Position: { } position, Model: not null, AssetId: not null } preview
             && resourcesByAsset.TryGetValue(preview.AssetId, out var previewResources))
         {
@@ -836,11 +990,16 @@ public sealed class ViewerForm : Form
     private void RefreshOverlay()
     {
         if (viewport is null) return;
-        var overlayLines = new SceneOverlayBuilder().Build(
-            currentMap,
-            new SceneOverlayOptions(PointMarkerSize: overlayMarkerSize, Selection: selection)).ToList();
+        var overlay = showIndicatorsCheckBox.Checked
+            ? new SceneOverlayBuilder().BuildGeometry(
+                currentMap,
+                new SceneOverlayOptions(PointMarkerSize: overlayMarkerSize, Selection: selection))
+            : new SceneOverlayGeometry(Array.Empty<SceneOverlayLine>(), Array.Empty<SceneOverlayTriangle>());
+        var overlayLines = overlay.Lines.ToList();
         var selectedElement = selection is null ? null : document.Find(selection);
-        if (selectedElement is not null && SupportsMode(selectedElement, gizmoMode))
+        var showSelectedGizmo = selection is { Kind: SceneElementKind.Prop }
+            || showIndicatorsCheckBox.Checked;
+        if (showSelectedGizmo && selectedElement is not null && SupportsMode(selectedElement, gizmoMode))
         {
             var gizmoTransform = selectedElement.Transform;
             if (selection is { Kind: SceneElementKind.Camera }
@@ -859,7 +1018,8 @@ public sealed class ViewerForm : Form
                 overlayLines.AddRange(translationGizmo.Build(gizmoTransform.Position, length, gizmoDrag?.Axis));
             }
         }
-        if (selection is { Kind: SceneElementKind.Camera } cameraSelection
+        if (showIndicatorsCheckBox.Checked
+            && selection is { Kind: SceneElementKind.Camera } cameraSelection
             && document.FindCamera(cameraSelection) is { } camera)
         {
             overlayLines.AddRange(cameraGizmo.Build(camera, overlayMarkerSize * 1.5f, cameraHandle));
@@ -874,6 +1034,10 @@ public sealed class ViewerForm : Form
         }
         viewport.SetDebugLines(overlayLines
             .Select(line => new D3D11DebugLine(line.Start, line.End, line.Color, line.Thickness))
+            .ToArray());
+        viewport.SetDebugTriangles(overlay.Triangles
+            .Select(triangle => new D3D11DebugTriangle(
+                triangle.A, triangle.B, triangle.C, triangle.Color))
             .ToArray());
     }
 

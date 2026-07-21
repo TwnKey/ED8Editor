@@ -181,6 +181,40 @@ internal static class NativeMethods
     [DllImport(Dll, CallingConvention = Cc)]
     public static extern int cs1i_instr_offset(IntPtr doc, int f, int k);
 
+    // ---- edition du flot d'instructions ----
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_instr_set_i(IntPtr doc, int f, int k, int a, int value);
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_instr_set_f(IntPtr doc, int f, int k, int a, double value);
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_instr_set_s(
+        IntPtr doc, int f, int k, int a, [MarshalAs(UnmanagedType.LPStr)] string value);
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_instr_insert(
+        IntPtr doc, int f, int position, [MarshalAs(UnmanagedType.LPStr)] string name);
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_instr_remove(IntPtr doc, int f, int k);
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_instr_replace(
+        IntPtr doc, int f, int k, [MarshalAs(UnmanagedType.LPStr)] string name);
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_instr_move(IntPtr doc, int f, int from, int to);
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_instr_set_jump(IntPtr doc, int f, int k, int a, int targetFunction, int targetInstruction);
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_instr_jump_target(IntPtr doc, int f, int k, int a, out int targetFunction);
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern IntPtr cs1i_serialize(IntPtr doc, out int length);
+
     // ---- expressions ----
     [DllImport(Dll, CallingConvention = Cc)]
     public static extern int cs1i_arg_is_expr(IntPtr doc, int f, int k, int a);
@@ -206,4 +240,7 @@ internal static class NativeMethods
     // ---- registre : introspection (facultatif) ----
     [DllImport(Dll, CallingConvention = Cc)]
     public static extern int cs1i_reg_count();
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern IntPtr cs1i_reg_name(int index);
 }

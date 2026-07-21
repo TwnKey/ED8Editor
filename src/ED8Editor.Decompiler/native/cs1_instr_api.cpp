@@ -402,6 +402,22 @@ static bool typeForName(const std::string& nm, std::string& kind, int& id){
   return false;
 }
 
+static bool typeForParserId(int parserId, std::string& kind, int& id){
+  struct M{int parserId; const char* kind; int publicId;};
+  static const M types[]={
+    {1,"CreateMonsters",256},{2,"EffectsInstr",257},{3,"ActionTable",258},
+    {4,"AlgoTable",259},{5,"WeaponAttTable",260},{6,"BreakTable",261},
+    {7,"SummonTable",262},{8,"ReactionTable",263},{9,"PartTable",264},
+    {10,"AnimeClipTable",265},{11,"FieldMonsterData",266},{12,"FieldFollowData",267},
+    {13,"FC_autoX",268},{14,"BookData99",269},{15,"BookDataX",270},
+    {16,"AddCollision",271},
+  };
+  for(const auto& type:types) if(type.parserId==parserId){
+    kind=type.kind; id=type.publicId; return true;
+  }
+  return false;
+}
+
 struct TR{
   const uint8_t* b; long p=0, size; bool ok=true;
   TR(const uint8_t* b_, long len):b(b_),size(len){}
@@ -489,8 +505,7 @@ static bool p_CreateMonsters(TR&r,std::vector<TField>&F,long end){ long initial=
 
 // Decode une table : structure Ghidra si consommation exacte jusqu'au terminateur
 // op1(0x01)+padding ; sinon blob opaque + stale.
-static void decode(const std::string& name,const uint8_t* b,long len,Table& out){
-  std::string kind; int id; if(!typeForName(name,kind,id))return;
+static void decodeAs(const std::string& kind,int id,const uint8_t* b,long len,Table& out){
   out.kind=kind; out.id=id;
   TR r(b,len); std::vector<TField> F; bool ok=false;
   if(kind=="FieldMonsterData")ok=p_FieldMonsterData(r,F);
@@ -516,6 +531,10 @@ static void decode(const std::string& name,const uint8_t* b,long len,Table& out)
   long q=len; while(q>0&&b[q-1]==0)q--; if(q>0&&b[q-1]==0x01)q--;
   TField blob; blob.type="bytes"; blob.off=0; blob.raw.assign(b,b+q);
   out.opaque=true; out.stale=true; out.dataEnd=q; out.fields.clear(); out.fields.push_back(blob);
+}
+static void decode(const std::string& name,const uint8_t* b,long len,Table& out){
+  std::string kind; int id; if(!typeForName(name,kind,id))return;
+  decodeAs(kind,id,b,len,out);
 }
 } // namespace cs1tbl
 
@@ -572,6 +591,9 @@ CS1_API IDoc* cs1i_open(const uint8_t* data,int32_t len,const char* filename){
       const uint8_t* fb=cs1_doc_func_bytes(d->base,i); int fl=cs1_doc_func_size(d->base,i);
       cs1tbl::decode(nm,fb,fl,d->tables[i]); d->isTable[i]=1; continue; }
     int ty=cs1_doc_func_type(d->base,i);
+    if(ty>0 && cs1tbl::typeForParserId(ty,tk,tid)){
+      const uint8_t* fb=cs1_doc_func_bytes(d->base,i); int fl=cs1_doc_func_size(d->base,i);
+      cs1tbl::decodeAs(tk,tid,fb,fl,d->tables[i]); d->isTable[i]=1; continue; }
     if(ty==0){ const uint8_t* fb=cs1_doc_func_bytes(d->base,i); int fl=cs1_doc_func_size(d->base,i);
       std::vector<Instr> v; if(decodeFunc(fb,fl,d->ui,ost,v)){ d->dec[i]=std::move(v); d->isCode[i]=1; } } }
   // header original conserve verbatim (byte-perfect) : tout ce qui precede la 1re fonction.
@@ -767,10 +789,19 @@ static void fixRefs(std::vector<cs1i::Arg>& args,std::map<long,long>& id2new,IDo
 CS1_API int32_t cs1i_instr_insert(IDoc* d,int32_t f,int32_t pos,const char* name){
   if(!d||f<0||f>=(int)d->dec.size()||!d->isCode[f]||!name)return -1;
   int ri=cs1i_reg_find(name); if(ri<0)return -1; cs1i::RegInstr& r=G.regs[ri];
-  cs1i::Instr in; in.op=r.op; in.reg=ri; in.path=r.path; in.id=d->nextId++;
+  cs1i::Instr in; in.op=r.op; in.reg=ri; in.path=r.path; in.id=d->nextId++; in.origOff=-1;
   cs1i::Ctx c; size_t pi=0; buildDefault(r.read,r.path,pi,c,in.args);
   long nid=in.id; auto& v=d->dec[f]; if(pos<0)pos=0; if(pos>(int)v.size())pos=(int)v.size();
   v.insert(v.begin()+pos,std::move(in)); return (int32_t)nid;
+}
+CS1_API int32_t cs1i_instr_replace(IDoc* d,int32_t f,int32_t k,const char* name){
+  if(!d||f<0||f>=(int)d->dec.size()||!d->isCode[f]||!name)return 0;
+  auto&v=d->dec[f]; if(k<0||k>=(int)v.size())return 0;
+  int ri=cs1i_reg_find(name); if(ri<0)return 0; cs1i::RegInstr&r=G.regs[ri];
+  cs1i::Instr in; in.op=r.op; in.reg=ri; in.path=r.path;
+  in.id=v[k].id; in.origOff=v[k].origOff;
+  cs1i::Ctx c; size_t pi=0; buildDefault(r.read,r.path,pi,c,in.args);
+  v[k]=std::move(in); return 1;
 }
 CS1_API int32_t cs1i_instr_move(IDoc* d,int32_t f,int32_t from,int32_t to){
   if(!d||f<0||f>=(int)d->dec.size())return 0; auto&v=d->dec[f];
@@ -816,6 +847,35 @@ CS1_API int32_t cs1i_instr_set_jump(IDoc* d,int32_t f,int32_t k,int32_t a,int32_
   if(ti<0){ if(tf<0||tf>=(int)d->funcEndId.size()||d->funcEndId[tf]<0)return 0; tid=d->funcEndId[tf]; }
   else { if(tf<0||tf>=(int)d->dec.size()||ti>=(int)d->dec[tf].size())return 0; tid=d->dec[tf][ti].id; }
   in->args[r].isRef=true; in->args[r].targetId=tid; return 1;
+}
+
+// Renvoie la cible symbolique courante d'un ptr32. Le resultat vaut l'index de
+// l'instruction, -1 pour la fin d'une fonction, -2 pour une adresse brute non resolue
+// et -3 si l'operande n'est pas un saut. outFunction recoit la fonction cible.
+CS1_API int32_t cs1i_instr_jump_target(IDoc* d,int32_t f,int32_t k,int32_t a,int32_t* outFunction){
+  if(outFunction)*outFunction=-1; cs1i::Instr* in=pick(d,f,k); if(!in)return -3;
+  int r=visibleToReal(in->args,a); if(r<0||in->args[r].type!="ptr32")return -3;
+  cs1i::Arg&arg=in->args[r];
+  if(arg.isRef){
+    for(int tf=0;tf<(int)d->dec.size();tf++){
+      for(int ti=0;ti<(int)d->dec[tf].size();ti++) if(d->dec[tf][ti].id==arg.targetId){
+        if(outFunction)*outFunction=tf; return ti;
+      }
+      if(tf<(int)d->funcEndId.size()&&d->funcEndId[tf]==arg.targetId){
+        if(outFunction)*outFunction=tf; return -1;
+      }
+    }
+    return -2;
+  }
+  for(int tf=0;tf<(int)d->dec.size();tf++){
+    for(int ti=0;ti<(int)d->dec[tf].size();ti++) if(d->dec[tf][ti].origOff==arg.ival){
+      if(outFunction)*outFunction=tf; return ti;
+    }
+    if(tf<(int)d->origEnd.size()&&d->origEnd[tf]==arg.ival){
+      if(outFunction)*outFunction=tf; return -1;
+    }
+  }
+  return -2;
 }
 
 // ---- Iterations de boucle (instructions a corps repete, ex op6 ; kind==7) ----

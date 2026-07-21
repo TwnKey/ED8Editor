@@ -88,10 +88,11 @@ public sealed record ExprElement(
     string? NestedInstruction);
 
 /// <summary>
-/// Un saut : l'argument (ptr32) qui le porte, et l'index de l'instruction cible
-/// dans la meme fonction (-1 si la cible est la fin de fonction ou hors flot).
+/// Un saut : l'argument (ptr32) qui le porte, la fonction cible et l'index de
+/// l'instruction cible (-1 = fin de fonction, -2 = adresse brute non resolue).
 /// </summary>
 public sealed record JumpTarget(
     int ArgumentIndex,
     int TargetInstructionIndex,
-    int TargetOffset);
+    int TargetOffset,
+    int TargetFunctionIndex = -1);

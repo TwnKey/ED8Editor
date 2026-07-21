@@ -38,7 +38,7 @@ public sealed class ScriptDecompiler
             var path = instructionsJsonPath ?? DefaultInstructionsPath;
             if (!File.Exists(path))
             {
-                throw new FileNotFoundException("Document d'instructions introuvable.", path);
+                throw new FileNotFoundException("Instruction registry not found.", path);
             }
 
             var json = File.ReadAllBytes(path);
@@ -46,7 +46,7 @@ public sealed class ScriptDecompiler
             Array.Copy(json, terminated, json.Length); // termine par 0 pour const char*
             if (NativeMethods.cs1i_load_registry(terminated) == 0)
             {
-                throw new InvalidOperationException("Echec du chargement du registre d'instructions.");
+                throw new InvalidOperationException("The instruction registry could not be loaded.");
             }
 
             // schema editable des records de tables (optionnel, a cote du document)
@@ -72,7 +72,7 @@ public sealed class ScriptDecompiler
         var doc = NativeMethods.cs1i_open(data, data.Length, Path.GetFileName(datPath));
         if (doc == IntPtr.Zero)
         {
-            throw new InvalidOperationException($"Le moteur natif n'a pas pu ouvrir '{datPath}'.");
+            throw new InvalidOperationException($"The native engine could not open '{datPath}'.");
         }
 
         try
@@ -85,7 +85,7 @@ public sealed class ScriptDecompiler
         }
     }
 
-    private static DecompiledScript Build(IntPtr doc)
+    internal static DecompiledScript Build(IntPtr doc)
     {
         var scene = Str(NativeMethods.cs1i_scene_name(doc)) ?? string.Empty;
         var functionCount = NativeMethods.cs1i_func_count(doc);
@@ -166,8 +166,13 @@ public sealed class ScriptDecompiler
                 if (type == "ptr32")
                 {
                     var target = arg.IntValue;
-                    var targetIndex = offsetToIndex.TryGetValue(target, out var idx) ? idx : -1;
-                    jumps.Add(new JumpTarget(a, targetIndex, target));
+                    var targetIndex = NativeMethods.cs1i_instr_jump_target(doc, f, k, a, out var targetFunction);
+                    if (targetIndex == -3)
+                    {
+                        targetIndex = offsetToIndex.TryGetValue(target, out var idx) ? idx : -2;
+                        targetFunction = targetIndex >= 0 ? f : -1;
+                    }
+                    jumps.Add(new JumpTarget(a, targetIndex, target, targetFunction));
                 }
             }
 

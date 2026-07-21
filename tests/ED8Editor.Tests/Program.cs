@@ -1285,10 +1285,13 @@ static void BuildsTypedOpsOverlayGeometry()
         },
         Array.Empty<MapSoundMarker>(),
         Array.Empty<MapLightMarker>());
-    var lines = new SceneOverlayBuilder().Build(map);
-    Equal(22, lines.Count);
-    Equal(true, lines.Any(line => line.Start == new Vector3(-1, -2, -3)));
-    Equal(true, lines.Any(line => line.Start == new Vector3(0, 1, -2) && line.End == Vector3.Zero));
+    var geometry = new SceneOverlayBuilder().BuildGeometry(map);
+    Equal(22, geometry.Lines.Count);
+    Equal(204, geometry.Triangles.Count);
+    Equal(true, geometry.Lines.Any(line => line.Start == new Vector3(-1, -2, -3)));
+    Equal(true, geometry.Lines.Any(line => line.Thickness > 2f));
+    Equal(true, geometry.Lines.Any(line => line.Start == new Vector3(0, 1, -2) && line.End == Vector3.Zero));
+    Equal(true, geometry.Triangles.All(triangle => triangle.Color.W > 0f && triangle.Color.W < 1f));
 }
 
 static void PicksExactOpsVolumeGeometry()

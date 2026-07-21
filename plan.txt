@@ -1,12 +1,16 @@
 Aucune heuristique ou détection farfelue.
 
 Codex :
+
+- améliorer la tête des téléporteurs et autres objets qui ne sont pas des props, en coloriant de manière semi transparente leur intérieur, comme une dalle colorée (couleur qui doit dépendre du type de trigger) colorer les spheres aussi quand y en a, épaissir le trait
+- rendre possible de masquer tous ces indicateurs/trigger/combats avec une case à cocher (et réafficher)
+- gérer l'affichage des monstres sur la map via les tables de script associées (les createmonsters)
+- gérer le parsing des tables
+
 - "Le shader Phyre complet n’est pas encore activé : il manque le binding vérifié de tous les paramètres moteur ($Globals, brouillard, caméra, éclairage…)."
-- améliorer la tête des téléporteurs et autres objets qui ne sont pas des props, en coloriant de manière semi transparente leur intérieur et en les faisant plus fins, comme une dalle colorée (couleur qui doit dépendre du type de trigger)
 - Implémenter les lumières et ombres (comme dans le jeu ?)
 - Implémenter la météo ? (sera nécessaire si settée par le script)
 - Gérer l'importation des tables en ram sous forme de map probablement ?
-- Prévoir déjà l'interface avec Claude : il va nous transmettre un fichier décompilé avec son header (meta data), sa liste de fonctions (scènes) avec leur nom, et un flot d'instruction avec différentes branches conditionnelles/jump, qu'il faudra visuellement représenter par bloc.
 
 Claude :
 - Finir le 100% code : gérer les chunks des fonctions mal formées, valider system.dat
