@@ -92,6 +92,22 @@ public sealed class ScriptEditorDocument : IDisposable
         IsDirty = true;
     }
 
+    public void SetTableInteger(int function, int field, int value) =>
+        Mutate(NativeMethods.cs1i_table_set_field_i(Handle, function, field, value), "update the table integer");
+
+    public void SetTableFloat(int function, int field, double value) =>
+        Mutate(NativeMethods.cs1i_table_set_field_f(Handle, function, field, value), "update the table number");
+
+    public void SetTableText(int function, int field, string value) =>
+        Mutate(NativeMethods.cs1i_table_set_field_text(Handle, function, field, value), "update the table text");
+
+    public void SetTableBytes(int function, int field, byte[] value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        Mutate(NativeMethods.cs1i_table_set_field_bytes(Handle, function, field, value, value.Length),
+            "update the table bytes");
+    }
+
     public void Save(string path)
     {
         if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("A path is required.", nameof(path));

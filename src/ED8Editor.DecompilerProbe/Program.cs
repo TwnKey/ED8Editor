@@ -148,6 +148,35 @@ if (args is ["--dump-monsters", var monsterPath])
     return 0;
 }
 
+if (args is ["--table-edit-smoke", var tableEditPath])
+{
+    var temporaryPath = Path.Combine(Path.GetTempPath(), $"ed8editor-table-{Guid.NewGuid():N}.dat");
+    try
+    {
+        using var tableDocument = ScriptEditorDocument.Open(tableEditPath);
+        var tableFunction = tableDocument.Snapshot.Functions.First(value =>
+            value.Table is { IsStale: false } table
+            && table.Fields.Any(field => field.Type is "u8" or "s16" or "s32"));
+        var table = tableFunction.Table!;
+        var field = table.Fields.First(value => value.Type is "u8" or "s16" or "s32");
+        tableDocument.SetTableInteger(tableFunction.Index, field.Index, checked((int)field.IntValue));
+        tableDocument.Save(temporaryPath);
+        using var reopened = ScriptEditorDocument.Open(temporaryPath);
+        var reopenedTable = reopened.Snapshot.Functions[tableFunction.Index].Table
+            ?? throw new InvalidOperationException("The edited table was not parsed after reopening.");
+        if (reopenedTable.Kind != table.Kind || reopenedTable.Fields.Count != table.Fields.Count)
+            throw new InvalidOperationException("The edited table structure changed after reopening.");
+        if (!File.ReadAllBytes(tableEditPath).SequenceEqual(File.ReadAllBytes(temporaryPath)))
+            throw new InvalidOperationException("Writing an unchanged table value was not byte-perfect.");
+        Console.WriteLine($"PASS table edit/serialize/reopen byte-perfect: {Path.GetFileName(tableEditPath)}");
+        return 0;
+    }
+    finally
+    {
+        if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+    }
+}
+
 if (args.Length < 1)
 {
     Console.Error.WriteLine("Usage: ED8Editor.DecompilerProbe <script.dat> [cs1_instructions.json]");
@@ -156,6 +185,7 @@ if (args.Length < 1)
     Console.Error.WriteLine("       ED8Editor.DecompilerProbe --find-table <directory> <kind>");
     Console.Error.WriteLine("       ED8Editor.DecompilerProbe --dump-code <script.dat>");
     Console.Error.WriteLine("       ED8Editor.DecompilerProbe --dump-monsters <script.dat>");
+    Console.Error.WriteLine("       ED8Editor.DecompilerProbe --table-edit-smoke <script.dat>");
     return 2;
 }
 

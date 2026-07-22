@@ -196,7 +196,9 @@ public sealed class OpsReader : IMapSceneReader
             ParseFloat(RequiredAttribute(element, "seRange", location), "seRange", location),
             ParseFloat(RequiredAttribute(element, "seRotation", location), "seRotation", location),
             ParseVector3(RequiredAttribute(element, "seScale", location), "seScale", location),
-            ReadAttributes(element));
+            ReadAttributes(element),
+            ParseOptionalInteger(element.Attribute("seGroupId")?.Value, "seGroupId", location) ?? 0,
+            OptionalFloat(element, "seVolume", 1f, location));
     }
 
     private static MapLightMarker ReadLight(XElement element, int index)
@@ -253,6 +255,12 @@ public sealed class OpsReader : IMapSceneReader
         return value is null ? defaultValue : ParseVector4(value, name, location);
     }
 
+    private static float OptionalFloat(XElement element, string name, float defaultValue, string location)
+    {
+        var value = element.Attribute(name)?.Value;
+        return value is null ? defaultValue : ParseFloat(value, name, location);
+    }
+
     private static Vector3 ParseVector3(string value, string name, string location)
     {
         var components = ParseComponents(value, 3, name, location);
@@ -293,6 +301,16 @@ public sealed class OpsReader : IMapSceneReader
         }
 
         return components;
+    }
+
+    private static int? ParseOptionalInteger(string? value, string name, string location)
+    {
+        if (value is null) return null;
+        if (!int.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var result))
+        {
+            throw new InvalidOpsException($"Attribute '{name}'{location} contains invalid integer '{value}'.");
+        }
+        return result;
     }
 
     private static uint? ParseOptionalUInt32(string? value, string name, string location)

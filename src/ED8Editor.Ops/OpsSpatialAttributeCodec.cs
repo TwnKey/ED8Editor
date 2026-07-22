@@ -76,6 +76,12 @@ public sealed class OpsSpatialAttributeCodec
             Range = ParseFloat(Required(updated, "seRange"), "seRange"),
             SourceRotation = ParseFloat(Required(updated, "seRotation"), "seRotation"),
             SourceScale = ParseVector3(Required(updated, "seScale"), "seScale"),
+            GroupId = Optional(updated, "seGroupId") is { } groupId
+                ? ParseInteger(groupId, "seGroupId")
+                : 0,
+            Volume = Optional(updated, "seVolume") is { } volume
+                ? ParseFloat(volume, "seVolume")
+                : 1f,
             SourceAttributes = updated,
         };
     }
@@ -147,6 +153,15 @@ public sealed class OpsSpatialAttributeCodec
             || !float.IsFinite(result))
         {
             throw new ArgumentException($"OPS attribute '{name}' contains invalid number '{value}'.", name);
+        }
+        return result;
+    }
+
+    private static int ParseInteger(string value, string name)
+    {
+        if (!int.TryParse(value.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var result))
+        {
+            throw new ArgumentException($"OPS attribute '{name}' contains invalid integer '{value}'.", name);
         }
         return result;
     }

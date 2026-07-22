@@ -406,6 +406,8 @@ public sealed class D3D11Viewport : IDisposable
             || bloomPipeline.GlowSourceRenderTarget is null) return;
 
         var context = graphics.Context;
+        context.OMSetBlendState(null, new Color4(0f, 0f, 0f, 0f), uint.MaxValue);
+        context.OMSetDepthStencilState(null);
         context.OMSetRenderTargets(bloomPipeline.SceneRenderTarget, depthView);
         context.RSSetViewport(new Viewport(0, 0, width, height));
         context.RSSetState(rasterizer);
@@ -426,6 +428,9 @@ public sealed class D3D11Viewport : IDisposable
             depthView);
         DrawScenePhase(instances, camera, CpuMaterialRenderPhase.EffectTransparent);
 
+        context.ClearRenderTargetView(
+            renderTarget,
+            new Color4(clearColor.X, clearColor.Y, clearColor.Z, 1f));
         bloomPipeline.Composite(renderTarget);
         context.OMSetRenderTargets(renderTarget, depthView);
         context.RSSetViewport(new Viewport(0, 0, width, height));

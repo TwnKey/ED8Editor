@@ -82,6 +82,7 @@ internal sealed class D3D11BloomPipeline : IDisposable
     private readonly ID3D11PixelShader verticalBlurCompositePixelShader;
     private readonly ID3D11SamplerState linearClampSampler;
     private readonly ID3D11DepthStencilState depthDisabledState;
+    private readonly ID3D11RasterizerState fullscreenRasterizerState;
     private readonly ID3D11Buffer postProcessBuffer;
     private ID3D11Texture2D? sceneTexture;
     private ID3D11RenderTargetView? sceneRenderTarget;
@@ -120,6 +121,12 @@ internal sealed class D3D11BloomPipeline : IDisposable
             DepthWriteMask = DepthWriteMask.Zero,
             DepthFunc = ComparisonFunction.Always,
             StencilEnable = false,
+        });
+        fullscreenRasterizerState = graphics.Device.CreateRasterizerState(new RasterizerDescription
+        {
+            FillMode = FillMode.Solid,
+            CullMode = CullMode.None,
+            DepthClipEnable = true,
         });
         postProcessBuffer = graphics.Device.CreateBuffer(new BufferDescription(
             Marshal.SizeOf<PostProcessConstants>(),
@@ -161,6 +168,7 @@ internal sealed class D3D11BloomPipeline : IDisposable
         var context = graphics.Context;
         context.OMSetDepthStencilState(depthDisabledState);
         context.OMSetBlendState(null, new Color4(0f, 0f, 0f, 0f), uint.MaxValue);
+        context.RSSetState(fullscreenRasterizerState);
         context.IASetInputLayout(null);
         context.IASetPrimitiveTopology(PrimitiveTopology.TriangleList);
         context.VSSetShader(fullscreenVertexShader);
@@ -198,6 +206,7 @@ internal sealed class D3D11BloomPipeline : IDisposable
     {
         ReleaseTargets();
         postProcessBuffer.Dispose();
+        fullscreenRasterizerState.Dispose();
         depthDisabledState.Dispose();
         linearClampSampler.Dispose();
         verticalBlurCompositePixelShader.Dispose();

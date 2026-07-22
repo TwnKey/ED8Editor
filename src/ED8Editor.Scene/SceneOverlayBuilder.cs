@@ -90,8 +90,35 @@ public sealed class SceneOverlayBuilder
             {
                 var color = IsSelected(SceneElementKind.Sound, sound.SourceIndex) ? Vector4.One : SoundColor;
                 AddPoint(lines, sound.Position, options.PointMarkerSize, color);
-                AddRange(lines, sound.Position, sound.Range, color);
-                AddSphere(triangles, sound.Position, sound.Range, WithAlpha(color, 0.07f));
+                switch (sound.Kind)
+                {
+                    case MapSoundKind.Point:
+                        AddRange(lines, sound.Position, sound.Range, color);
+                        AddSphere(triangles, sound.Position, sound.Range, WithAlpha(color, 0.07f));
+                        break;
+                    case MapSoundKind.Box:
+                        var transform = Matrix4x4.CreateScale(sound.SourceScale)
+                            * Matrix4x4.CreateRotationY(sound.SourceRotation * MathF.PI / 180f)
+                            * Matrix4x4.CreateTranslation(sound.Position);
+                        AddBox(lines, triangles, transform, color, 0.09f);
+                        break;
+                }
+            }
+            foreach (var group in map.Sounds
+                         .Where(value => value.Kind == MapSoundKind.Line)
+                         .GroupBy(value => value.GroupId))
+            {
+                var points = group.OrderBy(value => value.SourceIndex).ToArray();
+                for (var index = 1; index < points.Length; index++)
+                {
+                    var selected = IsSelected(SceneElementKind.Sound, points[index - 1].SourceIndex)
+                        || IsSelected(SceneElementKind.Sound, points[index].SourceIndex);
+                    lines.Add(new SceneOverlayLine(
+                        points[index - 1].Position,
+                        points[index].Position,
+                        selected ? Vector4.One : SoundColor,
+                        3f));
+                }
             }
         }
         if (options.ShowLights)
@@ -126,6 +153,16 @@ public sealed class SceneOverlayBuilder
         var matrix = Matrix4x4.CreateScale(transform.Scale)
             * Matrix4x4.CreateFromQuaternion(transform.Rotation)
             * Matrix4x4.CreateTranslation(transform.Position);
+        AddBox(lines, triangles, matrix, color, 0.18f);
+    }
+
+    private static void AddBox(
+        List<SceneOverlayLine> lines,
+        List<SceneOverlayTriangle> triangles,
+        Matrix4x4 matrix,
+        Vector4 color,
+        float fillAlpha)
+    {
         var corners = new[]
         {
             new Vector3(-0.5f, -0.5f, -0.5f), new Vector3(0.5f, -0.5f, -0.5f),
@@ -147,7 +184,7 @@ public sealed class SceneOverlayBuilder
             (0, 1, 5), (0, 5, 4), (3, 7, 6), (3, 6, 2),
             (0, 4, 7), (0, 7, 3), (1, 2, 6), (1, 6, 5),
         };
-        var fill = WithAlpha(color, 0.18f);
+        var fill = WithAlpha(color, fillAlpha);
         foreach (var (a, b, c) in faces)
             triangles.Add(new SceneOverlayTriangle(corners[a], corners[b], corners[c], fill));
     }

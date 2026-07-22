@@ -166,7 +166,7 @@ public sealed class ScriptEditorForm : Form
         var scenesGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Scenes (functions)" };
         scenesGroup.Controls.Add(scenesList);
         leftSplit.Panel1.Controls.Add(scenesGroup);
-        var tablesGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Tables (by category)" };
+        var tablesGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Tables (double-click to edit)" };
         tablesGroup.Controls.Add(tablesTree);
         leftSplit.Panel2.Controls.Add(tablesGroup);
         navigationSplit.Panel1.Controls.Add(leftSplit);
@@ -195,8 +195,10 @@ public sealed class ScriptEditorForm : Form
         scenesList.SelectedIndexChanged += (_, _) => ShowSelectedScene();
         tablesTree.AfterSelect += (_, eventArgs) =>
         {
-            if (eventArgs.Node is not null) ShowTable(eventArgs.Node);
+            if (eventArgs.Node?.Tag is DecompiledFunction { Table: { } table } function)
+                statusLabel.Text = $"{function.Name}: {table.Kind} — double-click to edit";
         };
+        tablesTree.NodeMouseDoubleClick += (_, eventArgs) => ShowTable(eventArgs.Node);
     }
 
     private void OpenDialog()
@@ -971,6 +973,14 @@ public sealed class ScriptEditorForm : Form
     }
 
     private void ShowTable(TreeNode node)
+    {
+        if (document is null || node.Tag is not DecompiledFunction { Table: not null } function) return;
+        using var editor = new TableEditorForm(document, function.Index);
+        editor.TableChanged += (_, _) => RefreshDocument(selectedFunctionIndex, selectedInstructionIndex);
+        editor.ShowDialog(this);
+    }
+
+    private void ShowTableInGraph(TreeNode node)
     {
         if (node.Tag is not DecompiledFunction { Table: { } table } function) return;
         selectedFunctionIndex = -1;

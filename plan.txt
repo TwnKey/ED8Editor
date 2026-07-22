@@ -2,10 +2,8 @@ Aucune heuristique ou détection farfelue.
 
 Codex :
 
-- améliorer la tête des téléporteurs et autres objets qui ne sont pas des props, en coloriant de manière semi transparente leur intérieur, comme une dalle colorée (couleur qui doit dépendre du type de trigger) colorer les spheres aussi quand y en a, épaissir le trait
-- rendre possible de masquer tous ces indicateurs/trigger/combats avec une case à cocher (et réafficher)
 - gérer l'affichage des monstres sur la map via les tables de script associées (les createmonsters)
-- gérer le parsing des tables
+- gérer le parsing des tbl (nouvel onglet à droite de celui de script) et les sémantiques pour préciser dans l'éditeur comment éditer les champs qui sont liés à une tbl
 
 - "Le shader Phyre complet n’est pas encore activé : il manque le binding vérifié de tous les paramètres moteur ($Globals, brouillard, caméra, éclairage…)."
 - Implémenter les lumières et ombres (comme dans le jeu ?)

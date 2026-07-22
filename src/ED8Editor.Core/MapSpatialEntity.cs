@@ -54,7 +54,9 @@ public sealed record MapSoundMarker(
     float Range,
     float SourceRotation,
     Vector3 SourceScale,
-    IReadOnlyDictionary<string, string> SourceAttributes);
+    IReadOnlyDictionary<string, string> SourceAttributes,
+    int GroupId = 0,
+    float Volume = 1f);
 
 public sealed record MapLightMarker(
     int SourceIndex,

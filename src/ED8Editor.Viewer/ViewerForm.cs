@@ -1556,7 +1556,9 @@ public sealed class ViewerForm : Form
             var sound = currentMap.Sounds.FirstOrDefault(value => value.SourceIndex == selected.SourceIndex);
             if (sound is null) return false;
             center = sound.Position;
-            radius = Math.Max(sound.Range, overlayMarkerSize);
+            radius = sound.Kind == MapSoundKind.Box
+                ? Math.Max(sound.SourceScale.Length() * 0.5f, overlayMarkerSize)
+                : Math.Max(sound.Range, overlayMarkerSize);
             return true;
         }
         if (selected.Kind == SceneElementKind.Light)

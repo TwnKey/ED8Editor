@@ -423,6 +423,7 @@ var tests = new (string Name, Action Run)[]
     ("supports editor camera orbit and free flight", KeepsEditorCameraOrbitCentered),
     ("smooths accumulated editor camera dolly input", SmoothsEditorCameraDollyInput),
     ("builds typed OPS overlay geometry", BuildsTypedOpsOverlayGeometry),
+    ("renders declared sound volume shapes", RendersDeclaredSoundVolumeShapes),
     ("picks exact OPS volume geometry", PicksExactOpsVolumeGeometry),
     ("undoes and redoes scene document transforms", UndoesAndRedoesSceneDocumentTransforms),
     ("picks and parameterizes translation gizmo axes", PicksTranslationGizmoAxes),
@@ -558,7 +559,7 @@ static void ReadsOpsProps()
             <MapCamera no="12" eye="10, 11, 12" lookat="13, 14, 15" />
           </MapCameras>
           <MapSounds>
-            <SoundObject seName="wind" seType="POINT" seRange="12.5"
+            <SoundObject seName="wind" seGroupId="7" seType="POINT" seVolume="0.65" seRange="12.5"
               sePosition="16, 17, 18" seRotation="0" seScale="1, 1, 1" />
           </MapSounds>
           <Lights>
@@ -598,6 +599,8 @@ static void ReadsOpsProps()
         Near(13f, scene.Cameras[0].LookAt.X);
         Equal(1, scene.Sounds.Count);
         Equal(MapSoundKind.Point, scene.Sounds[0].Kind);
+        Equal(7, scene.Sounds[0].GroupId);
+        Near(0.65f, scene.Sounds[0].Volume);
         Near(16f, scene.Sounds[0].Position.X);
         Near(12.5f, scene.Sounds[0].Range);
         Equal(1, scene.Lights.Count);
@@ -1292,6 +1295,37 @@ static void BuildsTypedOpsOverlayGeometry()
     Equal(true, geometry.Lines.Any(line => line.Thickness > 2f));
     Equal(true, geometry.Lines.Any(line => line.Start == new Vector3(0, 1, -2) && line.End == Vector3.Zero));
     Equal(true, geometry.Triangles.All(triangle => triangle.Color.W > 0f && triangle.Color.W < 1f));
+}
+
+static void RendersDeclaredSoundVolumeShapes()
+{
+    var sound = new MapSoundMarker(
+        0,
+        "water",
+        MapSoundKind.Box,
+        "BOX",
+        new Vector3(2, 3, 4),
+        20f,
+        90f,
+        new Vector3(30, 1, 80),
+        new Dictionary<string, string>(),
+        3,
+        1f);
+    var map = new MapScene(
+        "test.ops",
+        Array.Empty<MapProp>(),
+        Array.Empty<byte>(),
+        Array.Empty<MapVolume>(),
+        Array.Empty<MapPoint>(),
+        Array.Empty<MapCameraMarker>(),
+        new[] { sound },
+        Array.Empty<MapLightMarker>());
+
+    var geometry = new SceneOverlayBuilder().BuildGeometry(map);
+    Equal(15, geometry.Lines.Count);
+    Equal(12, geometry.Triangles.Count);
+    Equal(false, geometry.Lines.Any(line => Vector3.Distance(line.Start, sound.Position) == sound.Range));
+    Equal(true, geometry.Triangles.All(triangle => MathF.Abs(triangle.Color.W - 0.09f) < 0.0001f));
 }
 
 static void PicksExactOpsVolumeGeometry()
