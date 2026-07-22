@@ -11,6 +11,7 @@ public sealed class EditorOrbitCamera
     public float Distance { get; private set; }
     public float Yaw { get; private set; }
     public float Pitch { get; private set; }
+    public float Roll { get; private set; }
 
     public Vector3 Forward
     {
@@ -32,7 +33,20 @@ public sealed class EditorOrbitCamera
     public Vector3 WorldUp => Vector3.UnitY;
 
     public Vector3 ScreenUp
-        => Vector3.Normalize(Vector3.Cross(Forward, GroundRight));
+    {
+        get
+        {
+            var baseUp = Vector3.Normalize(Vector3.Cross(Forward, GroundRight));
+            if (MathF.Abs(Roll) < 1e-6f) return baseUp;
+            return Vector3.Normalize(baseUp * MathF.Cos(Roll) + ScreenRight * MathF.Sin(Roll));
+        }
+    }
+
+    public void SetRoll(float roll)
+    {
+        if (!float.IsFinite(roll)) return;
+        Roll = roll;
+    }
 
     public void Initialize(Vector3 target, Vector3 position)
     {

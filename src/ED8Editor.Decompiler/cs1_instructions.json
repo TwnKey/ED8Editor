@@ -3241,7 +3241,7 @@
    "verified": true
   },
   {
-   "name": "OP45_2",
+   "name": "Camera_LookAtPosition",
    "op": 45,
    "opname": "OP45",
    "selectors": [
@@ -3259,7 +3259,10 @@
      "t": "u8"
     },
     {
-     "t": "f32"
+     "t": "f32",
+     "name": "target_position",
+     "sem": "position",
+     "sem_span": 3
     },
     {
      "t": "f32"
@@ -3268,14 +3271,15 @@
      "t": "f32"
     },
     {
-     "t": "s16"
+     "t": "s16",
+     "name": "duration (ms)"
     }
    ],
    "verified": true,
    "validated": true
   },
   {
-   "name": "OP45_3",
+   "name": "Camera_LookAtEntityNode",
    "op": 45,
    "opname": "OP45",
    "selectors": [
@@ -3293,10 +3297,20 @@
      "t": "u8"
     },
     {
-     "t": "s16"
+     "t": "s16",
+     "name": "target_id",
+     "sem": "tbl",
+     "sem_arg": "t_name:NameTableData"
     },
     {
-     "t": "string"
+     "t": "string",
+     "name": "node_name"
+    },
+    {
+     "t": "f32",
+     "name": "offset",
+     "sem": "vec3",
+     "sem_span": 3
     },
     {
      "t": "f32"
@@ -3305,10 +3319,8 @@
      "t": "f32"
     },
     {
-     "t": "f32"
-    },
-    {
-     "t": "s16"
+     "t": "s16",
+     "name": "duration (ms)"
     }
    ],
    "verified": true,
@@ -3735,7 +3747,7 @@
    "validated": true
   },
   {
-   "name": "OP45_20",
+   "name": "Camera_LookAtEntityNodeRelative",
    "op": 45,
    "opname": "OP45",
    "selectors": [
@@ -3753,16 +3765,17 @@
      "t": "u8"
     },
     {
-     "t": "s16"
+     "t": "s16",
+     "name": "target_id"
     },
     {
-     "t": "string"
+     "t": "string",
+     "name": "node_name"
     },
     {
      "t": "f32",
-     "name": "Camera position",
-     "sem": "camera",
-     "sem_arg": "position",
+     "name": "relative_offset",
+     "sem": "vec3",
      "sem_span": 3
     },
     {
@@ -3772,7 +3785,8 @@
      "t": "f32"
     },
     {
-     "t": "s16"
+     "t": "s16",
+     "name": "duration (ms)"
     }
    ],
    "verified": true,

@@ -62,7 +62,15 @@ public sealed class ViewerForm : Form
         AutoSize = false,
     };
     private readonly ToolStripLabel cameraFovLabel = new("FOV: 60°");
-    private readonly ToolStripLabel cameraPositionLabel = new("Camera: 0, 0, 0");
+    private readonly ToolStripLabel cameraPositionLabel = new("Pos:");
+    private readonly TextBox cameraPosX = new() { Text = "0", Width = 55 };
+    private readonly TextBox cameraPosY = new() { Text = "0", Width = 55 };
+    private readonly TextBox cameraPosZ = new() { Text = "0", Width = 55 };
+    private readonly ToolStripLabel cameraAngleLabel = new("Angles (rad):");
+    private readonly TextBox cameraYaw = new() { Text = "0", Width = 55 };
+    private readonly TextBox cameraPitch = new() { Text = "0", Width = 55 };
+    private readonly TextBox cameraRoll = new() { Text = "0", Width = 55 };
+    private bool suppressCameraTextUpdate;
     private readonly Panel scenePanel = new() { Dock = DockStyle.Left, Width = 340, Padding = new Padding(8) };
     private readonly GroupBox sceneOutlinerGroup = new()
     {
@@ -248,6 +256,14 @@ public sealed class ViewerForm : Form
             new ToolStripControlHost(cameraFovSlider) { AutoSize = false, Width = 150 },
             new ToolStripSeparator(),
             cameraPositionLabel,
+            new ToolStripControlHost(cameraPosX),
+            new ToolStripControlHost(cameraPosY),
+            new ToolStripControlHost(cameraPosZ),
+            new ToolStripSeparator(),
+            cameraAngleLabel,
+            new ToolStripControlHost(cameraYaw),
+            new ToolStripControlHost(cameraPitch),
+            new ToolStripControlHost(cameraRoll),
         });
         Controls.Add(gizmoToolStrip);
         Controls.Add(mainMenu);
@@ -258,6 +274,34 @@ public sealed class ViewerForm : Form
         rotateToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Rotate);
         scaleToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Scale);
         cameraFovSlider.ValueChanged += (_, _) => cameraFovLabel.Text = $"FOV: {cameraFovSlider.Value}°";
+
+        // Camera position edit handlers (angles in radians)
+        EventHandler onCameraEdit = (_, _) =>
+        {
+            if (suppressCameraTextUpdate) return;
+            if (float.TryParse(cameraPosX.Text, out var px) &&
+                float.TryParse(cameraPosY.Text, out var py) &&
+                float.TryParse(cameraPosZ.Text, out var pz) &&
+                float.TryParse(cameraYaw.Text, out var yaw) &&
+                float.TryParse(cameraPitch.Text, out var pitch) &&
+                float.TryParse(cameraRoll.Text, out var roll))
+            {
+                var pos = new Vector3(px, py, pz);
+                cameraNavigation.SetRoll(roll);
+                cameraNavigation.SetView(pos,
+                    Vector3.Normalize(new Vector3(
+                        MathF.Sin(yaw) * MathF.Cos(pitch),
+                        MathF.Sin(pitch),
+                        MathF.Cos(yaw) * MathF.Cos(pitch))),
+                    cameraNavigation.Distance);
+                cameraDollySmoother.Reset();
+            }
+        };
+        cameraPosX.TextChanged += onCameraEdit;
+        cameraPosY.TextChanged += onCameraEdit;
+        cameraPosZ.TextChanged += onCameraEdit;
+        cameraYaw.TextChanged += onCameraEdit;
+        cameraPitch.TextChanged += onCameraEdit;
         rightPanelTabs.Selected += (_, eventArgs) =>
         {
             if (eventArgs.TabPage == scriptsTab) OpenScriptEditor();
@@ -721,8 +765,7 @@ public sealed class ViewerForm : Form
         var elapsed = Math.Clamp((float)(ticks - previousFrameTicks) / Stopwatch.Frequency, 0f, 0.1f);
         previousFrameTicks = ticks;
         UpdateCamera(elapsed);
-        cameraPositionLabel.Text = FormattableString.Invariant(
-            $"Camera: {cameraNavigation.Position.X:0.00}, {cameraNavigation.Position.Y:0.00}, {cameraNavigation.Position.Z:0.00}");
+        UpdateCameraTextFields();
         RefreshAnimationPoses();
         var camera = CreateCamera();
         viewport.Render(instances, camera);
@@ -1060,9 +1103,20 @@ public sealed class ViewerForm : Form
         cameraNavigation.SetView(position, forward, distance);
         if (state.VerticalFieldOfViewDegrees is { } fov && float.IsFinite(fov))
             cameraFovSlider.Value = Math.Clamp((int)MathF.Round(fov), cameraFovSlider.Minimum, cameraFovSlider.Maximum);
-        cameraPositionLabel.Text = FormattableString.Invariant(
-            $"Camera: {position.X:0.00}, {position.Y:0.00}, {position.Z:0.00}");
+        UpdateCameraTextFields();
         Text = $"{baseTitle} — camera state at {function.Name} #{instruction.Index}";
+    }
+
+    private void UpdateCameraTextFields()
+    {
+        suppressCameraTextUpdate = true;
+        if (!cameraPosX.Focused) cameraPosX.Text = cameraNavigation.Position.X.ToString("0.00");
+        if (!cameraPosY.Focused) cameraPosY.Text = cameraNavigation.Position.Y.ToString("0.00");
+        if (!cameraPosZ.Focused) cameraPosZ.Text = cameraNavigation.Position.Z.ToString("0.00");
+        if (!cameraYaw.Focused) cameraYaw.Text = cameraNavigation.Yaw.ToString("0.0000");
+        if (!cameraPitch.Focused) cameraPitch.Text = cameraNavigation.Pitch.ToString("0.0000");
+        if (!cameraRoll.Focused) cameraRoll.Text = cameraNavigation.Roll.ToString("0.0000");
+        suppressCameraTextUpdate = false;
     }
 
     private void OpenTblEditor()
