@@ -10,6 +10,105 @@ using ED8Editor.Phyre;
 using ED8Editor.Application;
 using ED8Editor.Rendering;
 using ED8Editor.Scene;
+using ED8Editor.Tables;
+using ED8Editor.Decompiler;
+
+if (args.Length is 2 or 3 && args[0] == "--script-summary")
+{
+    var path = args[1];
+    var functionFilter = args.Length == 3 ? args[2] : null;
+    var decompiled = ScriptDecompiler.Decompile(path);
+    Console.WriteLine($"Scene: {decompiled.SceneName}; functions: {decompiled.Functions.Count}");
+    var code = decompiled.Functions.Where(value => value.IsCode).ToArray();
+    foreach (var group in code.SelectMany(value => value.Instructions)
+                 .GroupBy(value => (value.Opcode, value.Name))
+                 .OrderBy(value => value.Key.Opcode).ThenBy(value => value.Key.Name))
+        Console.WriteLine($"OP {group.Key.Opcode,3} {group.Key.Name,-24} x{group.Count()}");
+    foreach (var function in decompiled.Functions.Where(value => functionFilter is null
+                 || value.Name.Equals(functionFilter, StringComparison.OrdinalIgnoreCase)))
+    {
+        Console.WriteLine($"FUNCTION {function.Index} {function.Name} ({function.Instructions.Count}) "
+            + (function.IsCode ? "code" : function.Table is { } table ? $"table:{table.Kind}/{table.Fields.Count}" : "raw")
+            + $" sourceType={function.SourceType} rawSize={function.RawData?.Length ?? 0} decodeError={function.DecodeErrorOffset}");
+        if (function.RawData is { Length: > 0 } raw)
+            Console.WriteLine($"  RAW {Convert.ToHexString(raw)}");
+        if (function.Table is { } functionTable)
+            foreach (var field in functionTable.Fields)
+                Console.WriteLine($"  TABLE [{field.Index}] {field.Type} = {Convert.ToHexString(field.Raw)}");
+        foreach (var instruction in function.Instructions)
+        {
+            Console.WriteLine($"  #{instruction.Index} +0x{instruction.Offset:X} {instruction.Name} op={instruction.Opcode}");
+            foreach (var argument in instruction.Arguments)
+            {
+                var value = argument.Kind switch
+                {
+                    "string" => Encoding.UTF8.GetString(argument.Raw).TrimEnd('\0'),
+                    "scalar" when argument.Type == "f32" => argument.FloatValue.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
+                    "scalar" => argument.IntValue.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                    "expr" => string.Join(" ", argument.Expression?.Select(value => value.Label) ?? Array.Empty<string>()),
+                    _ => Convert.ToHexString(argument.Raw),
+                };
+                Console.WriteLine($"    [{argument.Index}] {argument.Kind}/{argument.Type} {argument.Name ?? "-"} = {value}");
+            }
+        }
+    }
+    return 0;
+}
+
+if (args is ["--tbl-roundtrip", var tblDirectory])
+{
+    var tblFailures = 0;
+    foreach (var path in Directory.GetFiles(tblDirectory, "*.tbl").Order())
+    {
+        try
+        {
+            var original = File.ReadAllBytes(path);
+            var table = Cs1TableDocument.Read(new MemoryStream(original), path);
+            using var output = new MemoryStream();
+            table.Write(output);
+            if (!original.AsSpan().SequenceEqual(output.ToArray()))
+                throw new InvalidDataException("round-trip bytes differ");
+            Console.WriteLine($"PASS {Path.GetFileName(path)} ({table.Entries.Count} entries)");
+        }
+        catch (Exception exception)
+        {
+            tblFailures++;
+            Console.Error.WriteLine($"FAIL {Path.GetFileName(path)}: {exception.Message}");
+        }
+    }
+    return tblFailures == 0 ? 0 : 1;
+}
+
+if (args is ["--tbl-schema-roundtrip", var schemaTblDirectory])
+{
+    var schemaFailures = 0;
+    var decodedEntries = 0;
+    var codec = new Cs1TableRecordCodec();
+    foreach (var path in Directory.GetFiles(schemaTblDirectory, "*.tbl").Order())
+    {
+        var table = Cs1TableDocument.Read(path);
+        foreach (var entry in table.Entries)
+        {
+            try
+            {
+                var values = codec.Decode(entry);
+                if (values is null) continue;
+                decodedEntries++;
+                var encoded = codec.Encode(entry.Category, values);
+                if (!entry.Data.AsSpan().SequenceEqual(encoded))
+                    throw new InvalidDataException("typed round-trip bytes differ");
+            }
+            catch (Exception exception)
+            {
+                schemaFailures++;
+                Console.Error.WriteLine($"FAIL {Path.GetFileName(path)}:{entry.Category}: {exception.Message}");
+                break;
+            }
+        }
+    }
+    Console.WriteLine($"Typed entries validated: {decodedEntries}");
+    return schemaFailures == 0 ? 0 : 1;
+}
 
 if (args is ["--shader-api"])
 {
@@ -121,6 +220,61 @@ if (args is ["--pkg-entry", var entryPackagePath, var entryName])
     return 0;
 }
 
+if (args is ["--pkg-find-string", var searchPackagePath, var searchText])
+{
+    var archive = new PkgArchiveReader().Read(searchPackagePath);
+    var needle = Encoding.ASCII.GetBytes(searchText);
+    foreach (var entry in archive.Entries)
+    {
+        var data = archive.ReadEntry(entry);
+        var offset = data.AsSpan().IndexOf(needle);
+        if (offset >= 0) Console.WriteLine($"{entry.Name}: 0x{offset:X}");
+    }
+    return 0;
+}
+
+if (args is ["--pkg-find-manifest-text", var packageDirectory, var manifestText])
+{
+    foreach (var path in Directory.EnumerateFiles(packageDirectory, "*.pkg"))
+    {
+        try
+        {
+            var archive = new PkgArchiveReader().Read(path);
+            var manifest = archive.Entries.FirstOrDefault(value =>
+                value.Name.Equals("asset_D3D11.xml", StringComparison.OrdinalIgnoreCase));
+            if (manifest is null) continue;
+            var text = Encoding.UTF8.GetString(archive.ReadEntry(manifest));
+            if (text.Contains(manifestText, StringComparison.OrdinalIgnoreCase))
+                Console.WriteLine(Path.GetFileName(path));
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"{Path.GetFileName(path)}: {exception.Message}");
+        }
+    }
+    return 0;
+}
+
+if (args is ["--pkg-find-entry-name", var entryPackageDirectory, var entryText])
+{
+    foreach (var path in Directory.EnumerateFiles(entryPackageDirectory, "*.pkg"))
+    {
+        try
+        {
+            var archive = new PkgArchiveReader().Read(path);
+            var matches = archive.Entries.Where(value =>
+                value.Name.Contains(entryText, StringComparison.OrdinalIgnoreCase)).ToArray();
+            if (matches.Length > 0)
+                Console.WriteLine($"{Path.GetFileName(path)}: {string.Join(", ", matches.Select(value => value.Name))}");
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"{Path.GetFileName(path)}: {exception.Message}");
+        }
+    }
+    return 0;
+}
+
 if (args is ["--manifest-corpus", var manifestGameDataPath])
 {
     return ScanManifestCorpus(manifestGameDataPath);
@@ -171,8 +325,10 @@ if (args is ["--phyre-metadata", var phyrePackagePath, var phyreEntryName])
         "PShaderPassInfo", "PShaderParameterCaptureBufferLocation", "PShaderParameterCaptureBufferLocationTypeConstantBuffer",
         "PNodeContext", "PContextVariantFoldingTable",
         "PTexture2DD3D11", "PTexture2DBase", "PTextureCommonBase",
+        "PMatrix4", "PString", "PSkinBoneRemap", "PSkeletonJointBounds",
     };
     foreach (var descriptor in metadata.Classes.Where(value => diagnosticClasses.Contains(value.Name)
+                 || value.Name.Contains("Animation", StringComparison.Ordinal)
                  || value.Name.Contains("Shader", StringComparison.Ordinal)
                  || value.Name.Contains("Context", StringComparison.Ordinal)
                  || value.Name.Contains("RenderPass", StringComparison.Ordinal)))
@@ -186,7 +342,8 @@ if (args is ["--phyre-metadata", var phyrePackagePath, var phyreEntryName])
     }
     var membersById = metadata.Classes.SelectMany(value => value.Members).ToDictionary(value => (uint)value.Index);
     foreach (var fixup in fixups.Arrays.Where(value =>
-                 metadata.InstanceGroups[value.SourceListIndex].ClassName is "PMesh" or "PDataBlockD3D11" or "PMaterial" or "PParameterBuffer"
+                 metadata.InstanceGroups[value.SourceListIndex].ClassName?.StartsWith("PAnimation", StringComparison.Ordinal) == true
+                    || metadata.InstanceGroups[value.SourceListIndex].ClassName is "PMesh" or "PString" or "PDataBlockD3D11" or "PMaterial" or "PParameterBuffer"
                     or "PShader" or "PShaderPass" or "PShaderVertexProgram" or "PShaderFragmentProgram" or "PNodeContext" or "PSceneRenderPass"))
     {
         var memberName = fixup.IsClassDataMember && membersById.TryGetValue(fixup.SourceMemberId, out var member)
@@ -195,7 +352,8 @@ if (args is ["--phyre-metadata", var phyrePackagePath, var phyreEntryName])
         Console.WriteLine($"ARRAY {metadata.InstanceGroups[fixup.SourceListIndex].ClassName}[{fixup.SourceObjectId}].{memberName}: count={fixup.Count}, offset=0x{fixup.Offset:X}");
     }
     foreach (var fixup in fixups.Pointers.Where(value =>
-                 metadata.InstanceGroups[value.SourceListIndex].ClassName is "PMesh" or "PMeshSegment" or "PDataBlockD3D11" or "PVertexStream" or "PMaterial" or "PParameterBuffer" or "PShaderParameterDefinition" or "PTexture2D" or "PEffect"
+                 metadata.InstanceGroups[value.SourceListIndex].ClassName?.StartsWith("PAnimation", StringComparison.Ordinal) == true
+                    || metadata.InstanceGroups[value.SourceListIndex].ClassName is "PMesh" or "PMeshSegment" or "PString" or "PDataBlockD3D11" or "PVertexStream" or "PMaterial" or "PParameterBuffer" or "PShaderParameterDefinition" or "PTexture2D" or "PEffect"
                     or "PSceneRenderPass" or "PShader" or "PShaderPass" or "PShaderVertexProgram" or "PShaderFragmentProgram"))
     {
         var memberName = fixup.IsClassDataMember && membersById.TryGetValue(fixup.SourceMemberId, out var member)
@@ -248,6 +406,33 @@ if (args is ["--phyre-model", var modelPackagePath, var modelEntryName])
     Console.WriteLine($"Meshes     : {model.Meshes.Count}");
     Console.WriteLine($"Primitives : {model.Meshes.Sum(value => value.Primitives.Count)}");
     Console.WriteLine($"Materials  : {model.Materials.Count}");
+    Console.WriteLine($"Skeleton   : {(model.Skeleton is null ? "none" : $"{model.Skeleton.Joints.Count} hierarchy joints, {model.Skeleton.InverseBindMatrices.Count} skin joints")}");
+    Console.WriteLine($"Embedded animation: {model.EmbeddedAnimation?.Name ?? "none"}");
+    if (model is { EmbeddedAnimation: { } embedded, SceneNodes: { } nodes })
+    {
+        var pose = new CpuSceneAnimationEvaluator().Evaluate(nodes, embedded,
+            (embedded.StartTime + embedded.EndTime) * 0.5f);
+        Console.WriteLine($"Animated scene nodes: {pose.WorldTransforms.Count}");
+    }
+    if (model.Skeleton is { } skeleton)
+    {
+        var worlds = new Matrix4x4[skeleton.Joints.Count];
+        for (var index = 0; index < worlds.Length; index++)
+            worlds[index] = skeleton.Joints[index].ParentIndex >= 0
+                ? skeleton.Joints[index].DefaultLocalTransform * worlds[skeleton.Joints[index].ParentIndex]
+                : skeleton.Joints[index].DefaultLocalTransform;
+        static float IdentityError(Matrix4x4 value) =>
+            MathF.Abs(value.M11 - 1) + MathF.Abs(value.M22 - 1) + MathF.Abs(value.M33 - 1) + MathF.Abs(value.M44 - 1)
+            + MathF.Abs(value.M12) + MathF.Abs(value.M13) + MathF.Abs(value.M14)
+            + MathF.Abs(value.M21) + MathF.Abs(value.M23) + MathF.Abs(value.M24)
+            + MathF.Abs(value.M31) + MathF.Abs(value.M32) + MathF.Abs(value.M34)
+            + MathF.Abs(value.M41) + MathF.Abs(value.M42) + MathF.Abs(value.M43);
+        var directError = skeleton.SkeletonToHierarchy.Select((hierarchy, index) =>
+            IdentityError(skeleton.InverseBindMatrices[index] * skeleton.Joints[hierarchy].DefaultLocalTransform)).Average();
+        var worldError = skeleton.SkeletonToHierarchy.Select((hierarchy, index) =>
+            IdentityError(skeleton.InverseBindMatrices[index] * worlds[hierarchy])).Average();
+        Console.WriteLine($"Bind errors: direct={directError:R}, hierarchical={worldError:R}");
+    }
     var programsReported = new HashSet<CpuEffectProgram>(ReferenceEqualityComparer.Instance);
     var shaderInspector = new D3D11ShaderProgramInspector();
     foreach (var (material, materialIndex) in model.Materials.Select((value, index) => (value, index)))
@@ -322,6 +507,81 @@ if (args is ["--phyre-texture", var texturePackagePath, var textureEntryName])
     Console.WriteLine($"Mipmaps    : {texture.MipCount}");
     Console.WriteLine($"Format     : {texture.Format}");
     Console.WriteLine($"GPU bytes  : {texture.Data.Length}");
+    return 0;
+}
+
+if (args is ["--phyre-animation", var animationPackagePath, var animationEntryName, var animationAssetId])
+{
+    var archive = new PkgArchiveReader().Read(animationPackagePath);
+    var clip = new PhyreAnimationReader().Read(animationAssetId, archive.ReadEntry(animationEntryName));
+    Console.WriteLine($"{clip.AssetId}: '{clip.Name}', {clip.StartTime:R}..{clip.EndTime:R}, {clip.Channels.Count} channels");
+    foreach (var group in clip.Channels.GroupBy(value => value.Path))
+        Console.WriteLine($"  {group.Key}: {group.Count()} channels, {group.Sum(value => value.Times.Count)} keys");
+    return 0;
+}
+
+if (args is ["--phyre-pose", var poseModelPackage, var poseModelEntry,
+    var poseAnimationPackage, var poseAnimationEntry, var poseAnimationAsset])
+{
+    var modelArchive = new PkgArchiveReader().Read(poseModelPackage);
+    var model = new PhyreD3D11ModelReader().Read(Path.GetFileNameWithoutExtension(poseModelEntry),
+        modelArchive.ReadEntry(poseModelEntry));
+    var animationArchive = new PkgArchiveReader().Read(poseAnimationPackage);
+    var clip = new PhyreAnimationReader().Read(poseAnimationAsset, animationArchive.ReadEntry(poseAnimationEntry));
+    var skeleton = model.Skeleton ?? throw new InvalidDataException("Model has no skeleton.");
+    var start = new CpuSkeletonPoseEvaluator().Evaluate(skeleton, clip, clip.StartTime);
+    var middle = new CpuSkeletonPoseEvaluator().Evaluate(skeleton, clip, (clip.StartTime + clip.EndTime) * 0.5f);
+    Console.WriteLine($"Pose: {skeleton.Joints.Count} joints, {start.SkinMatrices.Count} skin matrices");
+    Console.WriteLine($"Start finite: {start.SkinMatrices.All(IsFinite)}; middle finite: {middle.SkinMatrices.All(IsFinite)}");
+    foreach (var (primitive, index) in model.Meshes.SelectMany(value => value.Primitives).Select((value, index) => (value, index)))
+    {
+        var indices = primitive.VertexBuffers.SelectMany(value => value.Attributes)
+            .FirstOrDefault(value => value.Semantic == VertexSemantic.JointIndices);
+        var weights = primitive.VertexBuffers.SelectMany(value => value.Attributes)
+            .FirstOrDefault(value => value.Semantic == VertexSemantic.JointWeights);
+        Console.WriteLine($"Primitive {index}: bones={primitive.SkinBones?.Count ?? 0}, indices={indices?.SourceFormat}, weights={weights?.SourceFormat}");
+    }
+    return 0;
+
+    static bool IsFinite(Matrix4x4 value) =>
+        float.IsFinite(value.M11) && float.IsFinite(value.M12) && float.IsFinite(value.M13) && float.IsFinite(value.M14)
+        && float.IsFinite(value.M21) && float.IsFinite(value.M22) && float.IsFinite(value.M23) && float.IsFinite(value.M24)
+        && float.IsFinite(value.M31) && float.IsFinite(value.M32) && float.IsFinite(value.M33) && float.IsFinite(value.M34)
+        && float.IsFinite(value.M41) && float.IsFinite(value.M42) && float.IsFinite(value.M43) && float.IsFinite(value.M44);
+}
+
+if (args is ["--load-animation", var loadAnimationGameData, var loadAnimationAsset, var loadAnimationClip])
+{
+    var loader = new EditorProjectLoader(
+        new OpsReader(), new GameAssetResolverFactory(), new PkgArchiveReader(),
+        new AssetManifestReader(), new PhyreD3D11ModelReader(), new PhyreD3D11TextureReader());
+    var result = loader.LoadAnimationAsset(loadAnimationAsset, loadAnimationClip, loadAnimationGameData);
+    Console.WriteLine($"{result.Status}: {result.Clip?.Name ?? result.Error}");
+    return result.Status == AssetAnimationLoadStatus.Loaded ? 0 : 1;
+}
+
+if (args is ["--scene-skeletons", var skeletonScenePath, var skeletonGameData])
+{
+    var loader = new EditorProjectLoader(
+        new OpsReader(), new GameAssetResolverFactory(), new PkgArchiveReader(),
+        new AssetManifestReader(), new PhyreD3D11ModelReader(), new PhyreD3D11TextureReader());
+    var scene = loader.OpenScript(skeletonScenePath, skeletonGameData);
+    foreach (var load in scene.AssetModels.Values.Where(value => value.Model?.Skeleton is not null))
+        Console.WriteLine($"{load.AssetId}: {load.Model!.Skeleton!.Joints.Count} joints");
+    var packageReader = new PkgArchiveReader();
+    foreach (var manifestLoad in scene.AssetManifests.Values.Where(value => value.Manifest?.PrimaryAsset is not null))
+    {
+        var manifest = manifestLoad.Manifest!;
+        var resource = manifest.PrimaryAsset!.Resources.FirstOrDefault(value => value.Kind == AssetResourceKind.Model);
+        if (resource is null) continue;
+        var archive = packageReader.Read(manifest.SourcePackagePath);
+        var cluster = new PhyreClusterReader().Read(archive.ReadEntry(resource.ArchiveEntryName));
+        var animationGroups = cluster.Metadata.InstanceGroups
+            .Where(value => value.Count > 0 && value.ClassName?.Contains("Animation", StringComparison.Ordinal) == true)
+            .Select(value => $"{value.ClassName}:{value.Count}").ToArray();
+        if (animationGroups.Length > 0)
+            Console.WriteLine($"{manifestLoad.AssetId}: embedded {string.Join(", ", animationGroups)}");
+    }
     return 0;
 }
 
@@ -409,6 +669,7 @@ var tests = new (string Name, Action Run)[]
     ("decompresses Phyre pointer and array fixups", DecompressesPhyreFixups),
     ("raycasts transformed scene triangles exactly", RaycastsTransformedSceneTriangles),
     ("returns every model hit in depth order", ReturnsEveryModelHitInDepthOrder),
+    ("preserves the declared selection kind of model instances", PreservesModelSelectionKind),
     ("reports unsupported picking geometry", ReportsUnsupportedPickingGeometry),
     ("reports truncated picking vertex data", ReportsTruncatedPickingVertexData),
     ("reports truncated picking index data", ReportsTruncatedPickingIndexData),
@@ -437,6 +698,14 @@ var tests = new (string Name, Action Run)[]
     ("writes duplicated and deleted OPS spatial elements", WritesStructuralOpsEdits),
     ("creates observed OPS spatial profiles in empty sections", CreatesObservedOpsProfiles),
     ("indexes PKG names without reading archives", IndexesPkgNamesWithoutReadingArchives),
+    ("round-trips CS1 TBL entries byte-exactly", RoundTripsCs1Table),
+    ("preserves localized QSText stale lengths", PreservesQuestTextStaleLength),
+    ("resolves semantic TBL references by category", ResolvesSemanticTableReferences),
+    ("builds semantic choices from the requested TBL category", BuildsSemanticTableChoices),
+    ("flattens repeated and referenced TBL schema fields", FlattensTblSchemaFields),
+    ("edits typed TBL fields without changing adjacent values", EditsTypedTblFields),
+    ("evaluates hierarchical Phyre skeleton animation", EvaluatesSkeletonAnimation),
+    ("evaluates embedded scene-node animation", EvaluatesSceneNodeAnimation),
 };
 
 var failures = 0;
@@ -455,6 +724,106 @@ foreach (var test in tests)
 }
 
 return failures == 0 ? 0 : 1;
+
+static void RoundTripsCs1Table()
+{
+    using var source = new MemoryStream();
+    source.Write(new byte[] { 2, 0 });
+    source.Write(Encoding.UTF8.GetBytes("sample\0"));
+    source.Write(new byte[] { 3, 0, 1, 2, 3 });
+    source.Write(Encoding.UTF8.GetBytes("other\0"));
+    source.Write(new byte[] { 2, 0, 4, 5 });
+    var original = source.ToArray();
+    source.Position = 0;
+    var table = Cs1TableDocument.Read(source);
+    using var output = new MemoryStream();
+    table.Write(output);
+    if (!original.AsSpan().SequenceEqual(output.ToArray()))
+        throw new Exception("The TBL did not round-trip byte-exactly.");
+}
+
+static void ResolvesSemanticTableReferences()
+{
+    if (!Cs1TableReference.TryParse("t_item:item", out var reference) || reference is null)
+        throw new Exception("A valid semantic TBL reference was rejected.");
+    if (reference.TableName != "t_item.tbl" || reference.Category != "item")
+        throw new Exception("The semantic TBL reference was parsed incorrectly.");
+    if (Cs1TableReference.TryParse("t_item", out _))
+        throw new Exception("A semantic TBL reference without category was accepted.");
+}
+
+static void PreservesQuestTextStaleLength()
+{
+    using var source = new MemoryStream();
+    source.Write(new byte[] { 1, 0 });
+    source.Write(Encoding.UTF8.GetBytes("QSText\0"));
+    source.Write(new byte[] { 0xff, 0x7f }); // deliberately stale serialized length
+    source.Write(new byte[] { 0x34, 0x12, 0x02 });
+    source.Write(Encoding.UTF8.GetBytes("Quest text\0"));
+    source.WriteByte(1);
+    var original = source.ToArray();
+    source.Position = 0;
+    var table = Cs1TableDocument.Read(source);
+    using var output = new MemoryStream();
+    table.Write(output);
+    if (!original.AsSpan().SequenceEqual(output.ToArray()))
+        throw new Exception("The stale QSText length was not preserved during an unchanged round-trip.");
+}
+
+static void BuildsSemanticTableChoices()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "ed8editor-tbl-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        using var payload = new MemoryStream();
+        payload.Write(new byte[] { 0x34, 0x12, 0, 0 });
+        payload.Write(Encoding.UTF8.GetBytes("flags\0"));
+        payload.Write(new byte[46]);
+        payload.Write(Encoding.UTF8.GetBytes("Test item\0Description\0"));
+        var table = new Cs1TableDocumentBuilder().WithEntry("item", payload.ToArray()).Build();
+        table.Write(Path.Combine(directory, "t_item.tbl"));
+        var choices = new Cs1TableCatalog(directory).GetChoices(new Cs1TableReference("t_item.tbl", "item"));
+        if (choices.Count != 1 || choices[0].Value != 0x1234 || !choices[0].Label.Contains("Test item"))
+            throw new Exception("The semantic item selector did not expose the documented key and label.");
+    }
+    finally
+    {
+        Directory.Delete(directory, recursive: true);
+    }
+}
+
+static void FlattensTblSchemaFields()
+{
+    var schemas = Cs1TableSchemaSet.Default;
+    if (schemas.Entries.Count != 46)
+        throw new Exception($"Expected 46 CS1 entry schemas, found {schemas.Entries.Count}.");
+    var fields = schemas.FindAtomicFields("item")
+        ?? throw new Exception("The item schema was not loaded.");
+    var names = fields.Select(value => value.Name).ToHashSet(StringComparer.Ordinal);
+    foreach (var expected in new[] { "effects[1] id", "effects[2] data[2]", "name" })
+    {
+        if (!names.Contains(expected))
+            throw new Exception($"The flattened item schema is missing '{expected}'.");
+    }
+}
+
+static void EditsTypedTblFields()
+{
+    using var payload = new MemoryStream();
+    payload.Write(new byte[] { 0x34, 0x12 });
+    payload.Write(Encoding.UTF8.GetBytes("Original text\0"));
+    var codec = new Cs1TableRecordCodec();
+    var entry = new Cs1TableEntry("TextTableData", payload.ToArray());
+    var values = codec.Decode(entry)?.ToArray()
+        ?? throw new Exception("The TextTableData schema was not loaded.");
+    values[1] = values[1] with { Value = "Edited text" };
+    var edited = new Cs1TableEntry(entry.Category, codec.Encode(entry.Category, values));
+    var result = codec.Decode(edited)?.ToArray()
+        ?? throw new Exception("The edited TextTableData could not be decoded.");
+    if (result[0].Value != "4660" || result[1].Value != "Edited text")
+        throw new Exception("Typed editing changed the ID or failed to update the text.");
+}
 
 static void SelectsPhyreShaderPermutationContexts()
 {
@@ -1005,6 +1374,24 @@ static void ReturnsEveryModelHitInDepthOrder()
     Equal("prop", picked[1].Selection.Name);
 }
 
+static void PreservesModelSelectionKind()
+{
+    var model = CreateTriangleModel("CHARACTER", "Float32x3");
+    var character = new SceneModelInstance(
+        17,
+        "C_MON000",
+        "Monster 17",
+        model,
+        Matrix4x4.Identity,
+        SelectionKind: SceneElementKind.ScriptCharacter);
+    var picked = new SceneElementPicker().Pick(
+        new SceneRay(new Vector3(0f, 0f, -2f), Vector3.UnitZ),
+        new[] { character },
+        null,
+        0.3f);
+    Equal(SceneElementKind.ScriptCharacter, picked!.Selection.Kind);
+}
+
 static void ReportsUnsupportedPickingGeometry()
 {
     var model = CreateTriangleModel("TEST", "Float16x3");
@@ -1067,6 +1454,50 @@ static void CalculatesTransformedSceneBounds()
     Near(6f, result.Maximum.X);
     Near(5f, result.Center.X);
     Near(MathF.Sqrt(2f), result.Radius);
+}
+
+static void EvaluatesSkeletonAnimation()
+{
+    var skeleton = new CpuSkeleton(
+        new[]
+        {
+            new CpuSkeletonJoint("Root", -1, Matrix4x4.Identity),
+            new CpuSkeletonJoint("Child", 0, Matrix4x4.CreateTranslation(1, 0, 0)),
+        },
+        new[] { Matrix4x4.Identity, Matrix4x4.CreateTranslation(-1, 0, 0) },
+        new[] { 0, 1 });
+    var clip = new CpuAnimationClip(
+        "TEST_CLIP_MOVE", "MOVE", 0f, 1f,
+        new[]
+        {
+            new CpuAnimationChannel(
+                "Child", CpuAnimationPath.Translation, CpuAnimationInterpolation.Linear,
+                new[] { 0f, 1f },
+                new[] { new Vector4(1, 0, 0, 0), new Vector4(3, 0, 0, 0) }),
+        });
+    var pose = new CpuSkeletonPoseEvaluator().Evaluate(skeleton, clip, 0.5f);
+    Near(2f, pose.WorldTransforms[1].M41);
+    Near(1f, pose.SkinMatrices[1].M41);
+}
+
+static void EvaluatesSceneNodeAnimation()
+{
+    var nodes = new[]
+    {
+        new CpuSceneNode("Root", -1, Matrix4x4.CreateTranslation(5, 0, 0)),
+        new CpuSceneNode("Door", 0, Matrix4x4.CreateTranslation(1, 0, 0)),
+    };
+    var clip = new CpuAnimationClip(
+        "DOOR", "DOOR", 0f, 2f,
+        new[]
+        {
+            new CpuAnimationChannel(
+                "Door", CpuAnimationPath.Translation, CpuAnimationInterpolation.Linear,
+                new[] { 0f, 2f },
+                new[] { new Vector4(1, 0, 0, 0), new Vector4(3, 0, 0, 0) }),
+        });
+    var pose = new CpuSceneAnimationEvaluator().Evaluate(nodes, clip, 1f);
+    Near(7f, pose.WorldTransforms[1].M41);
 }
 
 static void CreatesCenterViewportRay()

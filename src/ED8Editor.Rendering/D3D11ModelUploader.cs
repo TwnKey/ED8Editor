@@ -49,9 +49,11 @@ public sealed class D3D11ModelUploader : IModelGpuUploader<D3D11ModelResources>
                         sourcePrimitive.Indices.IndexElementSize,
                         sourcePrimitive.Indices.IndexCount,
                         sourcePrimitive.MaterialIndex,
-                        sourcePrimitive.Topology));
+                        sourcePrimitive.Topology,
+                        sourcePrimitive.SkinBones));
                 }
-                meshes.Add(new D3D11MeshResources(sourceMesh.Name, sourceMesh.LocalTransform, primitives));
+                meshes.Add(new D3D11MeshResources(
+                    sourceMesh.Name, sourceMesh.LocalTransform, primitives, sourceMesh.SceneNodeIndex));
             }
 
             var materials = model.Materials.Select(material => new D3D11MaterialResources(

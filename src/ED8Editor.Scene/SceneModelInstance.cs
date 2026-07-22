@@ -10,7 +10,8 @@ public sealed record SceneModelInstance(
     CpuModel Model,
     Matrix4x4 Transform,
     Vector4 MaterialDiffuse = default,
-    Vector3 MaterialEmission = default);
+    Vector3 MaterialEmission = default,
+    SceneElementKind SelectionKind = SceneElementKind.Prop);
 
 public readonly record struct SceneRay
 {

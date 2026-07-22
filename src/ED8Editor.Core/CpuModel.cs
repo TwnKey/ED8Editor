@@ -4,4 +4,7 @@ public sealed record CpuModel(
     string AssetId,
     IReadOnlyList<CpuMesh> Meshes,
     IReadOnlyList<CpuMaterial> Materials,
-    IReadOnlyList<CpuTexture> Textures);
+    IReadOnlyList<CpuTexture> Textures,
+    CpuSkeleton? Skeleton = null,
+    IReadOnlyList<CpuSceneNode>? SceneNodes = null,
+    CpuAnimationClip? EmbeddedAnimation = null);

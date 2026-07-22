@@ -6,6 +6,7 @@ namespace ED8Editor.Scene;
 public enum SceneElementKind
 {
     Prop,
+    ScriptCharacter,
     EntryVolume,
     GroupVolume,
     LookPoint,
@@ -48,7 +49,7 @@ public sealed class SceneElementPicker
 
         var hits = modelRaycaster.CastAll(ray, modelInstances).Hits
             .Select(modelHit => new SceneElementPickHit(
-                new SceneElementSelection(SceneElementKind.Prop, modelHit.Instance.Id, modelHit.Instance.Name),
+                new SceneElementSelection(modelHit.Instance.SelectionKind, modelHit.Instance.Id, modelHit.Instance.Name),
                 modelHit.Position,
                 modelHit.Distance))
             .ToList();

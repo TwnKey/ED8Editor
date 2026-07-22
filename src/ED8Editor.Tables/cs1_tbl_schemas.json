@@ -1,0 +1,1626 @@
+{
+  "version": 1,
+  "entries": {
+    "ActiveVoiceTableData": {
+      "fields": [
+        {
+          "name": "unknown_short_1",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_string_1",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_data_1",
+          "type": "bytes",
+          "size": 4
+        },
+        {
+          "name": "unknown_string_2",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_float_1",
+          "type": "f32"
+        },
+        {
+          "name": "unknown_float_2",
+          "type": "f32"
+        },
+        {
+          "name": "unknown_data",
+          "type": "bytes",
+          "size": 12
+        }
+      ]
+    },
+    "AttachTableData": {
+      "fields": [
+        {
+          "name": "character",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_data",
+          "type": "bytes",
+          "size": 20
+        },
+        {
+          "name": "model",
+          "type": "cutf8"
+        },
+        {
+          "name": "attach_point",
+          "type": "cutf8"
+        }
+      ]
+    },
+    "BaseList": {
+      "fields": [
+        {
+          "name": "character",
+          "type": "i16"
+        },
+        {
+          "name": "lines",
+          "type": "u16"
+        },
+        {
+          "name": "elements",
+          "type": "u16",
+          "count": 8
+        }
+      ]
+    },
+    "OrbLineList": {
+      "fields": [
+        {
+          "name": "character",
+          "type": "i16"
+        },
+        {
+          "name": "line",
+          "type": "u16"
+        },
+        {
+          "name": "slot_ids",
+          "type": "i16",
+          "count": 8
+        }
+      ]
+    },
+    "bgm": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "u16"
+        },
+        {
+          "name": "track",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_data",
+          "type": "bytes",
+          "size": 2
+        }
+      ]
+    },
+    "CardTableData": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "i16"
+        },
+        {
+          "name": "unknown_string",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_data",
+          "type": "bytes",
+          "size": 26
+        }
+      ]
+    },
+    "char_revise": {
+      "fields": [
+        {
+          "name": "char",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_short_1",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_short_2",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_short_3",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_short_4",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_short_5",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_short_6",
+          "type": "u16"
+        }
+      ]
+    },
+    "dlc": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "i16"
+        },
+        {
+          "name": "unknown_text_1",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_text_2",
+          "type": "cutf8"
+        },
+        {
+          "name": "name",
+          "type": "cutf8"
+        },
+        {
+          "name": "description",
+          "type": "cutf8"
+        }
+      ]
+    },
+    "FaceSupplementTableData": {
+      "fields": [
+        {
+          "name": "character",
+          "type": "i16"
+        },
+        {
+          "name": "unknown_data_1",
+          "type": "bytes",
+          "size": 16
+        },
+        {
+          "name": "uknown_string",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_data_2",
+          "type": "bytes",
+          "size": 8
+        }
+      ]
+    },
+    "FootStepData": {
+      "fields": [
+        {
+          "name": "unknown_text",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_byte",
+          "type": "u8"
+        }
+      ]
+    },
+    "growth": {
+      "fields": [
+        {
+          "name": "character",
+          "type": "i16"
+        },
+        {
+          "name": "unknown_short_0",
+          "type": "i16"
+        },
+        {
+          "name": "hp_base",
+          "type": "i16"
+        },
+        {
+          "name": "hp_growth",
+          "type": "f32"
+        },
+        {
+          "name": "str_base",
+          "type": "i16"
+        },
+        {
+          "name": "str_growth",
+          "type": "f32"
+        },
+        {
+          "name": "def_base",
+          "type": "i16"
+        },
+        {
+          "name": "def_growth",
+          "type": "f32"
+        },
+        {
+          "name": "ats_base",
+          "type": "i16"
+        },
+        {
+          "name": "ats_growth",
+          "type": "f32"
+        },
+        {
+          "name": "adf_base",
+          "type": "i16"
+        },
+        {
+          "name": "adf_growth",
+          "type": "f32"
+        },
+        {
+          "name": "spd_base",
+          "type": "i16"
+        },
+        {
+          "name": "spd_growth",
+          "type": "f32"
+        },
+        {
+          "name": "dex_base",
+          "type": "i16"
+        },
+        {
+          "name": "dex_growth",
+          "type": "f32"
+        },
+        {
+          "name": "agl_base",
+          "type": "i16"
+        },
+        {
+          "name": "agl_growth",
+          "type": "f32"
+        },
+        {
+          "name": "mov_base",
+          "type": "i16"
+        },
+        {
+          "name": "mov_growth",
+          "type": "f32"
+        }
+      ]
+    },
+    "hkitugi_lst": {
+      "fields": [
+        {
+          "name": "unknown_short",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_byte_1",
+          "type": "u8"
+        },
+        {
+          "name": "unknown_byte_2",
+          "type": "u8"
+        },
+        {
+          "name": "cost",
+          "type": "u8"
+        },
+        {
+          "name": "unknown_byte_3",
+          "type": "u8"
+        },
+        {
+          "name": "text",
+          "type": "cutf8"
+        },
+        {
+          "name": "description",
+          "type": "cutf8"
+        }
+      ]
+    },
+    "item": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "u16"
+        },
+        {
+          "name": "character_restriction",
+          "type": "u16"
+        },
+        {
+          "name": "flags",
+          "type": "cutf8"
+        },
+        {
+          "name": "type",
+          "type": "u8"
+        },
+        {
+          "name": "element",
+          "type": "u8"
+        },
+        {
+          "name": "subtype",
+          "type": "u8"
+        },
+        {
+          "name": "range",
+          "type": "u8"
+        },
+        {
+          "name": "area",
+          "type": "u8"
+        },
+        {
+          "name": "effects",
+          "type": "ref",
+          "count": 2,
+          "ref": "effect"
+        },
+        {
+          "name": "str",
+          "type": "i16"
+        },
+        {
+          "name": "def",
+          "type": "i16"
+        },
+        {
+          "name": "ats",
+          "type": "i16"
+        },
+        {
+          "name": "adf",
+          "type": "i16"
+        },
+        {
+          "name": "acc",
+          "type": "i16"
+        },
+        {
+          "name": "eva",
+          "type": "i16"
+        },
+        {
+          "name": "spd",
+          "type": "i16"
+        },
+        {
+          "name": "mov",
+          "type": "i16"
+        },
+        {
+          "name": "hp",
+          "type": "i16"
+        },
+        {
+          "name": "ep",
+          "type": "i16"
+        },
+        {
+          "name": "price",
+          "type": "u32"
+        },
+        {
+          "name": "carry_limit",
+          "type": "u8"
+        },
+        {
+          "name": "sort_id",
+          "type": "u8"
+        },
+        {
+          "name": "unknown_byte_1",
+          "type": "u8"
+        },
+        {
+          "name": "unknown_byte_2",
+          "type": "u8"
+        },
+        {
+          "name": "unknown_byte_3",
+          "type": "u8"
+        },
+        {
+          "name": "unknown_short",
+          "type": "i16"
+        },
+        {
+          "name": "name",
+          "type": "cutf8"
+        },
+        {
+          "name": "description",
+          "type": "cutf8"
+        }
+      ],
+      "key": "id",
+      "label": "name"
+    },
+    "LinkAbList": {
+      "fields": [
+        {
+          "name": "unknown_data",
+          "type": "bytes",
+          "size": 5
+        },
+        {
+          "name": "name",
+          "type": "cutf8"
+        },
+        {
+          "name": "description",
+          "type": "cutf8"
+        }
+      ]
+    },
+    "LinkLevelExp": {
+      "fields": [
+        {
+          "name": "level",
+          "type": "i8"
+        },
+        {
+          "name": "exp",
+          "type": "i32"
+        }
+      ]
+    },
+    "MG02Text": {
+      "fields": [
+        {
+          "name": "character",
+          "type": "i16"
+        },
+        {
+          "name": "id",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_short",
+          "type": "u16"
+        },
+        {
+          "name": "text",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_data",
+          "type": "bytes",
+          "size": 6
+        }
+      ]
+    },
+    "magic": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "u16"
+        },
+        {
+          "name": "character_restriction",
+          "type": "u16"
+        },
+        {
+          "name": "flags",
+          "type": "cutf8"
+        },
+        {
+          "name": "category",
+          "type": "u8"
+        },
+        {
+          "name": "type",
+          "type": "u8"
+        },
+        {
+          "name": "element",
+          "type": "u8"
+        },
+        {
+          "name": "target_type",
+          "type": "u8"
+        },
+        {
+          "name": "target_range",
+          "type": "u8"
+        },
+        {
+          "name": "target_size",
+          "type": "u8"
+        },
+        {
+          "name": "effects",
+          "type": "ref",
+          "count": 2,
+          "ref": "effect"
+        },
+        {
+          "name": "cast_delay",
+          "type": "u8"
+        },
+        {
+          "name": "recovery_delay",
+          "type": "u8"
+        },
+        {
+          "name": "cost",
+          "type": "u16"
+        },
+        {
+          "name": "unbalance_bonus",
+          "type": "i8"
+        },
+        {
+          "name": "level_learn",
+          "type": "i8"
+        },
+        {
+          "name": "sort_id",
+          "type": "u16"
+        },
+        {
+          "name": "animation",
+          "type": "cutf8"
+        },
+        {
+          "name": "name",
+          "type": "cutf8"
+        },
+        {
+          "name": "description",
+          "type": "cutf8"
+        }
+      ],
+      "key": "id",
+      "label": "name"
+    },
+    "MapJumpData": {
+      "fields": [
+        {
+          "name": "unknown_data_1",
+          "type": "bytes",
+          "size": 4
+        },
+        {
+          "name": "name",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_data_2",
+          "type": "bytes",
+          "size": 4
+        },
+        {
+          "name": "unknown_string_1",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_string_2",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_data_3",
+          "type": "bytes",
+          "size": 28
+        }
+      ]
+    },
+    "MasterQuartzBase": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "i16"
+        },
+        {
+          "name": "unknown_byte_1",
+          "type": "u8"
+        },
+        {
+          "name": "unknown_byte_2",
+          "type": "u8"
+        },
+        {
+          "name": "unknown_byte_3",
+          "type": "u8"
+        },
+        {
+          "name": "unknown_byte_4",
+          "type": "u8"
+        }
+      ]
+    },
+    "MasterQuartzData": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "i16"
+        },
+        {
+          "name": "level",
+          "type": "u16"
+        },
+        {
+          "name": "hp",
+          "type": "i16"
+        },
+        {
+          "name": "ep",
+          "type": "i16"
+        },
+        {
+          "name": "str",
+          "type": "i16"
+        },
+        {
+          "name": "def",
+          "type": "i16"
+        },
+        {
+          "name": "ats",
+          "type": "i16"
+        },
+        {
+          "name": "adf",
+          "type": "i16"
+        },
+        {
+          "name": "spd",
+          "type": "i16"
+        },
+        {
+          "name": "effect_data",
+          "type": "f32",
+          "count": 6
+        },
+        {
+          "name": "arts",
+          "type": "i16",
+          "count": 2
+        },
+        {
+          "name": "memos",
+          "type": "i16",
+          "count": 9
+        }
+      ]
+    },
+    "MasterQuartzMemo": {
+      "fields": [
+        {
+          "name": "item_id",
+          "type": "i16"
+        },
+        {
+          "name": "memo_id",
+          "type": "i16"
+        },
+        {
+          "name": "text",
+          "type": "cutf8"
+        }
+      ]
+    },
+    "NameTableData": {
+      "fields": [
+        {
+          "name": "character",
+          "type": "u16"
+        },
+        {
+          "name": "name",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_string_1",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_string_2",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_string_3",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_string_4",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_string_5",
+          "type": "cutf8"
+        }
+      ]
+    },
+    "NaviTextData": {
+      "fields": [
+        {
+          "name": "unknown_short",
+          "type": "u16"
+        },
+        {
+          "name": "text",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_data_2",
+          "type": "bytes",
+          "size": 4
+        }
+      ]
+    },
+    "PlaceTableData": {
+      "fields": [
+        {
+          "name": "unknown_short_1",
+          "type": "i16"
+        },
+        {
+          "name": "unknown_short_2",
+          "type": "i16"
+        },
+        {
+          "name": "map",
+          "type": "cutf8"
+        },
+        {
+          "name": "name",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_string",
+          "type": "cutf8"
+        }
+      ]
+    },
+    "QSBook": {
+      "fields": [
+        {
+          "name": "unknown_short_1",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_short_2",
+          "type": "u16"
+        },
+        {
+          "name": "title",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_text_1",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_text_2",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_data",
+          "type": "bytes",
+          "size": 2
+        }
+      ]
+    },
+    "QSChapter": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "i16"
+        },
+        {
+          "name": "chapter",
+          "type": "cutf8"
+        }
+      ]
+    },
+    "QSBookScp": {
+      "fields": [
+        {
+          "name": "unknown_text",
+          "type": "cutf8"
+        }
+      ]
+    },
+    "QSChar": {
+      "fields": [
+        {
+          "name": "character",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_data",
+          "type": "bytes",
+          "size": 4
+        },
+        {
+          "name": "name_short",
+          "type": "cutf8"
+        },
+        {
+          "name": "name_long",
+          "type": "cutf8"
+        },
+        {
+          "name": "affiliation_short",
+          "type": "cutf8"
+        },
+        {
+          "name": "note_1",
+          "type": "cutf8"
+        },
+        {
+          "name": "note_2_title",
+          "type": "cutf8"
+        },
+        {
+          "name": "note_2",
+          "type": "cutf8"
+        },
+        {
+          "name": "note_3_title",
+          "type": "cutf8"
+        },
+        {
+          "name": "note_3",
+          "type": "cutf8"
+        },
+        {
+          "name": "note_4_title",
+          "type": "cutf8"
+        },
+        {
+          "name": "note_4",
+          "type": "cutf8"
+        }
+      ]
+    },
+    "QSCook": {
+      "fields": [
+        {
+          "name": "regular_name",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_data_1",
+          "type": "bytes",
+          "size": 34
+        },
+        {
+          "name": "superb",
+          "type": "ref",
+          "ref": "QSCookVariantDescription"
+        },
+        {
+          "name": "regular",
+          "type": "ref",
+          "ref": "QSCookVariantDescription"
+        },
+        {
+          "name": "peculiar",
+          "type": "ref",
+          "ref": "QSCookVariantDescription"
+        },
+        {
+          "name": "unique",
+          "type": "ref",
+          "ref": "QSCookVariantDescription"
+        },
+        {
+          "name": "unknown_data_2",
+          "type": "bytes",
+          "size": 11
+        }
+      ]
+    },
+    "QSFish": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "u16"
+        },
+        {
+          "name": "name",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_data_1",
+          "type": "bytes",
+          "size": 96
+        },
+        {
+          "name": "description",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_data_2",
+          "type": "bytes",
+          "size": 62
+        }
+      ]
+    },
+    "QSHelp": {
+      "fields": [
+        {
+          "name": "unknown_short_1",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_short_2",
+          "type": "u16"
+        },
+        {
+          "name": "text",
+          "type": "cutf8"
+        }
+      ]
+    },
+    "QSMons": {
+      "fields": [
+        {
+          "name": "enemy",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_short_1",
+          "type": "i16"
+        },
+        {
+          "name": "unknown_short_2",
+          "type": "i16"
+        }
+      ]
+    },
+    "QSRank": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "u16"
+        },
+        {
+          "name": "text",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_int1",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_int2",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_int3",
+          "type": "u16"
+        }
+      ]
+    },
+    "QSText": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_byte_1",
+          "type": "u8"
+        },
+        {
+          "name": "text",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_byte_2",
+          "type": "u8"
+        }
+      ]
+    },
+    "QSTitle": {
+      "fields": [
+        {
+          "name": "unknown_short",
+          "type": "i16"
+        },
+        {
+          "name": "unknown_byte",
+          "type": "u8"
+        },
+        {
+          "name": "title",
+          "type": "cutf8"
+        },
+        {
+          "name": "persons",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_data",
+          "type": "bytes",
+          "size": 9
+        }
+      ]
+    },
+    "QuartzCost": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "i16"
+        },
+        {
+          "name": "earth_sepith_cost",
+          "type": "u16"
+        },
+        {
+          "name": "water_sepith_cost",
+          "type": "u16"
+        },
+        {
+          "name": "fire_sepith_cost",
+          "type": "u16"
+        },
+        {
+          "name": "wind_sepith_cost",
+          "type": "u16"
+        },
+        {
+          "name": "time_sepith_cost",
+          "type": "u16"
+        },
+        {
+          "name": "space_sepith_cost",
+          "type": "u16"
+        },
+        {
+          "name": "mirage_sepith_cost",
+          "type": "u16"
+        }
+      ]
+    },
+    "ShopTitle": {
+      "fields": [
+        {
+          "name": "unknown_short",
+          "type": "i16"
+        },
+        {
+          "name": "unknown_byte",
+          "type": "u8"
+        },
+        {
+          "name": "name",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_data",
+          "type": "bytes",
+          "size": 8
+        }
+      ]
+    },
+    "SlotCost": {
+      "fields": [
+        {
+          "name": "slot_position",
+          "type": "i16"
+        },
+        {
+          "name": "earth_sepith_cost",
+          "type": "u16"
+        },
+        {
+          "name": "water_sepith_cost",
+          "type": "u16"
+        },
+        {
+          "name": "fire_sepith_cost",
+          "type": "u16"
+        },
+        {
+          "name": "wind_sepith_cost",
+          "type": "u16"
+        },
+        {
+          "name": "time_sepith_cost",
+          "type": "u16"
+        },
+        {
+          "name": "space_sepith_cost",
+          "type": "u16"
+        },
+        {
+          "name": "mirage_sepith_cost",
+          "type": "u16"
+        }
+      ]
+    },
+    "SlotEp": {
+      "fields": [
+        {
+          "name": "character",
+          "type": "i16"
+        },
+        {
+          "name": "ep_base",
+          "type": "u16"
+        },
+        {
+          "name": "ep_increase",
+          "type": "i16",
+          "count": 8
+        }
+      ]
+    },
+    "status": {
+      "fields": [
+        {
+          "name": "script",
+          "type": "cutf8"
+        },
+        {
+          "name": "texture",
+          "type": "cutf8"
+        },
+        {
+          "name": "model",
+          "type": "cutf8"
+        },
+        {
+          "name": "model_scale",
+          "type": "f32"
+        },
+        {
+          "name": "camera_height",
+          "type": "f32"
+        },
+        {
+          "name": "hitbox_size",
+          "type": "f32"
+        },
+        {
+          "name": "unknown_data_1",
+          "type": "bytes",
+          "size": 4
+        },
+        {
+          "name": "unknown_float_4",
+          "type": "f32"
+        },
+        {
+          "name": "unknown_short_1",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_short_2",
+          "type": "u16"
+        },
+        {
+          "name": "is_female",
+          "type": "u8"
+        },
+        {
+          "name": "level",
+          "type": "u8"
+        },
+        {
+          "name": "hp",
+          "type": "u32"
+        },
+        {
+          "name": "hp_start",
+          "type": "u32"
+        },
+        {
+          "name": "ep",
+          "type": "u16"
+        },
+        {
+          "name": "ep_start",
+          "type": "u16"
+        },
+        {
+          "name": "cp",
+          "type": "u16"
+        },
+        {
+          "name": "cp_start",
+          "type": "u16"
+        },
+        {
+          "name": "str",
+          "type": "u16"
+        },
+        {
+          "name": "def",
+          "type": "u16"
+        },
+        {
+          "name": "ats",
+          "type": "u16"
+        },
+        {
+          "name": "adf",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_short_7",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_short_8",
+          "type": "u16"
+        },
+        {
+          "name": "spd",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_short_10",
+          "type": "u16"
+        },
+        {
+          "name": "exp",
+          "type": "u16"
+        },
+        {
+          "name": "earth_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "water_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "fire_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "wind_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "time_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "space_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "mirage_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "psn_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "seal_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "mute_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "blnd_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "slp_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "burn_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "frz_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "petr_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "fnt_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "conf_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "dblw_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "nmr_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "dlay_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "vnsh_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "s_down_efficacy",
+          "type": "u8"
+        },
+        {
+          "name": "slash_efficacy",
+          "type": "u16"
+        },
+        {
+          "name": "thrust_efficacy",
+          "type": "u16"
+        },
+        {
+          "name": "pierce_efficacy",
+          "type": "u16"
+        },
+        {
+          "name": "strike_efficacy",
+          "type": "u16"
+        },
+        {
+          "name": "earth_sepith",
+          "type": "u8"
+        },
+        {
+          "name": "water_sepith",
+          "type": "u8"
+        },
+        {
+          "name": "fire_sepith",
+          "type": "u8"
+        },
+        {
+          "name": "wind_sepith",
+          "type": "u8"
+        },
+        {
+          "name": "time_sepith",
+          "type": "u8"
+        },
+        {
+          "name": "space_sepith",
+          "type": "u8"
+        },
+        {
+          "name": "mirage_sepith",
+          "type": "u8"
+        },
+        {
+          "name": "sepith_mass",
+          "type": "u8"
+        },
+        {
+          "name": "drop_1_id",
+          "type": "i16"
+        },
+        {
+          "name": "drop_1_chance",
+          "type": "u8"
+        },
+        {
+          "name": "drop_2_id",
+          "type": "i16"
+        },
+        {
+          "name": "drop_2_chance",
+          "type": "u8"
+        },
+        {
+          "name": "monster_variation_min",
+          "type": "f32"
+        },
+        {
+          "name": "monster_variation_max",
+          "type": "f32"
+        },
+        {
+          "name": "flags",
+          "type": "cutf8"
+        },
+        {
+          "name": "name",
+          "type": "cutf8"
+        },
+        {
+          "name": "description",
+          "type": "cutf8"
+        }
+      ]
+    },
+    "status_revise": {
+      "fields": [
+        {
+          "name": "difficulty",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_short_1",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_short_2",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_short_3",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_short_4",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_short_5",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_short_6",
+          "type": "u16"
+        }
+      ]
+    },
+    "TacticalBonus": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "u16"
+        },
+        {
+          "name": "name",
+          "type": "cutf8"
+        },
+        {
+          "name": "bonus",
+          "type": "f32"
+        },
+        {
+          "name": "unknown_data",
+          "type": "bytes",
+          "size": 2
+        }
+      ]
+    },
+    "TextTableData": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "u16"
+        },
+        {
+          "name": "text",
+          "type": "cutf8"
+        }
+      ]
+    },
+    "text_lst": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "u16"
+        },
+        {
+          "name": "text",
+          "type": "cutf8"
+        }
+      ]
+    },
+    "voice": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_byte",
+          "type": "u8"
+        },
+        {
+          "name": "clip",
+          "type": "cutf8"
+        },
+        {
+          "name": "unknown_short",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_float",
+          "type": "f32"
+        },
+        {
+          "name": "unknown_data",
+          "type": "bytes",
+          "size": 8
+        }
+      ]
+    },
+    "weapon_attribute": {
+      "fields": [
+        {
+          "name": "character",
+          "type": "i16"
+        },
+        {
+          "name": "unknown_byte_1",
+          "type": "u8"
+        },
+        {
+          "name": "unknown_byte_2",
+          "type": "u8"
+        },
+        {
+          "name": "unknown_byte_3",
+          "type": "u8"
+        },
+        {
+          "name": "unknown_byte_4",
+          "type": "u8"
+        },
+        {
+          "name": "unknown_float_1",
+          "type": "f32"
+        },
+        {
+          "name": "unknown_float_2",
+          "type": "f32"
+        },
+        {
+          "name": "unknown_float_3",
+          "type": "f32"
+        }
+      ]
+    }
+  },
+  "common": {
+    "effect": {
+      "fields": [
+        {
+          "name": "id",
+          "type": "u8"
+        },
+        {
+          "name": "data",
+          "type": "i16",
+          "count": 2
+        }
+      ]
+    },
+    "QSCookVariantDescription": {
+      "fields": [
+        {
+          "name": "item_id",
+          "type": "i16"
+        },
+        {
+          "name": "description_1",
+          "type": "cutf8"
+        },
+        {
+          "name": "description_2",
+          "type": "cutf8"
+        }
+      ]
+    }
+  }
+}

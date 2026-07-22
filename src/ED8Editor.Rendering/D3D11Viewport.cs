@@ -13,6 +13,7 @@ public sealed record ViewportCamera(Matrix4x4 View, Matrix4x4 Projection);
 
 public sealed class D3D11Viewport : IDisposable
 {
+    private const int MaximumSkinBones = 256;
     private const string ShaderSource = """
         cbuffer PerDraw : register(b0)
         {
@@ -38,6 +39,30 @@ public sealed class D3D11Viewport : IDisposable
         struct VSTexturedNormalColor { float3 Position : POSITION; float4 Normal : NORMAL; float2 TexCoord : TEXCOORD0; float4 Color : COLOR0; };
         struct VSTexturedNormalColorMultiUv { float3 Position : POSITION; float4 Normal : NORMAL; float2 TexCoord : TEXCOORD0; float2 TexCoord2 : TEXCOORD1; float4 Color : COLOR0; };
         struct VSDebug { float4 Position : POSITION; float4 Color : COLOR0; };
+        #if SKINNED
+        cbuffer Skinning : register(b1)
+        {
+            row_major float4x4 SkinMatrices[256];
+        };
+        struct VSSkinned
+        {
+            float3 Position : POSITION;
+        #if HAS_NORMAL
+            float4 Normal : NORMAL;
+        #endif
+        #if HAS_TEXTURE
+            float2 TexCoord : TEXCOORD0;
+        #endif
+        #if HAS_MULTI_UV
+            float2 TexCoord2 : TEXCOORD1;
+        #endif
+        #if HAS_COLOR
+            float4 Color : COLOR0;
+        #endif
+            uint4 JointIndices : BLENDINDICES;
+            float4 JointWeights : BLENDWEIGHT;
+        };
+        #endif
         struct PSInput { float4 Position : SV_Position; float3 Normal : NORMAL; float2 TexCoord : TEXCOORD0; float2 TexCoord2 : TEXCOORD1; float4 Color : COLOR0; };
         struct PSColoredInput { float4 Position : SV_Position; float4 Color : COLOR0; };
         struct MaterialOutput
@@ -115,6 +140,45 @@ public sealed class D3D11Viewport : IDisposable
             output.Color = saturate(input.Color);
             return output;
         }
+        #if SKINNED
+        PSInput VSSkinnedMain(VSSkinned input)
+        {
+            float4 position = float4(0.0f, 0.0f, 0.0f, 0.0f);
+            float3 normal = float3(0.0f, 0.0f, 0.0f);
+            [unroll]
+            for (uint influence = 0; influence < 4; influence++)
+            {
+                float weight = input.JointWeights[influence];
+                position += mul(float4(input.Position, 1.0f), SkinMatrices[input.JointIndices[influence]]) * weight;
+        #if HAS_NORMAL
+                normal += mul(float4(input.Normal.xyz, 0.0f), SkinMatrices[input.JointIndices[influence]]).xyz * weight;
+        #endif
+            }
+            PSInput output;
+            output.Position = mul(position, WorldViewProjection);
+        #if HAS_NORMAL
+            output.Normal = normalize(mul(float4(normal, 0.0f), WorldInverseTranspose).xyz);
+        #else
+            output.Normal = float3(0.0f, 1.0f, 0.0f);
+        #endif
+        #if HAS_TEXTURE
+            output.TexCoord = input.TexCoord;
+        #else
+            output.TexCoord = float2(0.0f, 0.0f);
+        #endif
+        #if HAS_MULTI_UV
+            output.TexCoord2 = input.TexCoord2;
+        #else
+            output.TexCoord2 = output.TexCoord;
+        #endif
+        #if HAS_COLOR
+            output.Color = saturate(input.Color);
+        #else
+            output.Color = float4(1.0f, 1.0f, 1.0f, 1.0f);
+        #endif
+            return output;
+        }
+        #endif
         PSColoredInput VSDebugMain(VSDebug input)
         {
             PSColoredInput output;
@@ -224,12 +288,15 @@ public sealed class D3D11Viewport : IDisposable
     private readonly byte[] texturedNormalColorMultiUvVertexBytecode;
     private readonly ID3D11InputLayout coloredInputLayout;
     private readonly ID3D11Buffer perDrawBuffer;
+    private readonly ID3D11Buffer skinningBuffer;
     private readonly ID3D11SamplerState sampler;
     private readonly D3D11BloomPipeline bloomPipeline;
     private readonly Dictionary<CpuRenderPassState, ID3D11BlendState> blendStates = new();
     private readonly Dictionary<CpuRasterizerState, ID3D11RasterizerState> rasterizerStates = new();
     private readonly ID3D11RasterizerState rasterizer;
     private readonly Dictionary<string, ID3D11InputLayout> inputLayouts = new(StringComparer.Ordinal);
+    private readonly Dictionary<int, SkinnedVertexProgram> skinnedPrograms = new();
+    private readonly Matrix4x4[] skinningConstants = new Matrix4x4[MaximumSkinBones];
     private ID3D11RenderTargetView? renderTarget;
     private ID3D11Texture2D? depthTexture;
     private ID3D11DepthStencilView? depthView;
@@ -299,6 +366,15 @@ public sealed class D3D11Viewport : IDisposable
             BindFlags.ConstantBuffer,
             ResourceUsage.Dynamic,
             CpuAccessFlags.Write));
+        skinningBuffer = graphics.Device.CreateBuffer(new BufferDescription(
+            MaximumSkinBones * Marshal.SizeOf<Matrix4x4>(),
+            BindFlags.ConstantBuffer,
+            ResourceUsage.Dynamic,
+            CpuAccessFlags.Write));
+        Array.Fill(skinningConstants, Matrix4x4.Identity);
+        // Compile the common textured/normal skinning path during renderer initialization so
+        // malformed animation shaders fail deterministically before the first animated draw.
+        GetSkinnedProgram(1 | 2);
         sampler = graphics.Device.CreateSamplerState(new SamplerDescription
         {
             Filter = Filter.MinMagMipLinear,
@@ -457,7 +533,11 @@ public sealed class D3D11Viewport : IDisposable
             foreach (var mesh in instance.Model.Meshes)
             {
                 if (!SceneEnvironmentVariantSelector.IsVisible(mesh.Name, environmentVariant)) continue;
-                var world = mesh.LocalTransform * instance.Transform;
+                var meshTransform = instance.SceneNodeTransforms is { } animatedNodes
+                    && (uint)mesh.SceneNodeIndex < animatedNodes.Count
+                        ? animatedNodes[mesh.SceneNodeIndex]
+                        : mesh.LocalTransform;
+                var world = meshTransform * instance.Transform;
                 var matrix = world * camera.View * camera.Projection;
                 foreach (var primitive in mesh.Primitives)
                 {
@@ -469,7 +549,8 @@ public sealed class D3D11Viewport : IDisposable
                     DrawPrimitive(
                         instance.Model, primitive, world, matrix,
                         instance.IsSelected, instance.IsPreview,
-                        instance.MaterialDiffuse, instance.MaterialEmission);
+                        instance.MaterialDiffuse, instance.MaterialEmission,
+                        instance.SkinMatrices);
                 }
             }
         }
@@ -490,6 +571,8 @@ public sealed class D3D11Viewport : IDisposable
         foreach (var state in blendStates.Values) state.Dispose();
         foreach (var state in rasterizerStates.Values) state.Dispose();
         perDrawBuffer.Dispose();
+        skinningBuffer.Dispose();
+        foreach (var program in skinnedPrograms.Values) program.Shader.Dispose();
         texturedPixelShader.Dispose();
         coloredPixelShader.Dispose();
         solidPixelShader.Dispose();
@@ -637,7 +720,8 @@ public sealed class D3D11Viewport : IDisposable
         bool selected,
         bool preview,
         Vector4 materialDiffuse,
-        Vector3 materialEmission)
+        Vector3 materialEmission,
+        IReadOnlyList<Matrix4x4>? skinMatrices)
     {
         var positionBuffer = FindBuffer(primitive, VertexSemantic.Position);
         if (positionBuffer is null || !TryMapTopology(primitive.Topology, out var topology)) return;
@@ -683,6 +767,17 @@ public sealed class D3D11Viewport : IDisposable
         var colorFormat = Format.Unknown;
         var hasVertexColor = colorBuffer is not null && colorAttribute is not null
             && TryMapFormat(colorAttribute.SourceFormat, out colorFormat);
+        var jointIndexBuffer = FindBuffer(primitive, VertexSemantic.JointIndices);
+        var jointIndexAttribute = jointIndexBuffer?.Attributes.First(value => value.Semantic == VertexSemantic.JointIndices);
+        var jointIndexFormat = Format.Unknown;
+        var jointWeightBuffer = FindBuffer(primitive, VertexSemantic.JointWeights);
+        var jointWeightAttribute = jointWeightBuffer?.Attributes.First(value => value.Semantic == VertexSemantic.JointWeights);
+        var jointWeightFormat = Format.Unknown;
+        var skinned = skinMatrices is not null && primitive.SkinBones is { Count: > 0 }
+            && jointIndexBuffer is not null && jointIndexAttribute is not null
+            && jointWeightBuffer is not null && jointWeightAttribute is not null
+            && TryMapFormat(jointIndexAttribute.SourceFormat, out jointIndexFormat)
+            && TryMapFormat(jointWeightAttribute.SourceFormat, out jointWeightFormat);
         var normalMatrix = Matrix4x4.Identity;
         if (hasNormal && Matrix4x4.Invert(world, out var inverseWorld))
         {
@@ -701,7 +796,39 @@ public sealed class D3D11Viewport : IDisposable
             ? GetRasterizerState(rasterizerState)
             : rasterizer);
         context.PSSetShaderResource(1, hasMultiUv ? multiUvTextureView! : null!);
-        if (textured && hasNormal && hasVertexColor && hasMultiUv)
+        if (skinned)
+        {
+            UpdateSkinConstants(primitive.SkinBones!, skinMatrices!);
+            var features = (hasNormal ? 1 : 0) | (textured ? 2 : 0)
+                | (hasVertexColor ? 4 : 0) | (hasMultiUv ? 8 : 0);
+            var program = GetSkinnedProgram(features);
+            var buffers = new List<D3D11VertexBufferResource> { positionBuffer };
+            var elements = new List<InputElementDescription>
+            {
+                new("POSITION", 0, positionFormat, positionAttribute.Offset, 0),
+            };
+            if (hasNormal) AddSkinnedInput("NORMAL", 0, normalFormat, normalAttribute!.Offset, normalBuffer!, buffers, elements);
+            if (textured) AddSkinnedInput("TEXCOORD", 0, textureFormat, textureAttribute!.Offset, textureBuffer!, buffers, elements);
+            if (hasMultiUv) AddSkinnedInput("TEXCOORD", 1, multiUvFormat, multiUvAttribute!.Offset, multiUvBuffer!, buffers, elements);
+            if (hasVertexColor) AddSkinnedInput("COLOR", 0, colorFormat, colorAttribute!.Offset, colorBuffer!, buffers, elements);
+            AddSkinnedInput("BLENDINDICES", 0, jointIndexFormat, jointIndexAttribute!.Offset, jointIndexBuffer!, buffers, elements);
+            AddSkinnedInput("BLENDWEIGHT", 0, jointWeightFormat, jointWeightAttribute!.Offset, jointWeightBuffer!, buffers, elements);
+            var layoutKey = "SK:" + features + ":" + string.Join(";", elements.Select(value =>
+                $"{value.SemanticName}{value.SemanticIndex}:{value.Format}:{value.AlignedByteOffset}:{value.Slot}"));
+            if (!inputLayouts.TryGetValue(layoutKey, out var layout))
+            {
+                layout = graphics.Device.CreateInputLayout(elements.ToArray(), program.Bytecode);
+                inputLayouts.Add(layoutKey, layout);
+            }
+            context.IASetInputLayout(layout);
+            context.IASetVertexBuffers(0, buffers.Select(value => value.Buffer).ToArray(),
+                buffers.Select(value => value.Stride).ToArray(), new int[buffers.Count]);
+            context.VSSetShader(program.Shader);
+            context.VSSetConstantBuffer(1, skinningBuffer);
+            context.PSSetShader(textured ? texturedPixelShader : solidPixelShader);
+            context.PSSetShaderResource(0, textured ? textureView! : null!);
+        }
+        else if (textured && hasNormal && hasVertexColor && hasMultiUv)
         {
             context.IASetInputLayout(GetTexturedNormalColorMultiUvLayout(
                 positionFormat, positionAttribute.Offset,
@@ -795,6 +922,57 @@ public sealed class D3D11Viewport : IDisposable
         context.IASetPrimitiveTopology(topology);
         context.IASetIndexBuffer(primitive.IndexBuffer, primitive.IndexElementSize == 2 ? Format.R16_UInt : Format.R32_UInt, 0);
         context.DrawIndexed(primitive.IndexCount, 0, 0);
+    }
+
+    private static void AddSkinnedInput(
+        string semanticName,
+        int semanticIndex,
+        Format format,
+        int offset,
+        D3D11VertexBufferResource buffer,
+        List<D3D11VertexBufferResource> buffers,
+        List<InputElementDescription> elements)
+    {
+        var slot = buffers.Count;
+        buffers.Add(buffer);
+        elements.Add(new InputElementDescription(semanticName, semanticIndex, format, offset, slot));
+    }
+
+    private SkinnedVertexProgram GetSkinnedProgram(int features)
+    {
+        if (skinnedPrograms.TryGetValue(features, out var cached)) return cached;
+        var macros = new List<ShaderMacro> { new("SKINNED", "1") };
+        if ((features & 1) != 0) macros.Add(new ShaderMacro("HAS_NORMAL", "1"));
+        if ((features & 2) != 0) macros.Add(new ShaderMacro("HAS_TEXTURE", "1"));
+        if ((features & 4) != 0) macros.Add(new ShaderMacro("HAS_COLOR", "1"));
+        if ((features & 8) != 0) macros.Add(new ShaderMacro("HAS_MULTI_UV", "1"));
+        var bytecode = Compile("VSSkinnedMain", "vs_5_0", macros.ToArray());
+        cached = new SkinnedVertexProgram(graphics.Device.CreateVertexShader(bytecode), bytecode);
+        skinnedPrograms.Add(features, cached);
+        return cached;
+    }
+
+    private unsafe void UpdateSkinConstants(
+        IReadOnlyList<CpuSkinBoneRemap> remaps,
+        IReadOnlyList<Matrix4x4> skinMatrices)
+    {
+        if (remaps.Count > MaximumSkinBones)
+            throw new InvalidDataException($"Primitive uses {remaps.Count} skin bones; maximum is {MaximumSkinBones}.");
+        for (var index = 0; index < remaps.Count; index++)
+        {
+            var skeletonIndex = remaps[index].SkeletonMatrixIndex;
+            if ((uint)skeletonIndex >= skinMatrices.Count)
+                throw new InvalidDataException($"Primitive skin bone {index} maps to missing skeleton matrix {skeletonIndex}.");
+            skinningConstants[index] = skinMatrices[skeletonIndex];
+        }
+        var mapped = graphics.Context.Map(skinningBuffer, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
+        fixed (Matrix4x4* source = skinningConstants)
+        {
+            Buffer.MemoryCopy(source, (void*)mapped.DataPointer,
+                MaximumSkinBones * Marshal.SizeOf<Matrix4x4>(),
+                MaximumSkinBones * Marshal.SizeOf<Matrix4x4>());
+        }
+        graphics.Context.Unmap(skinningBuffer, 0);
     }
 
     private ID3D11BlendState GetBlendState(CpuRenderPassState state)
@@ -907,6 +1085,8 @@ public sealed class D3D11Viewport : IDisposable
 
     [StructLayout(LayoutKind.Sequential)]
     private readonly record struct DebugLineVertex(Vector4 Position, Vector4 Color);
+
+    private sealed record SkinnedVertexProgram(ID3D11VertexShader Shader, byte[] Bytecode);
 
     private ID3D11InputLayout GetPositionLayout(Format format, int offset)
     {
@@ -1087,11 +1267,11 @@ public sealed class D3D11Viewport : IDisposable
         return topology != Vortice.Direct3D.PrimitiveTopology.Undefined;
     }
 
-    private static byte[] Compile(string entryPoint, string profile)
+    private static byte[] Compile(string entryPoint, string profile, ShaderMacro[]? defines = null)
     {
         var result = Compiler.Compile(
             shaderSource: ShaderSource,
-            defines: Array.Empty<ShaderMacro>(),
+            defines: defines ?? Array.Empty<ShaderMacro>(),
             include: null!,
             entryPoint: entryPoint,
             sourceName: "ED8Editor.Viewport.hlsl",

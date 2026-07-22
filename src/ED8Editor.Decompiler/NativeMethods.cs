@@ -38,6 +38,18 @@ internal static class NativeMethods
     [DllImport(Dll, CallingConvention = Cc)]
     public static extern int cs1i_func_is_code(IntPtr doc, int f);
 
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_func_type(IntPtr doc, int f);
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_func_decode_error_offset(IntPtr doc, int f);
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern IntPtr cs1i_func_orig_bytes(IntPtr doc, int f);
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_func_orig_size(IntPtr doc, int f);
+
     // ---- tables de donnees ----
     [DllImport(Dll, CallingConvention = Cc)]
     public static extern int cs1i_func_is_table(IntPtr doc, int f);
@@ -191,6 +203,9 @@ internal static class NativeMethods
     [DllImport(Dll, CallingConvention = Cc)]
     public static extern int cs1i_instr_set_s(
         IntPtr doc, int f, int k, int a, [MarshalAs(UnmanagedType.LPStr)] string value);
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_instr_set_bytes(IntPtr doc, int f, int k, int a, byte[] value, int length);
 
     [DllImport(Dll, CallingConvention = Cc)]
     public static extern int cs1i_instr_insert(

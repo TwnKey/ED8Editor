@@ -18,15 +18,24 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
         var segmentGroup = FindRequiredGroup(cluster, "PMeshSegment");
         var dataBlockGroup = FindRequiredGroup(cluster, "PDataBlockD3D11");
         var streamGroup = FindRequiredGroup(cluster, "PVertexStream");
+        var skinBoneGroup = FindOptionalGroup(cluster, "PSkinBoneRemap");
         var materialGroup = FindRequiredGroup(cluster, "PMaterial");
         var materialGroupIndex = materialGroup.Index;
         var indexBufferSize = ReadUInt32(cluster.Data.Span, 0x48, cluster.Metadata.IsBigEndian);
         var sceneGraph = new PhyreMeshSceneGraphReader().Read(cluster);
 
         var meshes = new List<CpuMesh>(checked((int)meshGroup.Group.Count));
+        CpuSkeleton? skeleton = null;
         for (uint meshIndex = 0; meshIndex < meshGroup.Group.Count; meshIndex++)
         {
             var meshObject = cluster.GetObject(meshGroup.Index, meshIndex).Span;
+            var meshSkeleton = new PhyreSkeletonReader().Read(cluster, meshGroup.Index, meshIndex);
+            if (meshSkeleton is not null)
+            {
+                if (skeleton is not null)
+                    throw new InvalidPhyreException("Multiple independent skeletons in one model cluster are not supported.");
+                skeleton = meshSkeleton;
+            }
             var segmentCount = ReadUInt32(meshObject, 0, cluster.Metadata.IsBigEndian);
             var materialPointers = cluster.Fixups.Pointers
                 .Where(value => value.SourceListIndex == meshGroup.Index
@@ -43,7 +52,8 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
                 for (uint localSegment = 0; localSegment < segmentCount; localSegment++)
                 {
                     var segmentId = checked(segmentPointer.DestinationObjectId + localSegment);
-                    var primitive = ReadPrimitive(cluster, segmentGroup.Index, segmentId, dataBlockGroup, streamGroup, indexBufferSize);
+                    var primitive = ReadPrimitive(cluster, segmentGroup.Index, segmentId, dataBlockGroup, streamGroup,
+                        skinBoneGroup, indexBufferSize);
                     if ((uint)primitive.MaterialIndex >= materialPointers.Length)
                     {
                         throw new InvalidPhyreException($"Mesh {meshIndex} references missing local material {primitive.MaterialIndex}.");
@@ -59,16 +69,35 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
                 }
             }
 
-            var sceneEntry = sceneGraph.GetValueOrDefault(meshIndex);
+            var sceneEntry = sceneGraph.Entries.GetValueOrDefault(meshIndex);
             meshes.Add(new CpuMesh(
                 sceneEntry?.Name ?? $"{assetId}:mesh:{meshIndex}",
                 sceneEntry?.LocalTransform ?? Matrix4x4.Identity,
                 primitives,
-                sceneEntry?.Purpose ?? CpuMeshPurpose.Render));
+                sceneEntry?.Purpose ?? CpuMeshPurpose.Render,
+                sceneEntry?.NodeIndex ?? -1));
         }
 
         var materials = ReadMaterials(cluster, materialGroupIndex);
-        return new CpuModel(assetId, meshes, materials, Array.Empty<CpuTexture>());
+        if (skeleton is not null)
+        {
+            foreach (var bone in meshes.SelectMany(value => value.Primitives)
+                         .SelectMany(value => value.SkinBones ?? Array.Empty<CpuSkinBoneRemap>()))
+            {
+                if ((uint)bone.HierarchyMatrixIndex >= skeleton.Joints.Count
+                    || (uint)bone.SkeletonMatrixIndex >= skeleton.InverseBindMatrices.Count)
+                    throw new InvalidPhyreException("A mesh skin-bone remap lies outside the model skeleton.");
+            }
+        }
+        var embeddedAnimation = cluster.Metadata.InstanceGroups.Any(value =>
+            value.ClassName == "PAnimationClip" && value.Count > 0)
+                ? new PhyreAnimationReader().ReadEmbeddedSceneAnimation(assetId, phyreData)
+                : null;
+        if (embeddedAnimation is not null && sceneGraph.Nodes.Count > 0)
+            _ = new CpuSceneAnimationEvaluator().Evaluate(
+                sceneGraph.Nodes, embeddedAnimation, embeddedAnimation.StartTime);
+        return new CpuModel(assetId, meshes, materials, Array.Empty<CpuTexture>(), skeleton,
+            sceneGraph.Nodes, embeddedAnimation);
     }
 
     private static IReadOnlyList<CpuMaterial> ReadMaterials(PhyreClusterData cluster, int materialGroupIndex)
@@ -290,6 +319,7 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
         uint segmentId,
         LocatedGroup dataBlockGroup,
         LocatedGroup streamGroup,
+        LocatedGroup? skinBoneGroup,
         uint indexBufferSize)
     {
         var segment = cluster.GetObject(segmentGroupIndex, segmentId).Span;
@@ -331,7 +361,25 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
 
         var indexData = cluster.GetVramData(indexOffset, indexDataSize).ToArray();
         var indices = new CpuIndexBuffer(indexData, indexElementSize, checked((int)indexCount));
-        return new CpuMeshPrimitive(vertexBuffers, indices, materialIndex, topology);
+        var skinBoneCount = ReadUInt32(segment, 0x08, cluster.Metadata.IsBigEndian);
+        IReadOnlyList<CpuSkinBoneRemap>? skinBones = null;
+        if (skinBoneCount != 0)
+        {
+            if (skinBoneGroup is null)
+                throw new InvalidPhyreException($"Segment {segmentId} declares skin bones but the cluster has no PSkinBoneRemap group.");
+            var pointer = RequirePointer(cluster, segmentGroupIndex, segmentId, 0x0c);
+            RequireDestination(pointer, skinBoneGroup.Value.Index, skinBoneCount, skinBoneGroup.Value.Group.Count, "skin bone remaps");
+            var values = new CpuSkinBoneRemap[checked((int)skinBoneCount)];
+            for (uint index = 0; index < skinBoneCount; index++)
+            {
+                var source = cluster.GetObject(skinBoneGroup.Value.Index, checked(pointer.DestinationObjectId + index)).Span;
+                values[index] = new CpuSkinBoneRemap(
+                    ReadUInt16(source, 0, cluster.Metadata.IsBigEndian),
+                    ReadUInt16(source, 2, cluster.Metadata.IsBigEndian));
+            }
+            skinBones = values;
+        }
+        return new CpuMeshPrimitive(vertexBuffers, indices, materialIndex, topology, skinBones);
     }
 
     private static CpuVertexBuffer ReadVertexBuffer(

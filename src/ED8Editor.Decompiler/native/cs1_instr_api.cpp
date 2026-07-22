@@ -339,6 +339,11 @@ static bool decodeFunc(const uint8_t*b,long len,bool ui,long absBase,std::vector
   }
   return p==len;
 }
+static long decodeErrorOffset(const uint8_t*b,long len,bool ui){
+  long p=0;
+  while(p<len){ Instr chosen; long L=0; if(!decodeOne(b,p,len,ui,chosen,L))return p; p+=L; }
+  return -1;
+}
 static void encodeExpr(const std::vector<ExprElem>&elems,std::vector<uint8_t>&out){
   for(auto&el:elems){ out.push_back(el.subop);
     if(el.subop==0x1c && el.nested) encodeInstr(*el.nested,false,out);
@@ -618,6 +623,12 @@ CS1_API const char* cs1i_scene_name(IDoc* d){ return d?d->scene.c_str():nullptr;
 CS1_API int32_t cs1i_func_count(IDoc* d){ return d?(int32_t)d->dec.size():0; }
 CS1_API const char* cs1i_func_name(IDoc* d,int32_t i){ return d?cs1_doc_func_name(d->base,i):nullptr; }
 CS1_API int32_t cs1i_func_is_code(IDoc* d,int32_t i){ if(!d||i<0||i>=(int)d->isCode.size())return 0; return d->isCode[i]; }
+CS1_API int32_t cs1i_func_type(IDoc* d,int32_t i){ return d?cs1_doc_func_type(d->base,i):-2; }
+CS1_API int32_t cs1i_func_decode_error_offset(IDoc* d,int32_t i){
+  if(!d||i<0||i>=cs1_doc_func_count(d->base))return -2;
+  const uint8_t* fb=cs1_doc_func_bytes(d->base,i); int fl=cs1_doc_func_size(d->base,i);
+  return (int32_t)decodeErrorOffset(fb,fl,d->ui);
+}
 
 // ---- Tables de donnees (structure separee du code, exposee a l'editeur) ----
 static cs1tbl::Table* tbl(IDoc* d,int i){ if(!d||i<0||i>=(int)d->isTable.size()||!d->isTable[i])return nullptr; return &d->tables[i]; }
@@ -745,6 +756,7 @@ CS1_API const char* cs1i_expr_text(IDoc*d,int32_t f,int32_t k,int32_t a){ static
 CS1_API int32_t cs1i_instr_set_i(IDoc* d,int32_t f,int32_t k,int32_t a,long v){ Instr*in=pick(d,f,k); if(!in)return 0; int r=visibleToReal(in->args,a); if(r<0||in->args[r].kind!=0)return 0; in->args[r].ival=v; return 1; }
 CS1_API int32_t cs1i_instr_set_f(IDoc* d,int32_t f,int32_t k,int32_t a,double v){ Instr*in=pick(d,f,k); if(!in)return 0; int r=visibleToReal(in->args,a); if(r<0||in->args[r].kind!=0)return 0; in->args[r].fval=v; return 1; }
 CS1_API int32_t cs1i_instr_set_s(IDoc* d,int32_t f,int32_t k,int32_t a,const char* s){ Instr*in=pick(d,f,k); if(!in||!s)return 0; int r=visibleToReal(in->args,a); if(r<0||in->args[r].kind!=1)return 0; in->args[r].raw.assign((const uint8_t*)s,(const uint8_t*)s+strlen(s)); return 1; }
+CS1_API int32_t cs1i_instr_set_bytes(IDoc* d,int32_t f,int32_t k,int32_t a,const uint8_t* b,int32_t n){ Instr*in=pick(d,f,k); if(!in||!b||n<0)return 0; int r=visibleToReal(in->args,a); if(r<0||in->args[r].kind!=4)return 0; in->args[r].raw.assign(b,b+n); return 1; }
 CS1_API int32_t cs1i_instr_remove(IDoc* d,int32_t f,int32_t k){ if(!d||f<0||f>=(int)d->dec.size())return 0; auto&v=d->dec[f]; if(k<0||k>=(int)v.size())return 0; v.erase(v.begin()+k); return 1; }
 
 // ---- Re-encode une fonction (octets) ----

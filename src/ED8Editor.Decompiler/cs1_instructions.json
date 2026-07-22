@@ -1076,13 +1076,7 @@
      "t": "u8"
     },
     {
-     "t": "u8"
-    },
-    {
-     "t": "u8"
-    },
-    {
-     "t": "u8"
+     "t": "f32"
     },
     {
      "t": "f32"
@@ -3225,7 +3219,8 @@
      "role": "selector"
     }
    ],
-   "verified": true
+   "verified": true,
+   "validated": true
   },
   {
    "name": "OP45_1",
@@ -3261,11 +3256,23 @@
      "role": "selector"
     },
     {
-     "t": "bytes",
-     "size": 15
+     "t": "u8"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "s16"
     }
    ],
-   "verified": true
+   "verified": true,
+   "validated": true
   },
   {
    "name": "OP45_3",
@@ -3283,18 +3290,29 @@
      "role": "selector"
     },
     {
-     "t": "bytes",
-     "size": 3
+     "t": "u8"
+    },
+    {
+     "t": "s16"
     },
     {
      "t": "string"
     },
     {
-     "t": "bytes",
-     "size": 14
+     "t": "f32"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "s16"
     }
    ],
-   "verified": true
+   "verified": true,
+   "validated": true
   },
   {
    "name": "OP45_4",
@@ -3312,11 +3330,26 @@
      "role": "selector"
     },
     {
-     "t": "bytes",
-     "size": 16
+     "t": "u8"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "s16"
+    },
+    {
+     "t": "u8"
     }
    ],
-   "verified": true
+   "verified": true,
+   "validated": true
   },
   {
    "name": "OP45_5",
@@ -3334,11 +3367,20 @@
      "role": "selector"
     },
     {
-     "t": "bytes",
-     "size": 7
+     "t": "u8"
+    },
+    {
+     "t": "f32",
+     "name": "Camera distance",
+     "sem": "camera",
+     "sem_arg": "distance"
+    },
+    {
+     "t": "s16"
     }
    ],
-   "verified": true
+   "verified": true,
+   "validated": true
   },
   {
    "name": "OP45_6",
@@ -3374,11 +3416,11 @@
      "role": "selector"
     },
     {
-     "t": "bytes",
-     "size": 2
+     "t": "s16"
     }
    ],
-   "verified": true
+   "verified": true,
+   "validated": true
   },
   {
    "name": "OP45_8",
@@ -3418,11 +3460,17 @@
      "role": "selector"
     },
     {
-     "t": "bytes",
-     "size": 12
+     "t": "f32"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "f32"
     }
    ],
-   "verified": true
+   "verified": true,
+   "validated": true
   },
   {
    "name": "OP45_10",
@@ -3458,8 +3506,13 @@
      "role": "selector"
     },
     {
-     "t": "bytes",
-     "size": 7
+     "t": "u8"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "s16"
     }
    ],
    "verified": true
@@ -3480,11 +3533,23 @@
      "role": "selector"
     },
     {
-     "t": "bytes",
-     "size": 15
+     "t": "u8"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "s16"
     }
    ],
-   "verified": true
+   "verified": true,
+   "validated": true
   },
   {
    "name": "OP45_13",
@@ -3586,11 +3651,26 @@
      "role": "selector"
     },
     {
-     "t": "bytes",
-     "size": 16
+     "t": "u8"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "s16"
+    },
+    {
+     "t": "u8"
     }
    ],
-   "verified": true
+   "verified": true,
+   "validated": true
   },
   {
    "name": "OP45_18",
@@ -3630,11 +3710,29 @@
      "role": "selector"
     },
     {
-     "t": "bytes",
-     "size": 18
+     "t": "s16"
+    },
+    {
+     "t": "u8"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "s16"
+    },
+    {
+     "t": "u8"
     }
    ],
-   "verified": true
+   "verified": true,
+   "validated": true
   },
   {
    "name": "OP45_20",
@@ -3652,18 +3750,33 @@
      "role": "selector"
     },
     {
-     "t": "bytes",
-     "size": 3
+     "t": "u8"
+    },
+    {
+     "t": "s16"
     },
     {
      "t": "string"
     },
     {
-     "t": "bytes",
-     "size": 14
+     "t": "f32",
+     "name": "Camera position",
+     "sem": "camera",
+     "sem_arg": "position",
+     "sem_span": 3
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "s16"
     }
    ],
-   "verified": true
+   "verified": true,
+   "validated": true
   },
   {
    "name": "OP45_21",
@@ -3681,11 +3794,23 @@
      "role": "selector"
     },
     {
-     "t": "bytes",
-     "size": 10
+     "t": "u8"
+    },
+    {
+     "t": "f32"
+    },
+    {
+     "t": "s16"
+    },
+    {
+     "t": "s16"
+    },
+    {
+     "t": "u8"
     }
    ],
-   "verified": true
+   "verified": true,
+   "validated": true
   },
   {
    "name": "OP45_22",

@@ -23,6 +23,12 @@ ed8pkg2gltf implementation under `doc/models/ed8pkg2gltf-main`. The editor does
 not invoke its file-export pipeline. Its MIT license is preserved in that
 directory.
 
+## SenPatcher
+
+The CS1 TBL container layout in `ED8Editor.Tables` was cross-checked against
+SenPatcher's `SenLib.Sen1.Tbl` implementation. SenPatcher is distributed under
+the MIT License and is available from https://github.com/AdmiralCurtiss/SenPatcher.
+
 ## PhyreEngine reference material
 
 Binary layout behavior was cross-checked against the locally supplied

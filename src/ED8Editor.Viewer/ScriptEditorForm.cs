@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using ED8Editor.Decompiler;
+using ED8Editor.Tables;
 
 namespace ED8Editor.Viewer;
 
@@ -88,9 +89,18 @@ public sealed class ScriptEditorForm : Form
     private int selectedFunctionIndex = -1;
     private int? selectedInstructionIndex;
     private Form? activeInstructionEditor;
+    private readonly Func<Cs1TableReference, IReadOnlyList<Cs1TableChoice>>? tableChoices;
+    private readonly ScriptEditorSemanticContext? semanticContext;
+    private readonly string? instructionDefinitionsPath;
 
-    public ScriptEditorForm()
+    public ScriptEditorForm(
+        Func<Cs1TableReference, IReadOnlyList<Cs1TableChoice>>? tableChoices = null,
+        ScriptEditorSemanticContext? semanticContext = null,
+        string? instructionDefinitionsPath = null)
     {
+        this.tableChoices = tableChoices;
+        this.semanticContext = semanticContext;
+        this.instructionDefinitionsPath = instructionDefinitionsPath;
         KeyPreview = true;
         BuildUi();
         blocks.MoveRequested += (from, to) => MoveInstruction(from, to);
@@ -103,6 +113,8 @@ public sealed class ScriptEditorForm : Form
     public event Action<Keys>? ViewportKeyDown;
 
     public event Action<Keys>? ViewportKeyUp;
+
+    public event Action<DecompiledFunction, DecompiledInstruction>? InstructionSelected;
 
     private void BuildUi()
     {
@@ -224,7 +236,7 @@ public sealed class ScriptEditorForm : Form
         DecompiledScript loadedScript;
         try
         {
-            loadedDocument = ScriptEditorDocument.Open(datPath);
+            loadedDocument = ScriptEditorDocument.Open(datPath, instructionDefinitionsPath);
             loadedScript = loadedDocument.Snapshot;
         }
         catch (Exception exception) when (exception is IOException or InvalidOperationException
@@ -352,7 +364,7 @@ public sealed class ScriptEditorForm : Form
     private void PopulateInstructionTypes()
     {
         instructionTypes.Items.Clear();
-        foreach (var name in ScriptEditorDocument.GetInstructionNames()) instructionTypes.Items.Add(name);
+        foreach (var name in ScriptEditorDocument.GetInstructionNames(instructionDefinitionsPath)) instructionTypes.Items.Add(name);
         if (instructionTypes.Items.Count > 0) instructionTypes.SelectedIndex = 0;
     }
 
@@ -535,6 +547,7 @@ public sealed class ScriptEditorForm : Form
         selectedInstructionIndex = instruction.Index;
         blocks.SelectInstruction(instruction.Index);
         SetSelectedInstructionToolsEnabled(instruction.Index, function.Instructions.Count);
+        InstructionSelected?.Invoke(function, instruction);
     }
 
     private DecompiledInstruction? GetSelectedInstruction()
@@ -609,6 +622,11 @@ public sealed class ScriptEditorForm : Form
             Padding = new Padding(8),
         };
         var arguments = instruction.Arguments;
+        if (!branchOnly && semanticContext is not null
+            && HasCameraCapture(instruction, semanticContext.GetCameraSnapshot()))
+        {
+            fields.Controls.Add(BuildCameraCaptureEditor(instruction));
+        }
         for (var index = 0; index < arguments.Count; index++)
         {
             var argument = arguments[index];
@@ -687,6 +705,23 @@ public sealed class ScriptEditorForm : Form
             fields.Add(field);
             row.Controls.Add(field);
         }
+        if (ScriptSemanticValueConverter.IsColor(arguments))
+        {
+            var choose = new Button { AutoSize = true, Text = "Choose color…" };
+            choose.Click += (_, _) =>
+            {
+                using var dialog = new ColorDialog
+                {
+                    AnyColor = true,
+                    FullOpen = true,
+                    Color = ScriptSemanticValueConverter.ReadColor(arguments),
+                };
+                if (dialog.ShowDialog(this) == DialogResult.OK)
+                    ApplySemanticValues(instruction, arguments,
+                        ScriptSemanticValueConverter.WriteColor(dialog.Color, arguments));
+            };
+            row.Controls.Add(choose);
+        }
         var apply = new Button { AutoSize = true, Text = "Apply" };
         apply.Click += (_, _) => RunEdit(() =>
         {
@@ -697,9 +732,94 @@ public sealed class ScriptEditorForm : Form
         return row;
     }
 
+    private Control BuildCameraCaptureEditor(DecompiledInstruction instruction)
+    {
+        var panel = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            WrapContents = false,
+            BackColor = Color.FromArgb(41, 54, 68),
+            Margin = new Padding(8, 6, 8, 10),
+            Padding = new Padding(8),
+        };
+        var apply = new Button { AutoSize = true, Text = "Apply current viewport camera" };
+        apply.Click += (_, _) =>
+        {
+            var snapshot = semanticContext!.GetCameraSnapshot();
+            var bindings = GetCameraBindings(instruction.Arguments, snapshot);
+            var byteUpdates = ScriptCameraInstructionCodec.Capture(instruction, snapshot);
+            RunEdit(() =>
+            {
+                foreach (var binding in bindings)
+                {
+                    for (var index = 0; index < binding.Arguments.Count; index++)
+                        SetScalar(instruction.Index, binding.Arguments[index], binding.Values[index]);
+                }
+                foreach (var update in byteUpdates)
+                    document!.SetBytes(selectedFunctionIndex, instruction.Index, update.ArgumentIndex, update.Value);
+            }, instruction.Index);
+        };
+        var initialBindings = GetCameraBindings(instruction.Arguments, semanticContext!.GetCameraSnapshot());
+        var initialByteUpdates = ScriptCameraInstructionCodec.Capture(instruction, semanticContext.GetCameraSnapshot());
+        panel.Controls.Add(apply);
+        panel.Controls.Add(new Label
+        {
+            AutoSize = true,
+            ForeColor = Color.Gainsboro,
+            Padding = new Padding(6, 7, 0, 0),
+            Text = $"Copies: {string.Join(", ", initialBindings.Select(value => value.Component)
+                .Concat(initialByteUpdates.Select(value => value.Component)).Distinct())}",
+        });
+        return panel;
+    }
+
+    private static IReadOnlyList<CameraSemanticBinding> GetCameraBindings(
+        IReadOnlyList<InstructionArgument> arguments,
+        ScriptCameraSnapshot snapshot)
+    {
+        var bindings = new List<CameraSemanticBinding>();
+        for (var index = 0; index < arguments.Count; index++)
+        {
+            var span = Math.Max(1, arguments[index].SemSpan);
+            var group = arguments.Skip(index).Take(span).ToArray();
+            if (ScriptSemanticValueConverter.TryWriteCamera(group, snapshot, out var component, out var values))
+                bindings.Add(new CameraSemanticBinding(group, values, component));
+            index += group.Length - 1;
+        }
+        return bindings;
+    }
+
+    private static bool HasCameraCapture(DecompiledInstruction instruction, ScriptCameraSnapshot snapshot)
+        => GetCameraBindings(instruction.Arguments, snapshot).Count > 0
+            || ScriptCameraInstructionCodec.Capture(instruction, snapshot).Count > 0;
+
+    private void ApplySemanticValues(
+        DecompiledInstruction instruction,
+        IReadOnlyList<InstructionArgument> arguments,
+        IReadOnlyList<string> values)
+    {
+        if (arguments.Count != values.Count) throw new ArgumentException("The semantic value does not match its operand span.");
+        RunEdit(() =>
+        {
+            for (var index = 0; index < arguments.Count; index++)
+                SetScalar(instruction.Index, arguments[index], values[index]);
+        }, instruction.Index);
+    }
+
+    private sealed record CameraSemanticBinding(
+        IReadOnlyList<InstructionArgument> Arguments,
+        IReadOnlyList<string> Values,
+        string Component);
+
     private Control BuildArgumentEditor(
         DecompiledFunction function, DecompiledInstruction instruction, InstructionArgument argument)
     {
+        if (argument.Kind == "scalar" && argument.Type != "ptr32"
+            && argument.Sem == "tbl"
+            && Cs1TableReference.TryParse(argument.SemArg, out var reference)
+            && reference is not null)
+            return BuildTableReferenceEditor(instruction, argument, reference);
+
         if (argument.Kind == "scalar" && argument.Type != "ptr32")
             return BuildScalarEditor(instruction, new[] { argument });
 
@@ -779,6 +899,37 @@ public sealed class ScriptEditorForm : Form
             Text = FormatArg(argument) + "  (structured editor not connected yet)",
             Padding = new Padding(3, 5, 3, 3),
         });
+        return row;
+    }
+
+    private Control BuildTableReferenceEditor(
+        DecompiledInstruction instruction, InstructionArgument argument, Cs1TableReference reference)
+    {
+        var row = CreateArgumentRow(argument);
+        var choices = tableChoices?.Invoke(reference).ToList() ?? new List<Cs1TableChoice>();
+        if (choices.All(value => value.Value != argument.IntValue))
+        {
+            choices.Insert(0, new Cs1TableChoice(argument.IntValue,
+                $"{argument.IntValue} — current value (entry unavailable)",
+                new Cs1TableEntry(reference.Category, Array.Empty<byte>())));
+        }
+        var selector = new ComboBox
+        {
+            Width = 360,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            DataSource = choices,
+            DisplayMember = nameof(Cs1TableChoice.Label),
+        };
+        selector.SelectedItem = choices.FirstOrDefault(value => value.Value == argument.IntValue);
+        var apply = new Button { AutoSize = true, Text = "Apply" };
+        apply.Click += (_, _) =>
+        {
+            if (selector.SelectedItem is not Cs1TableChoice choice) return;
+            RunEdit(() => SetScalar(instruction.Index, argument,
+                choice.Value.ToString(CultureInfo.InvariantCulture)), instruction.Index);
+        };
+        row.Controls.Add(selector);
+        row.Controls.Add(apply);
         return row;
     }
 
@@ -883,7 +1034,9 @@ public sealed class ScriptEditorForm : Form
         var label = string.IsNullOrEmpty(argument.Name)
             ? argument.Type == "ptr32" ? "Target" : argument.Type
             : argument.Name;
-        var semantic = string.IsNullOrEmpty(argument.Sem) ? string.Empty : $" «{argument.Sem}»";
+        var semantic = string.IsNullOrEmpty(argument.Sem)
+            ? string.Empty
+            : $" «{argument.Sem}{(string.IsNullOrEmpty(argument.SemArg) ? string.Empty : $":{argument.SemArg}")}»";
         var row = new FlowLayoutPanel
         {
             AutoSize = true,

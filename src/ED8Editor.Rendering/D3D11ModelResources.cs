@@ -16,12 +16,14 @@ public sealed record D3D11PrimitiveResources(
     int IndexElementSize,
     int IndexCount,
     int MaterialIndex,
-    PrimitiveTopology Topology);
+    PrimitiveTopology Topology,
+    IReadOnlyList<CpuSkinBoneRemap>? SkinBones = null);
 
 public sealed record D3D11MeshResources(
     string Name,
     Matrix4x4 LocalTransform,
-    IReadOnlyList<D3D11PrimitiveResources> Primitives);
+    IReadOnlyList<D3D11PrimitiveResources> Primitives,
+    int SceneNodeIndex = -1);
 
 public sealed record D3D11SceneInstance(
     int SceneInstanceId,
@@ -30,7 +32,9 @@ public sealed record D3D11SceneInstance(
     bool IsSelected,
     bool IsPreview = false,
     Vector4 MaterialDiffuse = default,
-    Vector3 MaterialEmission = default);
+    Vector3 MaterialEmission = default,
+    IReadOnlyList<Matrix4x4>? SkinMatrices = null,
+    IReadOnlyList<Matrix4x4>? SceneNodeTransforms = null);
 
 public sealed record D3D11TextureResources(
     CpuTexture Source,

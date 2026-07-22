@@ -306,10 +306,14 @@ public sealed class PhyreEffectRenderPassReader
                     new Dictionary<string, uint>(StringComparer.Ordinal));
                 continue;
             }
-            var valueFixup = cluster.Fixups.Arrays.Single(value =>
+            var matchingValueFixups = cluster.Fixups.Arrays.Where(value =>
                 value.SourceListIndex == contextGroupIndex && value.SourceObjectId == contextId
                 && !value.IsClassDataMember
-                && value.SourceOffset == packedSwitchesMember.ValueOffset + sizeof(uint));
+                && value.SourceOffset == packedSwitchesMember.ValueOffset + sizeof(uint)).ToArray();
+            if (matchingValueFixups.Length != 1)
+                throw new InvalidPhyreException(
+                    $"Effect context {localContext} has {matchingValueFixups.Length} packed-switch array fixups; expected one.");
+            var valueFixup = matchingValueFixups[0];
             var data = cluster.GetArrayData(contextGroupIndex, valueFixup.Offset, checked(valueCount * sizeof(uint))).Span;
             var values = new Dictionary<string, uint>(StringComparer.Ordinal);
             for (var index = 0; index < switches.Length; index++)

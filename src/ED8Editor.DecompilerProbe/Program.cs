@@ -8,6 +8,14 @@ if (args is ["--edit-smoke", var editPath])
     {
         using var document = ScriptEditorDocument.Open(editPath);
         var before = document.Snapshot;
+        var byteOperand = before.Functions.Where(value => value.IsCode)
+            .SelectMany(value => value.Instructions.SelectMany(instruction =>
+                instruction.Arguments.Where(argument => argument.Kind == "bytes")
+                    .Select(argument => (Function: value, Instruction: instruction, Argument: argument))))
+            .FirstOrDefault();
+        if (byteOperand.Argument is not null)
+            document.SetBytes(byteOperand.Function.Index, byteOperand.Instruction.Index,
+                byteOperand.Argument.Index, byteOperand.Argument.Raw);
         var function = before.Functions.First(value => value.IsCode && value.Instructions.Count > 0);
         var originalCount = function.Instructions.Count;
         document.InsertInstruction(function.Index, originalCount, "OP0");
@@ -121,9 +129,10 @@ if (args is ["--find-table", var tableRoot, var requestedKind])
     return 0;
 }
 
-if (args is ["--dump-code", var codePath])
+if (args.Length is 2 or 3 && args[0] == "--dump-code")
 {
-    var codeScript = ScriptDecompiler.Decompile(codePath);
+    var codePath = args[1];
+    var codeScript = ScriptDecompiler.Decompile(codePath, args.Length == 3 ? args[2] : null);
     foreach (var function in codeScript.Functions.Where(value => value.IsCode))
     {
         Console.WriteLine($"== #{function.Index} {function.Name} ==");
@@ -131,6 +140,27 @@ if (args is ["--dump-code", var codePath])
         {
             Console.WriteLine($"  [{instruction.Index,3}] {instruction.Name}("
                 + string.Join(", ", instruction.Arguments.Select(FormatArgument)) + ")");
+        }
+    }
+    return 0;
+}
+
+if (args is ["--find-instruction", var instructionRoot, var requestedInstruction, var registryPath])
+{
+    foreach (var path in Directory.EnumerateFiles(instructionRoot, "*.dat", SearchOption.AllDirectories))
+    {
+        try
+        {
+            var candidate = ScriptDecompiler.Decompile(path, registryPath);
+            foreach (var function in candidate.Functions.Where(value => value.IsCode))
+            foreach (var instruction in function.Instructions.Where(value =>
+                         value.Name.Equals(requestedInstruction, StringComparison.OrdinalIgnoreCase)))
+                Console.WriteLine($"{path} :: {function.Name} #{instruction.Index} ("
+                    + string.Join(", ", instruction.Arguments.Select(FormatArgument)) + ")");
+        }
+        catch (InvalidOperationException)
+        {
+            // DAT containers which are not scenario scripts are outside this diagnostic.
         }
     }
     return 0;
@@ -236,6 +266,6 @@ static string FormatArgument(InstructionArgument argument)
         case "string":
             return "\"" + Encoding.Latin1.GetString(argument.Raw).TrimEnd('\0') + "\"";
         default:
-            return $"{argument.Type}[{argument.Raw.Length}]";
+            return $"{argument.Type}[{argument.Raw.Length}]={Convert.ToHexString(argument.Raw)}";
     }
 }

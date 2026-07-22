@@ -1,14 +1,15 @@
 using System.Diagnostics;
 using System.Numerics;
 using ED8Editor.Core;
+using ED8Editor.Decompiler;
 using ED8Editor.Ops;
 using ED8Editor.Application;
 using ED8Editor.Assets;
-using ED8Editor.Decompiler;
 using ED8Editor.Packages;
 using ED8Editor.Phyre;
 using ED8Editor.Rendering;
 using ED8Editor.Scene;
+using ED8Editor.Tables;
 
 namespace ED8Editor.Viewer;
 
@@ -34,6 +35,9 @@ public sealed class ViewerForm : Form
     private readonly CancellationTokenSource effectMetadataCancellation = new();
     private readonly List<D3D11ModelResources> uploadedModels = new();
     private readonly Dictionary<string, CpuModel> loadedModelsByAsset = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, CpuAnimationClip> loadedCharacterAnimations = new(StringComparer.OrdinalIgnoreCase);
+    private readonly CpuSkeletonPoseEvaluator poseEvaluator = new();
+    private readonly CpuSceneAnimationEvaluator sceneAnimationEvaluator = new();
     private readonly Panel viewportHost = new() { Dock = DockStyle.Fill, TabStop = true };
     private readonly ToolStrip gizmoToolStrip = new()
     {
@@ -44,7 +48,21 @@ public sealed class ViewerForm : Form
     private readonly ToolStripButton translateToolButton = new("Move (1)") { ToolTipText = "Translate the selected object" };
     private readonly ToolStripButton rotateToolButton = new("Rotate (2)") { ToolTipText = "Rotate the selected object" };
     private readonly ToolStripButton scaleToolButton = new("Scale (3)") { ToolTipText = "Scale the selected object" };
-    private readonly ToolStripButton scriptsToolButton = new("Scripts") { ToolTipText = "Open the script graph tab" };
+    private readonly MenuStrip mainMenu = new();
+    private readonly TrackBar cameraFovSlider = new()
+    {
+        Minimum = 20,
+        Maximum = 120,
+        Value = 60,
+        TickFrequency = 10,
+        SmallChange = 1,
+        LargeChange = 5,
+        Width = 150,
+        Height = 28,
+        AutoSize = false,
+    };
+    private readonly ToolStripLabel cameraFovLabel = new("FOV: 60°");
+    private readonly ToolStripLabel cameraPositionLabel = new("Camera: 0, 0, 0");
     private readonly Panel scenePanel = new() { Dock = DockStyle.Left, Width = 340, Padding = new Padding(8) };
     private readonly GroupBox sceneOutlinerGroup = new()
     {
@@ -69,6 +87,7 @@ public sealed class ViewerForm : Form
     private readonly TabControl rightPanelTabs = new() { Dock = DockStyle.Fill };
     private readonly TabPage assetsTab = new("Assets / OPS");
     private readonly TabPage scriptsTab = new("Scripts");
+    private readonly TabPage tblTab = new("Tbl");
     private readonly Panel assetControlsPanel = new() { Dock = DockStyle.Fill, Padding = new Padding(8) };
     private readonly TextBox assetSearch = new() { Dock = DockStyle.Top, PlaceholderText = "Search PKG assets..." };
     private readonly CheckBox snapCheckBox = new()
@@ -159,6 +178,8 @@ public sealed class ViewerForm : Form
     private EditorKeyboardLayout keyboardLayout;
     private SceneEnvironmentVariant environmentVariant = SceneEnvironmentVariant.Daylight;
     private bool refreshingEnvironmentVariant;
+    private string? instructionDefinitionsPath;
+    private float CameraVerticalFieldOfView => cameraFovSlider.Value * MathF.PI / 180f;
 
     public ViewerForm(
         EditorSession session,
@@ -168,7 +189,12 @@ public sealed class ViewerForm : Form
     {
         this.session = session ?? throw new ArgumentNullException(nameof(session));
         this.settingsStore = settingsStore ?? new EditorSettingsStore();
-        keyboardLayout = this.settingsStore.Load().KeyboardLayout;
+        var userSettings = this.settingsStore.Load();
+        keyboardLayout = userSettings.KeyboardLayout;
+        instructionDefinitionsPath = !string.IsNullOrWhiteSpace(userSettings.InstructionDefinitionsPath)
+            && File.Exists(userSettings.InstructionDefinitionsPath)
+                ? Path.GetFullPath(userSettings.InstructionDefinitionsPath)
+                : null;
         this.projectLoader = projectLoader ?? new EditorProjectLoader(
             new OpsReader(), new GameAssetResolverFactory(), new PkgArchiveReader(),
             new AssetManifestReader(), new PhyreD3D11ModelReader(), new PhyreD3D11TextureReader());
@@ -205,7 +231,9 @@ public sealed class ViewerForm : Form
         assetsTab.Controls.Add(assetControlsPanel);
         rightPanelTabs.TabPages.Add(assetsTab);
         rightPanelTabs.TabPages.Add(scriptsTab);
+        rightPanelTabs.TabPages.Add(tblTab);
         assetPanel.Controls.Add(rightPanelTabs);
+        BuildMainMenu();
         Controls.Add(viewportHost);
         Controls.Add(assetPanelSplitter);
         Controls.Add(assetPanel);
@@ -216,17 +244,24 @@ public sealed class ViewerForm : Form
             rotateToolButton,
             scaleToolButton,
             new ToolStripSeparator(),
-            scriptsToolButton,
+            cameraFovLabel,
+            new ToolStripControlHost(cameraFovSlider) { AutoSize = false, Width = 150 },
+            new ToolStripSeparator(),
+            cameraPositionLabel,
         });
         Controls.Add(gizmoToolStrip);
+        Controls.Add(mainMenu);
+        MainMenuStrip = mainMenu;
+        mainMenu.BringToFront();
         gizmoToolStrip.BringToFront();
         translateToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Translate);
         rotateToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Rotate);
         scaleToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Scale);
-        scriptsToolButton.Click += (_, _) => OpenScriptEditor();
+        cameraFovSlider.ValueChanged += (_, _) => cameraFovLabel.Text = $"FOV: {cameraFovSlider.Value}°";
         rightPanelTabs.Selected += (_, eventArgs) =>
         {
             if (eventArgs.TabPage == scriptsTab) OpenScriptEditor();
+            else if (eventArgs.TabPage == tblTab) OpenTblEditor();
         };
         viewportHost.Resize += (_, _) => ResizeViewport();
         SetGizmoMode(GizmoMode.Translate);
@@ -270,6 +305,13 @@ public sealed class ViewerForm : Form
         renderTimer.Tick += (_, _) => RenderFrame();
         KeyDown += (_, eventArgs) =>
         {
+            if (assetPanel.Visible && rightPanelTabs.SelectedTab == tblTab
+                && eventArgs.Control && eventArgs.KeyCode == Keys.S)
+            {
+                tblEditor?.SaveCurrent(eventArgs.Shift);
+                eventArgs.SuppressKeyPress = true;
+                return;
+            }
             if (assetPanel.Visible && rightPanelTabs.SelectedTab == scriptsTab
                 && scriptEditor is { ContainsFocus: true })
             {
@@ -601,7 +643,9 @@ public sealed class ViewerForm : Form
         try
         {
             var script = await Task.Run(
-                () => ScriptDecompiler.Decompile(session.Script.Header.SourcePath),
+                () => ScriptDecompiler.Decompile(
+                    session.Script.Header.SourcePath,
+                    instructionDefinitionsPath),
                 effectMetadataCancellation.Token);
             var spawns = ScriptMonsterSpawnReader.Read(script);
             foreach (var assetId in spawns.Select(value => value.AssetId)
@@ -625,6 +669,16 @@ public sealed class ViewerForm : Form
                 {
                     uploadedModels.Add(new D3D11ModelUploader(graphics.Device).Upload(model));
                 }
+                if (model.Skeleton is not null && !loadedCharacterAnimations.ContainsKey(assetId))
+                {
+                    var animation = await Task.Run(
+                        () => projectLoader.LoadAnimationAsset(assetId, "BTL_WAIT", session.Script.GameDataPath),
+                        effectMetadataCancellation.Token);
+                    if (animation.Status == AssetAnimationLoadStatus.Loaded && animation.Clip is not null)
+                        loadedCharacterAnimations[assetId] = animation.Clip;
+                    else
+                        Debug.WriteLine($"Could not load current field-monster animation for '{assetId}': {animation.Error}");
+                }
             }
 
             var loaded = new List<SceneModelInstance>();
@@ -641,7 +695,8 @@ public sealed class ViewerForm : Form
                     model,
                     transform,
                     Vector4.One,
-                    Vector3.Zero));
+                    Vector3.Zero,
+                    SceneElementKind.ScriptCharacter));
             }
             scriptMonsterInstances = loaded;
             RefreshRenderInstances(uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase));
@@ -666,14 +721,53 @@ public sealed class ViewerForm : Form
         var elapsed = Math.Clamp((float)(ticks - previousFrameTicks) / Stopwatch.Frequency, 0f, 0.1f);
         previousFrameTicks = ticks;
         UpdateCamera(elapsed);
+        cameraPositionLabel.Text = FormattableString.Invariant(
+            $"Camera: {cameraNavigation.Position.X:0.00}, {cameraNavigation.Position.Y:0.00}, {cameraNavigation.Position.Z:0.00}");
+        RefreshAnimationPoses();
         var camera = CreateCamera();
         viewport.Render(instances, camera);
+    }
+
+    private void RefreshAnimationPoses()
+    {
+        var characters = scriptMonsterInstances.ToDictionary(value => value.Id);
+        var elapsed = (float)frameClock.Elapsed.TotalSeconds;
+        var sceneryPoses = new Dictionary<string, IReadOnlyList<Matrix4x4>>(StringComparer.OrdinalIgnoreCase);
+        instances = instances.Select(instance =>
+        {
+            if (!loadedModelsByAsset.TryGetValue(instance.Model.AssetId, out var model)) return instance;
+            var animated = instance;
+            if (model is { Skeleton: null, SceneNodes: { Count: > 0 } nodes, EmbeddedAnimation: { } sceneryClip })
+            {
+                if (!sceneryPoses.TryGetValue(model.AssetId, out var nodeTransforms))
+                {
+                    var sceneryTime = sceneryClip.Duration > 0f
+                        ? sceneryClip.StartTime + elapsed % sceneryClip.Duration
+                        : sceneryClip.StartTime;
+                    nodeTransforms = sceneAnimationEvaluator.Evaluate(nodes, sceneryClip, sceneryTime).WorldTransforms;
+                    sceneryPoses.Add(model.AssetId, nodeTransforms);
+                }
+                animated = animated with { SceneNodeTransforms = nodeTransforms };
+            }
+            if (!characters.TryGetValue(instance.SceneInstanceId, out var character)
+                || model.Skeleton is null
+                || !loadedCharacterAnimations.TryGetValue(character.AssetId, out var clip))
+                return animated;
+            var selectedCharacter = selection is { Kind: SceneElementKind.ScriptCharacter }
+                && selection.SourceIndex == character.Id;
+            var duration = clip.Duration;
+            var time = selectedCharacter && duration > 0f
+                ? clip.StartTime + elapsed % duration
+                : clip.StartTime;
+            var pose = poseEvaluator.Evaluate(model.Skeleton, clip, time);
+            return animated with { SkinMatrices = pose.SkinMatrices };
+        }).ToArray();
     }
 
     private ViewportCamera CreateCamera()
     {
         var projection = Matrix4x4.CreatePerspectiveFieldOfView(
-            MathF.PI / 3f,
+            CameraVerticalFieldOfView,
             viewportHost.ClientSize.Width / (float)viewportHost.ClientSize.Height,
             Math.Max(0.01f, sceneRadius / 10000f),
             Math.Max(1000f, sceneRadius * 20f));
@@ -771,7 +865,7 @@ public sealed class ViewerForm : Form
         var deltaX = current.X - previousMouse.X;
         var deltaY = current.Y - previousMouse.Y;
         previousMouse = current;
-        cameraNavigation.Pan(deltaX, deltaY, viewportHost.ClientSize.Height, MathF.PI / 3f);
+        cameraNavigation.Pan(deltaX, deltaY, viewportHost.ClientSize.Height, CameraVerticalFieldOfView);
     }
 
     private void BeginLookDrag(Point restoreLocation)
@@ -829,7 +923,59 @@ public sealed class ViewerForm : Form
         RefreshOverlay();
     }
 
+    private void BuildMainMenu()
+    {
+        var options = new ToolStripMenuItem("Options");
+        options.DropDownItems.Add(new ToolStripMenuItem(
+            "Instruction definitions...", null, (_, _) => ConfigureInstructionDefinitions()));
+        mainMenu.Items.Add(options);
+    }
+
+    private void ConfigureInstructionDefinitions()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Select the CS1 instruction definitions",
+            Filter = "Instruction definitions (cs1_instructions.json)|cs1_instructions.json|JSON files (*.json)|*.json|All files (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false,
+            InitialDirectory = instructionDefinitionsPath is null
+                ? Path.GetDirectoryName(ScriptDecompiler.DefaultInstructionsPath)
+                : Path.GetDirectoryName(instructionDefinitionsPath),
+            FileName = instructionDefinitionsPath is null
+                ? Path.GetFileName(ScriptDecompiler.DefaultInstructionsPath)
+                : Path.GetFileName(instructionDefinitionsPath),
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var selectedPath = Path.GetFullPath(dialog.FileName);
+        try
+        {
+            using var stream = File.OpenRead(selectedPath);
+            using var json = System.Text.Json.JsonDocument.Parse(stream);
+            if (json.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object
+                || !json.RootElement.TryGetProperty("instructions", out var instructions)
+                || instructions.ValueKind != System.Text.Json.JsonValueKind.Array)
+                throw new InvalidDataException("The JSON document has no 'instructions' array.");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+            or System.Text.Json.JsonException or InvalidDataException)
+        {
+            MessageBox.Show(this, exception.Message, "Invalid instruction definitions",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        instructionDefinitionsPath = selectedPath;
+        settingsStore.Save(settingsStore.Load() with { InstructionDefinitionsPath = selectedPath });
+        var message = scriptEditor is null
+            ? "The instruction definitions will be used when the Scripts tab is opened."
+            : "The instruction definitions were saved. Restart ED8Editor to reload the native instruction registry safely.";
+        MessageBox.Show(this, message, "Instruction definitions", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+
     private ScriptEditorForm? scriptEditor;
+    private TblEditorControl? tblEditor;
+    private Cs1TableCatalog? tableCatalog;
 
     private bool IsCameraMovementKey(Keys key) => key == Keys.ShiftKey
         || key == Keys.S
@@ -845,7 +991,17 @@ public sealed class ViewerForm : Form
         var editor = scriptEditor;
         if (editor is null || editor.IsDisposed)
         {
-            editor = new ScriptEditorForm();
+            editor = new ScriptEditorForm(
+                GetTableChoices,
+                new ScriptEditorSemanticContext(() => new ScriptCameraSnapshot(
+                    cameraNavigation.Position,
+                    cameraNavigation.Target,
+                    cameraNavigation.Forward,
+                    cameraNavigation.Distance,
+                    cameraNavigation.Yaw * 180f / MathF.PI,
+                    cameraNavigation.Pitch * 180f / MathF.PI,
+                    cameraFovSlider.Value)),
+                instructionDefinitionsPath);
             scriptEditor = editor;
             editor.TopLevel = false;
             editor.FormBorderStyle = FormBorderStyle.None;
@@ -855,6 +1011,7 @@ public sealed class ViewerForm : Form
                 if (IsCameraMovementKey(key)) pressedKeys.Add(key);
             };
             editor.ViewportKeyUp += key => pressedKeys.Remove(key);
+            editor.InstructionSelected += ApplySelectedScriptCamera;
             scriptsTab.Controls.Add(editor);
             editor.Show();
         }
@@ -865,6 +1022,77 @@ public sealed class ViewerForm : Form
         {
             editor.LoadDat(path);
         }
+    }
+
+    private void ApplySelectedScriptCamera(DecompiledFunction function, DecompiledInstruction instruction)
+    {
+        var state = ScriptCameraStateResolver.Resolve(function, instruction.Index);
+        if (!state.HasViewValue) return;
+
+        var distance = state.Distance is > 0f ? state.Distance.Value : cameraNavigation.Distance;
+        var forward = state.Forward ?? cameraNavigation.Forward;
+        if (state.YawDegrees is not null || state.PitchDegrees is not null)
+        {
+            var yaw = (state.YawDegrees ?? cameraNavigation.Yaw * 180f / MathF.PI) * MathF.PI / 180f;
+            var pitch = (state.PitchDegrees ?? cameraNavigation.Pitch * 180f / MathF.PI) * MathF.PI / 180f;
+            var cosPitch = MathF.Cos(pitch);
+            forward = Vector3.Normalize(new Vector3(
+                MathF.Sin(yaw) * cosPitch,
+                MathF.Sin(pitch),
+                MathF.Cos(yaw) * cosPitch));
+        }
+
+        var position = state.Position ?? cameraNavigation.Position;
+        if (state.Target is { } target)
+        {
+            var targetDirection = target - position;
+            if (targetDirection != Vector3.Zero)
+            {
+                forward = Vector3.Normalize(targetDirection);
+                distance = targetDirection.Length();
+            }
+            else if (state.Position is null)
+            {
+                position = target - forward * distance;
+            }
+        }
+        cameraDollySmoother.Reset();
+        cameraNavigation.SetView(position, forward, distance);
+        if (state.VerticalFieldOfViewDegrees is { } fov && float.IsFinite(fov))
+            cameraFovSlider.Value = Math.Clamp((int)MathF.Round(fov), cameraFovSlider.Minimum, cameraFovSlider.Maximum);
+        cameraPositionLabel.Text = FormattableString.Invariant(
+            $"Camera: {position.X:0.00}, {position.Y:0.00}, {position.Z:0.00}");
+        Text = $"{baseTitle} — camera state at {function.Name} #{instruction.Index}";
+    }
+
+    private void OpenTblEditor()
+    {
+        if (session.Script.GameDataPath is null)
+        {
+            tblTab.Controls.Clear();
+            tblTab.Controls.Add(new Label
+            {
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleCenter,
+                Text = "Game data directory not found.",
+            });
+            return;
+        }
+        if (tblEditor is null || tblEditor.IsDisposed)
+        {
+            tblEditor = new TblEditorControl(session.Script.GameDataPath, session.Script.Header.SourcePath);
+            tblEditor.CatalogChanged += (_, _) => tableCatalog = null;
+            tblTab.Controls.Add(tblEditor);
+        }
+    }
+
+    private IReadOnlyList<Cs1TableChoice> GetTableChoices(Cs1TableReference reference)
+    {
+        OpenTblEditor();
+        if (tblEditor?.CurrentDirectory is not { } directory) return Array.Empty<Cs1TableChoice>();
+        if (tableCatalog is null || !tableCatalog.DirectoryPath.Equals(directory, StringComparison.OrdinalIgnoreCase))
+            tableCatalog = new Cs1TableCatalog(directory);
+        return tableCatalog.GetChoices(reference);
     }
 
     private void ClearSelection()
@@ -920,9 +1148,11 @@ public sealed class ViewerForm : Form
     {
         if (selection is null) return;
         cameraDollySmoother.Reset();
-        if (selection.Kind == SceneElementKind.Prop)
+        if (selection.Kind is SceneElementKind.Prop or SceneElementKind.ScriptCharacter)
         {
-            var selected = sceneInstances.FirstOrDefault(value => value.Id == selection.SourceIndex);
+            var selected = selection.Kind == SceneElementKind.Prop
+                ? sceneInstances.FirstOrDefault(value => value.Id == selection.SourceIndex)
+                : scriptMonsterInstances.FirstOrDefault(value => value.Id == selection.SourceIndex);
             if (selected is not null)
             {
                 var bounds = new SceneBoundsCalculator().Calculate(new[] { selected });
@@ -932,7 +1162,7 @@ public sealed class ViewerForm : Form
                     return;
                 }
             }
-            if (document.Find(selection) is { } propElement)
+            if (selection.Kind == SceneElementKind.Prop && document.Find(selection) is { } propElement)
             {
                 cameraNavigation.Focus(propElement.Transform.Position, Math.Max(sceneRadius * 0.025f, 1f));
             }
@@ -944,9 +1174,13 @@ public sealed class ViewerForm : Form
 
     private string DescribeSelection(SceneElementSelection selected)
     {
-        var assetId = selected.Kind == SceneElementKind.Prop
-            ? document.FindProp(selected)?.AssetId
-            : null;
+        var assetId = selected.Kind switch
+        {
+            SceneElementKind.Prop => document.FindProp(selected)?.AssetId,
+            SceneElementKind.ScriptCharacter => scriptMonsterInstances
+                .FirstOrDefault(value => value.Id == selected.SourceIndex)?.AssetId,
+            _ => null,
+        };
         return assetId is null
             ? $"{selected.Name} [{selected.Kind}]"
             : $"{selected.Name} [{selected.Kind}] — asset: {assetId}";
@@ -974,7 +1208,8 @@ public sealed class ViewerForm : Form
                     value.Id,
                     resourcesByAsset[value.AssetId],
                     value.Transform,
-                    false,
+                    selection is { Kind: SceneElementKind.ScriptCharacter }
+                        && value.Id == selection.SourceIndex,
                     MaterialDiffuse: value.MaterialDiffuse,
                     MaterialEmission: value.MaterialEmission)));
         }
@@ -1171,7 +1406,8 @@ public sealed class ViewerForm : Form
     private float GetGizmoLength(Vector3 position)
     {
         var distance = Vector3.Distance(cameraNavigation.Position, position);
-        var worldUnitsPerPixel = 2f * distance * MathF.Tan(MathF.PI / 6f) / Math.Max(1, viewportHost.ClientSize.Height);
+        var worldUnitsPerPixel = 2f * distance * MathF.Tan(CameraVerticalFieldOfView * 0.5f)
+            / Math.Max(1, viewportHost.ClientSize.Height);
         return Math.Max(worldUnitsPerPixel * 115f, overlayMarkerSize * 2.5f);
     }
 
@@ -1578,6 +1814,9 @@ public sealed class ViewerForm : Form
     private IReadOnlyList<SceneModelInstance> VisibleSceneInstances()
         => sceneInstances
             .Where(value => SceneEnvironmentVariantSelector.IsVisible(value.Name, ActiveEnvironmentVariant))
+            .Concat(showIndicatorsCheckBox.Checked
+                ? scriptMonsterInstances
+                : Array.Empty<SceneModelInstance>())
             .ToArray();
 
     private enum CameraDragMode

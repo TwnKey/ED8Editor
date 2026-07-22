@@ -12,8 +12,10 @@
 
   <ItemGroup>
     <!-- Le document (source de verite des instructions) est copie a cote de l'exe. -->
-    <None Include="cs1_instructions.json">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    <None Remove="cs1_instructions.json" />
+    <None Include="..\..\opcode_analyzer\cs1_instructions.json" Link="cs1_instructions.json">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
     </None>
     <!-- Schema editable des records de tables (optionnel : retypage). -->
     <None Include="cs1_tables.json" Condition="Exists('cs1_tables.json')">

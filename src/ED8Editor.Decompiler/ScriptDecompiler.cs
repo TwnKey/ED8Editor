@@ -15,6 +15,7 @@ public sealed class ScriptDecompiler
 {
     private static readonly object Gate = new();
     private static bool _registryLoaded;
+    private static string? _registryPath;
 
     private static readonly HashSet<string> ScalarTypes = new(StringComparer.Ordinal)
     {
@@ -30,12 +31,15 @@ public sealed class ScriptDecompiler
     {
         lock (Gate)
         {
+            var path = Path.GetFullPath(instructionsJsonPath ?? DefaultInstructionsPath);
             if (_registryLoaded)
             {
+                if (!string.Equals(path, _registryPath, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException(
+                        $"The instruction registry is already loaded from '{_registryPath}'. Restart the viewer to use '{path}'.");
                 return;
             }
 
-            var path = instructionsJsonPath ?? DefaultInstructionsPath;
             if (!File.Exists(path))
             {
                 throw new FileNotFoundException("Instruction registry not found.", path);
@@ -60,6 +64,7 @@ public sealed class ScriptDecompiler
             }
 
             _registryLoaded = true;
+            _registryPath = path;
         }
     }
 
@@ -98,10 +103,26 @@ public sealed class ScriptDecompiler
             var isTable = NativeMethods.cs1i_func_is_table(doc, f) != 0;
             var instructions = isCode ? BuildInstructions(doc, f) : Array.Empty<DecompiledInstruction>();
             var table = isTable ? BuildTable(doc, f) : null;
-            functions.Add(new DecompiledFunction(f, name, isCode, instructions, table));
+            var sourceType = NativeMethods.cs1i_func_type(doc, f);
+            var rawData = !isCode && !isTable ? BuildRawData(doc, f) : null;
+            var decodeErrorOffset = !isCode && sourceType == 0
+                ? NativeMethods.cs1i_func_decode_error_offset(doc, f)
+                : -1;
+            functions.Add(new DecompiledFunction(
+                f, name, isCode, instructions, table, sourceType, rawData, decodeErrorOffset));
         }
 
         return new DecompiledScript(scene, functions);
+    }
+
+    private static byte[] BuildRawData(IntPtr doc, int f)
+    {
+        var size = NativeMethods.cs1i_func_orig_size(doc, f);
+        var pointer = NativeMethods.cs1i_func_orig_bytes(doc, f);
+        if (size <= 0 || pointer == IntPtr.Zero) return Array.Empty<byte>();
+        var bytes = new byte[size];
+        System.Runtime.InteropServices.Marshal.Copy(pointer, bytes, 0, size);
+        return bytes;
     }
 
     private static DecompiledTable BuildTable(IntPtr doc, int f)

@@ -11,9 +11,10 @@ public enum EditorKeyboardLayout
 public sealed record EditorUserSettings(
     int Version,
     string? GameDirectory,
-    EditorKeyboardLayout KeyboardLayout = EditorKeyboardLayout.Azerty)
+    EditorKeyboardLayout KeyboardLayout = EditorKeyboardLayout.Azerty,
+    string? InstructionDefinitionsPath = null)
 {
-    public static EditorUserSettings Default { get; } = new(1, null, EditorKeyboardLayout.Azerty);
+    public static EditorUserSettings Default { get; } = new(1, null, EditorKeyboardLayout.Azerty, null);
 }
 
 public sealed class EditorSettingsStore

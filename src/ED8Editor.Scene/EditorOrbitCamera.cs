@@ -46,6 +46,18 @@ public sealed class EditorOrbitCamera
         SetDirection(direction / Distance);
     }
 
+    public void SetView(Vector3 position, Vector3 forward, float distance)
+    {
+        ValidateFinite(position, nameof(position));
+        ValidateFinite(forward, nameof(forward));
+        if (forward == Vector3.Zero) throw new ArgumentException("Camera forward direction cannot be zero.", nameof(forward));
+        if (!float.IsFinite(distance) || distance <= 0f) throw new ArgumentOutOfRangeException(nameof(distance));
+        Position = position;
+        Distance = distance;
+        SetDirection(Vector3.Normalize(forward));
+        Target = Position + Forward * Distance;
+    }
+
     public void Orbit(float deltaX, float deltaY, float radiansPerPixel = 0.004f)
     {
         if (!float.IsFinite(deltaX) || !float.IsFinite(deltaY)) throw new ArgumentOutOfRangeException(nameof(deltaX));

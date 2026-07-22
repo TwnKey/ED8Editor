@@ -16,7 +16,10 @@ public sealed record DecompiledFunction(
     string Name,
     bool IsCode,
     IReadOnlyList<DecompiledInstruction> Instructions,
-    DecompiledTable? Table = null);
+    DecompiledTable? Table = null,
+    int SourceType = -1,
+    byte[]? RawData = null,
+    int DecodeErrorOffset = -1);
 
 /// <summary>
 /// Une table de donnees (ActionTable, AlgoTable, FieldMonsterData, ...), separee du
@@ -62,7 +65,8 @@ public sealed record DecompiledInstruction(
 ///
 /// <see cref="Name"/> est un libelle humain (optionnel). <see cref="Sem"/> est un type
 /// semantique pour choisir un selecteur adapte dans l'editeur :
-/// "color", "position", "vec2"/"vec3"/"vec4", "file" (extension dans <see cref="SemArg"/>),
+/// "color", "position", "vec2"/"vec3"/"vec4", "camera" ("fov" ou "pos" dans
+/// <see cref="SemArg"/>), "file" (extension dans <see cref="SemArg"/>),
 /// "tbl" (<see cref="SemArg"/> = "nomTbl:typeEntree"), "func_index", "func_name".
 /// <see cref="SemSpan"/> = nombre d'operandes consecutifs groupes (ex. position = 3 floats).
 /// </summary>

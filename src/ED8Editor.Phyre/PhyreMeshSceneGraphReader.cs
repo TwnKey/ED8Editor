@@ -8,11 +8,16 @@ namespace ED8Editor.Phyre;
 internal sealed record PhyreMeshSceneEntry(
     string Name,
     CpuMeshPurpose Purpose,
-    Matrix4x4 LocalTransform);
+    Matrix4x4 LocalTransform,
+    int NodeIndex);
+
+internal sealed record PhyreMeshSceneGraph(
+    IReadOnlyDictionary<uint, PhyreMeshSceneEntry> Entries,
+    IReadOnlyList<CpuSceneNode> Nodes);
 
 internal sealed class PhyreMeshSceneGraphReader
 {
-    public IReadOnlyDictionary<uint, PhyreMeshSceneEntry> Read(PhyreClusterData cluster)
+    public PhyreMeshSceneGraph Read(PhyreClusterData cluster)
     {
         ArgumentNullException.ThrowIfNull(cluster);
         var meshGroup = FindGroup(cluster, "PMesh");
@@ -21,7 +26,7 @@ internal sealed class PhyreMeshSceneGraphReader
         var worldMatrixGroup = FindGroup(cluster, "PWorldMatrix");
         if (meshGroup is null || instanceGroup is null || nodeGroup is null || worldMatrixGroup is null)
         {
-            return new Dictionary<uint, PhyreMeshSceneEntry>();
+            return new PhyreMeshSceneGraph(new Dictionary<uint, PhyreMeshSceneEntry>(), Array.Empty<CpuSceneNode>());
         }
 
         var parentMember = FindRequiredMember(cluster, "PNode", "m_parent");
@@ -45,6 +50,14 @@ internal sealed class PhyreMeshSceneGraphReader
             if (!string.IsNullOrEmpty(name)) nodeNames[nodeId] = name;
         }
         var nodeWorldTransforms = ResolveWorldTransforms(nodeLocalTransforms, nodeParents);
+        var sceneNodes = new CpuSceneNode[checked((int)nodeGroup.Value.Group.Count)];
+        for (uint nodeId = 0; nodeId < nodeGroup.Value.Group.Count; nodeId++)
+        {
+            sceneNodes[nodeId] = new CpuSceneNode(
+                nodeNames.GetValueOrDefault(nodeId) ?? string.Empty,
+                nodeParents[nodeId] is { } parent ? checked((int)parent) : -1,
+                nodeLocalTransforms[nodeId]);
+        }
 
         var collisionNodes = ReadCollisionTargetNodes(cluster, nodeGroup.Value.Index);
         var entries = new Dictionary<uint, PhyreMeshSceneEntry>();
@@ -66,9 +79,10 @@ internal sealed class PhyreMeshSceneGraphReader
             var localTransform = nodeId is { } transformNode
                 ? nodeWorldTransforms[transformNode]
                 : Matrix4x4.Identity;
-            entries[mesh.DestinationObjectId] = new PhyreMeshSceneEntry(name, purpose, localTransform);
+            entries[mesh.DestinationObjectId] = new PhyreMeshSceneEntry(
+                name, purpose, localTransform, nodeId is { } sceneNodeId ? checked((int)sceneNodeId) : -1);
         }
-        return entries;
+        return new PhyreMeshSceneGraph(entries, sceneNodes);
     }
 
     private static Matrix4x4 ReadNodeLocalTransform(

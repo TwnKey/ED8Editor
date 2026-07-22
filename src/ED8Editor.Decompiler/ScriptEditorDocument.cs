@@ -56,6 +56,13 @@ public sealed class ScriptEditorDocument : IDisposable
     public void SetString(int function, int instruction, int argument, string value) =>
         Mutate(NativeMethods.cs1i_instr_set_s(Handle, function, instruction, argument, value), "update the text");
 
+    public void SetBytes(int function, int instruction, int argument, byte[] value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        Mutate(NativeMethods.cs1i_instr_set_bytes(Handle, function, instruction, argument, value, value.Length),
+            "update the byte operand");
+    }
+
     public void SetJump(int function, int instruction, int argument, int targetFunction, int targetInstruction) =>
         Mutate(NativeMethods.cs1i_instr_set_jump(
             Handle, function, instruction, argument, targetFunction, targetInstruction), "update the branch");

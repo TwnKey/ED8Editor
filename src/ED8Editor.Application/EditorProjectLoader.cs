@@ -6,6 +6,7 @@ namespace ED8Editor.Application;
 
 public sealed class EditorProjectLoader
 {
+    private const string DefaultFieldAnimationPackageSuffix = "_DF1";
     private readonly ScriptBootstrapper scriptBootstrapper;
     private readonly IMapSceneReader mapSceneReader;
     private readonly IAssetPackageResolverFactory? assetResolverFactory;
@@ -55,6 +56,42 @@ public sealed class EditorProjectLoader
         return LoadModel(LoadManifest(resolution));
     }
 
+    public AssetAnimationLoad LoadAnimationAsset(
+        string assetId,
+        string clipName,
+        string gameDataPath,
+        AssetVariantPreference preference = AssetVariantPreference.English)
+    {
+        if (string.IsNullOrWhiteSpace(assetId)) throw new ArgumentException("Asset ID is required.", nameof(assetId));
+        if (string.IsNullOrWhiteSpace(clipName)) throw new ArgumentException("Clip name is required.", nameof(clipName));
+        if (assetResolverFactory is null || packageArchiveReader is null || assetManifestReader is null)
+            throw new InvalidOperationException("The project loader has no complete asset-loading pipeline.");
+        var symbol = $"{assetId}_CLIP_{clipName}";
+        foreach (var packageAssetId in new[] { assetId, assetId + DefaultFieldAnimationPackageSuffix })
+        {
+            var resolution = assetResolverFactory.Create(gameDataPath).Resolve(packageAssetId, preference);
+            if (resolution.SelectedPackage is null) continue;
+            try
+            {
+                var archive = packageArchiveReader.Read(resolution.SelectedPackage.Path);
+                var manifest = assetManifestReader.Read(archive, symbol);
+                var definition = manifest.Assets.SingleOrDefault(value =>
+                    value.Symbol.Equals(symbol, StringComparison.OrdinalIgnoreCase));
+                if (definition is null) continue;
+                var resource = definition.Resources.SingleOrDefault(value => value.Kind == AssetResourceKind.Model)
+                    ?? throw new InvalidDataException($"Animation asset '{symbol}' has no p_collada cluster.");
+                var clip = new PhyreAnimationReader().Read(symbol, archive.ReadEntry(resource.ArchiveEntryName));
+                return new AssetAnimationLoad(assetId, clipName, AssetAnimationLoadStatus.Loaded, clip, null);
+            }
+            catch (Exception exception) when (exception is IOException or InvalidDataException or ArgumentException)
+            {
+                return new AssetAnimationLoad(assetId, clipName, AssetAnimationLoadStatus.Invalid, null, exception.Message);
+            }
+        }
+        return new AssetAnimationLoad(assetId, clipName, AssetAnimationLoadStatus.Missing, null,
+            $"No manifest declares animation asset '{symbol}' in the model or default-field package.");
+    }
+
     public Task<IReadOnlyDictionary<string, CpuModel>> LoadEffectMetadataAsync(
         EditorSession session,
         CancellationToken cancellationToken = default)
@@ -73,9 +110,19 @@ public sealed class EditorProjectLoader
             cancellationToken.ThrowIfCancellationRequested();
             if (!session.AssetManifests.TryGetValue(load.AssetId, out var manifest)
                 || manifest.Manifest is null || packageArchiveReader is null) continue;
-            var archive = packageArchiveReader.Read(manifest.Manifest.SourcePackagePath);
-            var model = BindEffectMetadata(load.Model!, archive);
-            if (model.Materials.Any(value => value.EffectSwitches is not null)) updated[load.AssetId] = model;
+            try
+            {
+                var archive = packageArchiveReader.Read(manifest.Manifest.SourcePackagePath);
+                var model = BindEffectMetadata(load.Model!, archive);
+                if (model.Materials.Any(value => value.EffectSwitches is not null)) updated[load.AssetId] = model;
+            }
+            catch (Exception exception) when (exception is IOException or InvalidDataException or InvalidOperationException)
+            {
+                // Effect metadata is optional renderer enrichment. Preserve the already loaded model
+                // when one authored effect cluster is structurally invalid, and continue other assets.
+                System.Diagnostics.Debug.WriteLine(
+                    $"Skipping invalid Phyre effect metadata for '{load.AssetId}': {exception}");
+            }
         }
         return updated;
     }

@@ -1,10 +1,9 @@
 Aucune heuristique ou détection farfelue.
 
 Codex :
-
-- gérer l'affichage des monstres sur la map via les tables de script associées (les createmonsters)
-- gérer le parsing des tbl (nouvel onglet à droite de celui de script) et les sémantiques pour préciser dans l'éditeur comment éditer les champs qui sont liés à une tbl
-
+- introduire le fov de la caméra sous forme de slider, et permettre la sémantique camera:fov, camera:pos, pour copier les paramètres courant de la camera dans un opérande (parfois composé de plusieurs valeurs) en un clic
+- rajouter la sélection de couleur pour la sémantique de couleur.
+- animer les décors/personnages (pour les décors, les animer tout le temps, pour les personnages, les bloquer en première frame, et si on les sélectionne jouer en boucle l'animation courante)
 - "Le shader Phyre complet n’est pas encore activé : il manque le binding vérifié de tous les paramètres moteur ($Globals, brouillard, caméra, éclairage…)."
 - Implémenter les lumières et ombres (comme dans le jeu ?)
 - Implémenter la météo ? (sera nécessaire si settée par le script)

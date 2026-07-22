@@ -4,4 +4,5 @@ public sealed record CpuMeshPrimitive(
     IReadOnlyList<CpuVertexBuffer> VertexBuffers,
     CpuIndexBuffer Indices,
     int MaterialIndex,
-    PrimitiveTopology Topology);
+    PrimitiveTopology Topology,
+    IReadOnlyList<CpuSkinBoneRemap>? SkinBones = null);
