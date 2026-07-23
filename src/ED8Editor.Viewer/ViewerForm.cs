@@ -1074,32 +1074,55 @@ public sealed class ViewerForm : Form
 
         var distance = state.Distance is > 0f ? state.Distance.Value : cameraNavigation.Distance;
         var forward = state.Forward ?? cameraNavigation.Forward;
+        var roll = 0f;
+
+        // OP45_4 : angles en degrés → conversion en radians, avec shortest-path
         if (state.YawDegrees is not null || state.PitchDegrees is not null)
         {
-            var yaw = (state.YawDegrees ?? cameraNavigation.Yaw * 180f / MathF.PI) * MathF.PI / 180f;
-            var pitch = (state.PitchDegrees ?? cameraNavigation.Pitch * 180f / MathF.PI) * MathF.PI / 180f;
-            var cosPitch = MathF.Cos(pitch);
+            var targetYaw = (state.YawDegrees ?? cameraNavigation.Yaw * 180f / MathF.PI) * MathF.PI / 180f;
+            var targetPitch = (state.PitchDegrees ?? cameraNavigation.Pitch * 180f / MathF.PI) * MathF.PI / 180f;
+
+            // Shortest path: normaliser la différence entre -PI et PI
+            if (state.UseShortestPath)
+            {
+                var deltaYaw = targetYaw - cameraNavigation.Yaw;
+                var deltaPitch = targetPitch - cameraNavigation.Pitch;
+                deltaYaw = (deltaYaw + MathF.PI) % (2f * MathF.PI) - MathF.PI;
+                deltaPitch = (deltaPitch + MathF.PI) % (2f * MathF.PI) - MathF.PI;
+                targetYaw = cameraNavigation.Yaw + deltaYaw;
+                targetPitch = cameraNavigation.Pitch + deltaPitch;
+            }
+
+            var cosPitch = MathF.Cos(targetPitch);
             forward = Vector3.Normalize(new Vector3(
-                MathF.Sin(yaw) * cosPitch,
-                MathF.Sin(pitch),
-                MathF.Cos(yaw) * cosPitch));
+                MathF.Sin(targetYaw) * cosPitch,
+                MathF.Sin(targetPitch),
+                MathF.Cos(targetYaw) * cosPitch));
+
+            if (state.RollDegrees is { } rollDeg)
+                roll = rollDeg * MathF.PI / 180f;
         }
 
+        // La caméra orbite autour de Target (si défini) ou conserve sa position
         var position = state.Position ?? cameraNavigation.Position;
         if (state.Target is { } target)
         {
-            var targetDirection = target - position;
-            if (targetDirection != Vector3.Zero)
-            {
-                forward = Vector3.Normalize(targetDirection);
-                distance = targetDirection.Length();
-            }
-            else if (state.Position is null)
-            {
-                position = target - forward * distance;
-            }
+            // Eye = Target - Forward * Distance
+            position = target - forward * distance;
         }
+        else if (state.Position is null && (state.YawDegrees is not null || state.PitchDegrees is not null))
+        {
+            // Garder le target actuel, recalculer Eye depuis les nouveaux angles
+            position = cameraNavigation.Target - forward * distance;
+        }
+        // CameraSetTarget_Relative : decaler le target actuel
+        if (state.TargetOffset is { } offset)
+            position = (cameraNavigation.Target + offset) - forward * distance;
+        // CameraSetEye_Relative : decaler l'oeil (target fixe -> angles/distance changent)
+        if (state.PositionOffset is { } eyeOffset)
+            position = cameraNavigation.Position + eyeOffset;
         cameraDollySmoother.Reset();
+        cameraNavigation.SetRoll(roll);
         cameraNavigation.SetView(position, forward, distance);
         if (state.VerticalFieldOfViewDegrees is { } fov && float.IsFinite(fov))
             cameraFovSlider.Value = Math.Clamp((int)MathF.Round(fov), cameraFovSlider.Minimum, cameraFovSlider.Maximum);

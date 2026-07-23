@@ -92,6 +92,7 @@ public sealed class ScriptEditorForm : Form
     private readonly Func<Cs1TableReference, IReadOnlyList<Cs1TableChoice>>? tableChoices;
     private readonly ScriptEditorSemanticContext? semanticContext;
     private readonly string? instructionDefinitionsPath;
+    private readonly Dictionary<string, Dictionary<int, Dictionary<string, string>>> bitmaskDefs = new();
 
     public ScriptEditorForm(
         Func<Cs1TableReference, IReadOnlyList<Cs1TableChoice>>? tableChoices = null,
@@ -101,6 +102,7 @@ public sealed class ScriptEditorForm : Form
         this.tableChoices = tableChoices;
         this.semanticContext = semanticContext;
         this.instructionDefinitionsPath = instructionDefinitionsPath;
+        LoadBitmaskDefs();
         KeyPreview = true;
         BuildUi();
         blocks.MoveRequested += (from, to) => MoveInstruction(from, to);
@@ -115,6 +117,39 @@ public sealed class ScriptEditorForm : Form
     public event Action<Keys>? ViewportKeyUp;
 
     public event Action<DecompiledFunction, DecompiledInstruction>? InstructionSelected;
+
+    private void LoadBitmaskDefs()
+    {
+        try
+        {
+            var path = instructionDefinitionsPath
+                ?? System.IO.Path.Combine(AppContext.BaseDirectory, "cs1_instructions.json");
+            if (!System.IO.File.Exists(path)) return;
+            var json = System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText(path));
+            if (!json.RootElement.TryGetProperty("instructions", out var instrs)) return;
+            foreach (var instr in instrs.EnumerateArray())
+            {
+                var name = instr.GetProperty("name").GetString();
+                if (name is null) continue;
+                var read = instr.GetProperty("read");
+                var argIdx = 0;
+                foreach (var arg in read.EnumerateArray())
+                {
+                    if (arg.TryGetProperty("bits", out var bits))
+                    {
+                        var map = new Dictionary<string, string>();
+                        foreach (var bit in bits.EnumerateObject())
+                            map[bit.Name] = bit.Value.GetString() ?? bit.Name;
+                        if (!bitmaskDefs.ContainsKey(name))
+                            bitmaskDefs[name] = new();
+                        bitmaskDefs[name][argIdx] = map;
+                    }
+                    argIdx++;
+                }
+            }
+        }
+        catch { }
+    }
 
     private void BuildUi()
     {
@@ -814,6 +849,10 @@ public sealed class ScriptEditorForm : Form
     private Control BuildArgumentEditor(
         DecompiledFunction function, DecompiledInstruction instruction, InstructionArgument argument)
     {
+        if (bitmaskDefs.TryGetValue(instruction.Name, out var argBits)
+            && argBits.TryGetValue(argument.Index, out var bits))
+            return BuildBitmaskEditor(instruction, argument, bits);
+
         if (argument.Kind == "scalar" && argument.Type != "ptr32"
             && argument.Sem == "tbl"
             && Cs1TableReference.TryParse(argument.SemArg, out var reference)
@@ -900,6 +939,39 @@ public sealed class ScriptEditorForm : Form
             Padding = new Padding(3, 5, 3, 3),
         });
         return row;
+    }
+
+    private Control BuildBitmaskEditor(DecompiledInstruction instruction, InstructionArgument argument, Dictionary<string, string> bits)
+    {
+        var panel = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, Padding = new Padding(4) };
+        var label = new Label { Text = argument.Name ?? "Flags", Font = new Font("Segoe UI", 9, FontStyle.Bold), AutoSize = true };
+        panel.Controls.Add(label);
+
+        var currentValue = argument.Raw is { Length: >= 2 } r ? r[0] | (r[1] << 8) : (ushort)argument.IntValue;
+        var checkboxes = new List<CheckBox>();
+
+        foreach (var kv in bits)
+        {
+            var mask = Convert.ToInt32(kv.Key, 16);
+            var cb = new CheckBox
+            {
+                Text = kv.Value + " (0x" + mask.ToString("X2") + ")",
+                AutoSize = true,
+                Checked = (currentValue & mask) != 0,
+                Tag = mask
+            };
+            cb.CheckedChanged += (_, _) =>
+            {
+                ushort val = 0;
+                foreach (var c in checkboxes)
+                    if (c.Checked && c.Tag is int m) val |= (ushort)m;
+                var raw = new[] { (byte)(val & 0xFF), (byte)(val >> 8) };
+                RunEdit(() => document!.SetBytes(selectedFunctionIndex, instruction.Index, argument.Index, raw), instruction.Index);
+            };
+            checkboxes.Add(cb);
+            panel.Controls.Add(cb);
+        }
+        return panel;
     }
 
     private Control BuildTableReferenceEditor(

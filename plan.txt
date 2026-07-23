@@ -1,23 +1,19 @@
 Aucune heuristique ou détection farfelue.
 
 Codex :
-- introduire le fov de la caméra sous forme de slider, et permettre la sémantique camera:fov, camera:pos, pour copier les paramètres courant de la camera dans un opérande (parfois composé de plusieurs valeurs) en un clic
-- rajouter la sélection de couleur pour la sémantique de couleur.
-- animer les décors/personnages (pour les décors, les animer tout le temps, pour les personnages, les bloquer en première frame, et si on les sélectionne jouer en boucle l'animation courante)
+- Vérifier l'implémentation des commandes op45 (caméra). L'idée est de reproduire les plans statiques de la caméra (pas l'interpolation)
+et facilement permettre à l'utilisateur de les modifier avec la caméra de l'éditeur.
+- Implémenter les "entités" cad spawn les acteurs, leur attribuer une id dans une liste d'entité qui se maintient à jour selon la position dans la fonction (depuis le départ de la fonction), etc, comme le fait le script, de manière similaire à la caméra cad que depuis le départ de la fonction courante, retracer les spawn/mouvements des acteurs pour qu'ils soient positionnés correctement par rapport à la caméra (de cette façon l'utilisateur saura cadrer la caméra dans l'éditeur)
+de cette façon aussi on pourra remplir les champs avec sem = entity pour qu'il pointe vers l'entité avec l'id correspondante, et permettre à l'utilisateur de sélectionner d'autres entités dans la liste
+- implémenter correctement le rempalcement des valeurs par les propriétés associées de la caméra courante
+PLUS TARD:
 - "Le shader Phyre complet n’est pas encore activé : il manque le binding vérifié de tous les paramètres moteur ($Globals, brouillard, caméra, éclairage…)."
 - Implémenter les lumières et ombres (comme dans le jeu ?)
 - Implémenter la météo ? (sera nécessaire si settée par le script)
-- Gérer l'importation des tables en ram sous forme de map probablement ?
 
-Claude :
-- Finir le 100% code : gérer les chunks des fonctions mal formées, valider system.dat
-- Gérer les tables à l'intérieur des scripts (les combats, etc) => heuristique inevitable comme on a vu.
-- Tester sur les autres scripts que scena (ai, ani,...)
-- Valider le roundtrip
-- 
-- Attaquer le flot des fonctions (les différentes branches, les jump etc).
-- Implémenter l'interface avec l'éditeur de map
-
-Deepseek/Gemini/à la main:
-Principalement tout ce qui n'est pas code, donc reverse engineering.
-- Développer un outil simple pour analyser tous les arguments de toutes les fonctions, avec affichage sous plusieurs formats (float, int, unsigned int, short, ...) et un clic pour committer le format des paramètres et ne plus avoir à le réanalyser ensuite, balayer tous les fichiers scénario avec jusqu'à ce que tout soit committé en terme de format. Permettre de modifier le nom de la commande si jamais pendant l'investigation des arguments on devine ce qu'elle fait (à noter qu'un op code != un nom, car on peut avoir un bit supplémentaire après l'op code qui sert à spécifier la variante de la fonction)
+Claude : 
+- Rendre encore plus intuitif l'éditeur de scripts (atm y a des branches dans tous les sens)
+- Virer les op0 de l'éditeur de script quand ils sont après un op1 (c'est du padding, pas des instructions)
+- Trouver une solution pour les cas où on a plusieurs branches, si on veut récupérer l'état de la camera (quel branche on prend ?)
+une solution qui soit simple pour l'utilisateur.
+- Gestion des flags (pour les jump conditionnels) : traquer la valeur des flags, que ça soit aussi simple pour l'utilisateur

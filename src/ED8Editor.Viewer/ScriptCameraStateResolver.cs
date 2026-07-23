@@ -11,11 +11,17 @@ internal sealed record ScriptCameraState(
     float? Distance = null,
     float? VerticalFieldOfViewDegrees = null,
     float? YawDegrees = null,
-    float? PitchDegrees = null)
+    float? PitchDegrees = null,
+    float? RollDegrees = null,
+    int AngleDurationMs = 0,
+    bool UseShortestPath = true,
+    int TargetDurationMs = 0,
+    Vector3? TargetOffset = null,
+    Vector3? PositionOffset = null)
 {
     public bool HasViewValue => Position is not null || Target is not null || Forward is not null
         || Distance is not null || VerticalFieldOfViewDegrees is not null
-        || YawDegrees is not null || PitchDegrees is not null;
+        || YawDegrees is not null || PitchDegrees is not null || RollDegrees is not null;
 }
 
 internal static class ScriptCameraStateResolver
@@ -75,23 +81,111 @@ internal static class ScriptCameraStateResolver
         state = ApplySemanticArguments(instruction.Arguments, state);
         if (instruction.Opcode != 45) return state;
 
-        // Confirmed OP45 selector layouts from the instruction knowledge base and
-        // the corresponding typed layouts used by the previous registry revision.
-        if (instruction.Name.Equals("OP45_2", StringComparison.OrdinalIgnoreCase)
-            && TryReadPosition(instruction.Arguments, 15, 1, out var absolutePosition))
-            return state with { Position = absolutePosition };
-        if (instruction.Name.Equals("OP45_4", StringComparison.OrdinalIgnoreCase)
-            && TryReadEulerAngles(instruction.Arguments, out var pitch, out var yaw))
-            return state with { PitchDegrees = pitch, YawDegrees = yaw };
-        if (instruction.Name.Equals("OP45_5", StringComparison.OrdinalIgnoreCase)
-            && TryReadDistance(instruction.Arguments, out var distance))
-            return state with { Distance = distance };
-        if (instruction.Name.Equals("OP45_11", StringComparison.OrdinalIgnoreCase)
-            && TryReadScalarOrPackedFloat(instruction.Arguments, 7, 1, out var fov))
-            return state with { VerticalFieldOfViewDegrees = fov };
-        if (instruction.Name.Equals("OP45_20", StringComparison.OrdinalIgnoreCase)
-            && TryReadPosition(instruction.Arguments, 14, 0, out var position))
-            return state with { Position = position };
+        var args = instruction.Arguments;
+        var name = instruction.Name;
+
+        // Camera_SetAngles : selector 4
+        if (name.Equals("Camera_SetAngles", StringComparison.OrdinalIgnoreCase))
+        {
+            var floats = args.Where(a => a.Kind == "scalar" && a.Type == "f32").Select(a => (float)a.FloatValue).ToArray();
+            if (floats.Length >= 3)
+            {
+                var pitch = floats[0];
+                var yaw = floats[1];
+                var roll = floats[2];
+                var durMs = args.LastOrDefault(a => a.Type == "s16")?.Raw is { Length: >= 2 } r
+                    ? r[0] | (r[1] << 8) : 0;
+                var shortestPath = args.LastOrDefault(a => a.Type == "u8" && a.Name == "shortest_path_flag")?.Raw is { Length: >= 1 } f
+                    ? f[0] != 0 : true;
+                return state with { PitchDegrees = pitch, YawDegrees = yaw,
+                    RollDegrees = roll, AngleDurationMs = durMs, UseShortestPath = shortestPath };
+            }
+        }
+
+        // Camera_LookAtPosition : selector 2 — 3×f32 position + s16 duration
+        if (name.Equals("Camera_LookAtPosition", StringComparison.OrdinalIgnoreCase))
+        {
+            var floats = args.Where(a => a.Kind == "scalar" && a.Type == "f32").Select(a => (float)a.FloatValue).ToArray();
+            if (floats.Length >= 3)
+            {
+                var target = new Vector3(floats[0], floats[1], floats[2]);
+                var durMs = args.LastOrDefault(a => a.Type == "s16")?.Raw is { Length: >= 2 } r
+                    ? r[0] | (r[1] << 8) : 0;
+                return state with { Target = target, TargetDurationMs = durMs };
+            }
+        }
+
+        // Camera_LookAtEntityNode : selector 3 — target_id + node_name + offset vec3 + duration
+        if (name.Equals("Camera_LookAtEntityNode", StringComparison.OrdinalIgnoreCase))
+        {
+            var floats = args.Where(a => a.Kind == "scalar" && a.Type == "f32").Select(a => (float)a.FloatValue).ToArray();
+            if (floats.Length >= 3)
+            {
+                var target = new Vector3(floats[0], floats[1], floats[2]);
+                var durMs = args.LastOrDefault(a => a.Type == "s16")?.Raw is { Length: >= 2 } r
+                    ? r[0] | (r[1] << 8) : 0;
+                return state with { Target = target, TargetDurationMs = durMs };
+            }
+        }
+
+        // Camera_LookAtEntityNode_Local : selector 20 — id + node + offset vec3 + duration
+        if (name.Equals("Camera_LookAtEntityNode_Local", StringComparison.OrdinalIgnoreCase))
+        {
+            var floats = args.Where(a => a.Kind == "scalar" && a.Type == "f32").Select(a => (float)a.FloatValue).ToArray();
+            if (floats.Length >= 3)
+            {
+                var target = new Vector3(floats[0], floats[1], floats[2]);
+                var durMs = args.LastOrDefault(a => a.Type == "s16")?.Raw is { Length: >= 2 } r
+                    ? r[0] | (r[1] << 8) : 0;
+                return state with { Target = target, TargetDurationMs = durMs };
+            }
+        }
+
+        // Camera_SetDistance : selector 5 — already handled by semantic args
+
+        // CameraSetTarget_Relative : selector 12 - offset vec3 + duration
+        if (name.Equals("CameraSetTarget_Relative", StringComparison.OrdinalIgnoreCase))
+        {
+            var floats = args.Where(a => a.Kind == "scalar" && a.Type == "f32").Select(a => (float)a.FloatValue).ToArray();
+            if (floats.Length >= 3)
+            {
+                var offset = new Vector3(floats[0], floats[1], floats[2]);
+                var durMs = args.LastOrDefault(a => a.Type == "s16")?.Raw is { Length: >= 2 } r
+                    ? r[0] | (r[1] << 8) : 0;
+                return state with { TargetOffset = offset, TargetDurationMs = durMs };
+            }
+        }
+
+        if (name.Equals("CameraSetEye_Relative", StringComparison.OrdinalIgnoreCase))
+        {
+            var floats = args.Where(a => a.Kind == "scalar" && a.Type == "f32").Select(a => (float)a.FloatValue).ToArray();
+            if (floats.Length >= 3)
+            {
+                var offset = new Vector3(floats[0], floats[1], floats[2]);
+                var durMs = args.LastOrDefault(a => a.Type == "s16")?.Raw is { Length: >= 2 } r
+                    ? r[0] | (r[1] << 8) : 0;
+                return state with { PositionOffset = offset, TargetDurationMs = durMs };
+            }
+        }
+
+        if (name.Equals("CameraLookAtMidpoint", StringComparison.OrdinalIgnoreCase))
+        {
+            var floats = args.Where(a => a.Kind == "scalar" && a.Type == "f32").Select(a => (float)a.FloatValue).ToArray();
+            var floatVal = floats.Length > 0 ? floats[0] : 0f;
+            var durMs = args.LastOrDefault(a => a.Type == "s16")?.Raw is { Length: >= 2 } r
+                ? r[0] | (r[1] << 8) : 0;
+            var midpointTarget = new Vector3(0, floatVal, 0);
+            return state with { Target = midpointTarget, TargetDurationMs = durMs };
+        }
+
+        // Camera_SetFOV : selector 11 — f32 fov
+        if (name.Equals("Camera_SetFOV", StringComparison.OrdinalIgnoreCase))
+        {
+            var fovFloat = args.FirstOrDefault(a => a.Kind == "scalar" && a.Type == "f32");
+            if (fovFloat is not null && float.IsFinite((float)fovFloat.FloatValue))
+                return state with { VerticalFieldOfViewDegrees = (float)fovFloat.FloatValue };
+        }
+
         return state;
     }
 
@@ -176,27 +270,73 @@ internal static class ScriptCameraStateResolver
     private static bool TryReadEulerAngles(
         IReadOnlyList<InstructionArgument> arguments,
         out float pitchDegrees,
-        out float yawDegrees)
+        out float yawDegrees,
+        out float rollDegrees,
+        out int durationMs,
+        out bool useShortestPath)
     {
+        useShortestPath = true;
+        durationMs = 0;
         var floats = arguments.Where(argument =>
             argument.Kind == "scalar" && argument.Type == "f32").ToArray();
+        if (floats.Length >= 3)
+        {
+            pitchDegrees = (float)floats[0].FloatValue;
+            yawDegrees = (float)floats[1].FloatValue;
+            rollDegrees = (float)floats[2].FloatValue;
+            return float.IsFinite(pitchDegrees) && float.IsFinite(yawDegrees);
+        }
         if (floats.Length >= 2)
         {
             pitchDegrees = (float)floats[0].FloatValue;
             yawDegrees = (float)floats[1].FloatValue;
+            rollDegrees = 0f;
             return float.IsFinite(pitchDegrees) && float.IsFinite(yawDegrees);
         }
 
+        // Raw: [EaseFlag_8] [Pitch_32f] [Yaw_32f] [Roll_32f] [Duration_16ms] [ShortestPathFlag_8]
         var raw = arguments.FirstOrDefault(argument =>
-            argument.Kind == "bytes" && argument.Raw.Length == 16)?.Raw;
+            argument.Kind == "bytes" && argument.Raw.Length >= 16)?.Raw;
         if (raw is not null)
         {
             pitchDegrees = ReadSingle(raw, 1);
             yawDegrees = ReadSingle(raw, 5);
+            rollDegrees = ReadSingle(raw, 9);
+            durationMs = raw[13] | (raw[14] << 8);
+            useShortestPath = raw[15] != 0;
             return float.IsFinite(pitchDegrees) && float.IsFinite(yawDegrees);
         }
         pitchDegrees = 0f;
         yawDegrees = 0f;
+        rollDegrees = 0f;
+        return false;
+    }
+
+    private static bool TryReadTargetWithDuration(
+        IReadOnlyList<InstructionArgument> arguments,
+        int packedLength,
+        int packedOffset,
+        out Vector3 target,
+        out int durationMs)
+    {
+        durationMs = 0;
+        target = default;
+        var floats = arguments.Where(a => a.Kind == "scalar" && a.Type == "f32").ToArray();
+        if (floats.Length >= 3)
+        {
+            target = new Vector3((float)floats[0].FloatValue, (float)floats[1].FloatValue, (float)floats[2].FloatValue);
+            return IsFinite(target);
+        }
+        var raw = arguments.FirstOrDefault(a => a.Kind == "bytes" && a.Raw.Length == packedLength)?.Raw;
+        if (raw is not null && packedOffset + 14 <= raw.Length)
+        {
+            target = new Vector3(
+                ReadSingle(raw, packedOffset),
+                ReadSingle(raw, packedOffset + 4),
+                ReadSingle(raw, packedOffset + 8));
+            durationMs = raw[packedOffset + 12] | (raw[packedOffset + 13] << 8);
+            return IsFinite(target);
+        }
         return false;
     }
 
