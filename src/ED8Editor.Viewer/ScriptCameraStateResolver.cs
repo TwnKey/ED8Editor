@@ -17,7 +17,11 @@ internal sealed record ScriptCameraState(
     bool UseShortestPath = true,
     int TargetDurationMs = 0,
     Vector3? TargetOffset = null,
-    Vector3? PositionOffset = null)
+    Vector3? PositionOffset = null,
+    Vector3? AngleDeltaDegrees = null,
+    int? AlignEntityId = null,
+    float? AlignYawOffsetDegrees = null,
+    float? DistanceDelta = null)
 {
     public bool HasViewValue => Position is not null || Target is not null || Forward is not null
         || Distance is not null || VerticalFieldOfViewDegrees is not null
@@ -129,7 +133,7 @@ internal static class ScriptCameraStateResolver
         }
 
         // Camera_LookAtEntityNode_Local : selector 20 — id + node + offset vec3 + duration
-        if (name.Equals("Camera_LookAtEntityNode_Local", StringComparison.OrdinalIgnoreCase))
+        if (name.Equals("Camera_LookAtEntityNodeRelative", StringComparison.OrdinalIgnoreCase))
         {
             var floats = args.Where(a => a.Kind == "scalar" && a.Type == "f32").Select(a => (float)a.FloatValue).ToArray();
             if (floats.Length >= 3)
@@ -144,7 +148,7 @@ internal static class ScriptCameraStateResolver
         // Camera_SetDistance : selector 5 — already handled by semantic args
 
         // CameraSetTarget_Relative : selector 12 - offset vec3 + duration
-        if (name.Equals("CameraSetTarget_Relative", StringComparison.OrdinalIgnoreCase))
+        if (name.Equals("Camera_SetTarget_Relative", StringComparison.OrdinalIgnoreCase))
         {
             var floats = args.Where(a => a.Kind == "scalar" && a.Type == "f32").Select(a => (float)a.FloatValue).ToArray();
             if (floats.Length >= 3)
@@ -156,7 +160,7 @@ internal static class ScriptCameraStateResolver
             }
         }
 
-        if (name.Equals("CameraSetEye_Relative", StringComparison.OrdinalIgnoreCase))
+        if (name.Equals("Camera_SetEye_Relative", StringComparison.OrdinalIgnoreCase))
         {
             var floats = args.Where(a => a.Kind == "scalar" && a.Type == "f32").Select(a => (float)a.FloatValue).ToArray();
             if (floats.Length >= 3)
@@ -168,7 +172,7 @@ internal static class ScriptCameraStateResolver
             }
         }
 
-        if (name.Equals("CameraLookAtMidpoint", StringComparison.OrdinalIgnoreCase))
+        if (name.Equals("Camera_LookAtMidpoint", StringComparison.OrdinalIgnoreCase))
         {
             var floats = args.Where(a => a.Kind == "scalar" && a.Type == "f32").Select(a => (float)a.FloatValue).ToArray();
             var floatVal = floats.Length > 0 ? floats[0] : 0f;
@@ -176,6 +180,74 @@ internal static class ScriptCameraStateResolver
                 ? r[0] | (r[1] << 8) : 0;
             var midpointTarget = new Vector3(0, floatVal, 0);
             return state with { Target = midpointTarget, TargetDurationMs = durMs };
+        }
+
+        if (name.Equals("CameraTrackEntity", StringComparison.OrdinalIgnoreCase))
+        {
+            var floats = args.Where(a => a.Kind == "scalar" && a.Type == "f32").Select(a => (float)a.FloatValue).ToArray();
+            if (floats.Length >= 3)
+            {
+                var target = new Vector3(floats[0], floats[1], floats[2]);
+                return state with { Target = target };
+            }
+        }
+
+        if (name.Equals("Camera_RotateBy", StringComparison.OrdinalIgnoreCase))
+        {
+            var floats = args.Where(a => a.Kind == "scalar" && a.Type == "f32").Select(a => (float)a.FloatValue).ToArray();
+            if (floats.Length >= 3)
+            {
+                var delta = new Vector3(floats[0], floats[1], floats[2]);
+                var durMs = args.LastOrDefault(a => a.Type == "s16")?.Raw is { Length: >= 2 } r
+                    ? r[0] | (r[1] << 8) : 0;
+                var shortest = args.LastOrDefault(a => a.Type == "u8" && a.Name == "shortest_path_flag")?.Raw is { Length: >= 1 } f
+                    ? f[0] != 0 : true;
+                return state with { AngleDeltaDegrees = delta, AngleDurationMs = durMs, UseShortestPath = shortest };
+            }
+        }
+
+        // CameraAlignToEntity : selector 19 — entity_id + pitch_abs + yaw_rel + roll_abs + duration + shortest
+        if (name.Equals("Camera_AlignToEntity", StringComparison.OrdinalIgnoreCase))
+        {
+            var floats = args.Where(a => a.Kind == "scalar" && a.Type == "f32").Select(a => (float)a.FloatValue).ToArray();
+            if (floats.Length >= 3)
+            {
+                var pitch = floats[0];
+                var yawOffset = floats[1];
+                var roll = floats[2];
+                var entityId = args.FirstOrDefault(a => a.Type == "u16" && a.Name == "entity_id")?.Raw is { Length: >= 2 } e
+                    ? e[0] | (e[1] << 8) : (int?)null;
+                var durMs = args.LastOrDefault(a => a.Type == "u16")?.Raw is { Length: >= 2 } r
+                    ? r[0] | (r[1] << 8) : 0;
+                var shortest = args.LastOrDefault(a => a.Type == "u8" && a.Name == "shortest_path_flag")?.Raw is { Length: >= 1 } f
+                    ? f[0] != 0 : true;
+                return state with { PitchDegrees = pitch, AlignYawOffsetDegrees = yawOffset,
+                    RollDegrees = roll, AlignEntityId = entityId,
+                    AngleDurationMs = durMs, UseShortestPath = shortest };
+            }
+        }
+
+        // CameraZoomBy : selector 22 — ajoute un delta a la distance orbitale
+        if (name.Equals("Camera_ZoomBy", StringComparison.OrdinalIgnoreCase))
+        {
+            var delta = args.FirstOrDefault(a => a.Kind == "scalar" && a.Type == "f32");
+            if (delta is not null && float.IsFinite((float)delta.FloatValue))
+                return state with { DistanceDelta = (float)delta.FloatValue };
+        }
+
+        // CameraAddYaw : selector 21 — yaw offset only, pitch/roll frozen
+        if (name.Equals("Camera_AddYaw", StringComparison.OrdinalIgnoreCase))
+        {
+            var yawOffset = args.FirstOrDefault(a => a.Kind == "scalar" && a.Type == "f32");
+            if (yawOffset is not null && float.IsFinite((float)yawOffset.FloatValue))
+            {
+                var durMs = args.LastOrDefault(a => a.Type == "s32")?.Raw is { Length: >= 4 } r
+                    ? r[0] | (r[1] << 8) | (r[2] << 16) | (r[3] << 24) : 0;
+                var shortest = args.LastOrDefault(a => a.Type == "u8" && a.Name == "shortest_path_flag")?.Raw is { Length: >= 1 } f
+                    ? f[0] != 0 : true;
+                return state with { AngleDeltaDegrees = new Vector3(0, (float)yawOffset.FloatValue, 0),
+                    AngleDurationMs = durMs, UseShortestPath = shortest };
+            }
         }
 
         // Camera_SetFOV : selector 11 — f32 fov

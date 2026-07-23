@@ -853,6 +853,10 @@ public sealed class ScriptEditorForm : Form
             && argBits.TryGetValue(argument.Index, out var bits))
             return BuildBitmaskEditor(instruction, argument, bits);
 
+        // Editeur de bits generique (sem=bitmask sans nommage des bits)
+        if (argument.Kind == "scalar" && argument.Sem == "bitmask")
+            return BuildGenericBitmaskEditor(instruction, argument);
+
         if (argument.Kind == "scalar" && argument.Type != "ptr32"
             && argument.Sem == "tbl"
             && Cs1TableReference.TryParse(argument.SemArg, out var reference)
@@ -966,6 +970,45 @@ public sealed class ScriptEditorForm : Form
                 foreach (var c in checkboxes)
                     if (c.Checked && c.Tag is int m) val |= (ushort)m;
                 var raw = new[] { (byte)(val & 0xFF), (byte)(val >> 8) };
+                RunEdit(() => document!.SetBytes(selectedFunctionIndex, instruction.Index, argument.Index, raw), instruction.Index);
+            };
+            checkboxes.Add(cb);
+            panel.Controls.Add(cb);
+        }
+        return panel;
+    }
+
+    private Control BuildGenericBitmaskEditor(DecompiledInstruction instruction, InstructionArgument argument)
+    {
+        var panel = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.TopDown, Padding = new Padding(4) };
+        var label = new Label { Text = argument.Name ?? "Flags", Font = new Font("Segoe UI", 9, FontStyle.Bold), AutoSize = true };
+        panel.Controls.Add(label);
+
+        var bitCount = argument.Type switch { "u8" => 8, "u16" => 16, "u32" => 32, _ => 16 };
+        var rawLen = bitCount / 8;
+        var currentValue = argument.Raw is { Length: >= 2 } r
+            ? (int)(r[0] | (r[1] << 8) | (rawLen >= 4 ? r[2] << 16 | r[3] << 24 : 0))
+            : argument.IntValue;
+        var checkboxes = new List<CheckBox>();
+
+        for (var bit = 0; bit < bitCount; bit++)
+        {
+            var mask = 1 << bit;
+            var cb = new CheckBox
+            {
+                Text = $"bit {bit}  (0x{mask:X})",
+                AutoSize = true,
+                Checked = (currentValue & mask) != 0,
+                Tag = mask
+            };
+            cb.CheckedChanged += (_, _) =>
+            {
+                int val = 0;
+                foreach (var c in checkboxes)
+                    if (c.Checked && c.Tag is int m) val |= m;
+                var raw = new byte[rawLen];
+                for (var b = 0; b < rawLen; b++)
+                    raw[b] = (byte)(val >> (b * 8));
                 RunEdit(() => document!.SetBytes(selectedFunctionIndex, instruction.Index, argument.Index, raw), instruction.Index);
             };
             checkboxes.Add(cb);

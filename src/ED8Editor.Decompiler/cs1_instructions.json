@@ -3553,7 +3553,7 @@
       "verified": true
     },
     {
-      "name": "CameraSetTarget_Relative",
+      "name": "Camera_SetTarget_Relative",
       "op": 45,
       "opname": "OP45",
       "selectors": [
@@ -3592,7 +3592,7 @@
       "validated": true
     },
     {
-      "name": "CameraSetEye_Relative",
+      "name": "Camera_SetEye_Relative",
       "op": 45,
       "opname": "OP45",
       "selectors": [
@@ -3631,7 +3631,7 @@
       "validated": true
     },
     {
-      "name": "CameraLookAtMidpoint",
+      "name": "Camera_LookAtMidpoint",
       "op": 45,
       "opname": "OP45",
       "selectors": [
@@ -3672,7 +3672,7 @@
       "validated": true
     },
     {
-      "name": "OP45_15",
+      "name": "CameraTrackEntity",
       "op": 45,
       "opname": "OP45",
       "selectors": [
@@ -3687,14 +3687,28 @@
           "role": "selector"
         },
         {
-          "t": "bytes",
-          "size": 14
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
+        },
+        {
+          "t": "f32",
+          "name": "offset_X"
+        },
+        {
+          "t": "f32",
+          "name": "offset_Y"
+        },
+        {
+          "t": "f32",
+          "name": "offset_Z"
         }
       ],
-      "verified": true
+      "verified": true,
+      "validated": true
     },
     {
-      "name": "OP45_16",
+      "name": "Camera_StopTracking",
       "op": 45,
       "opname": "OP45",
       "selectors": [
@@ -3709,10 +3723,11 @@
           "role": "selector"
         }
       ],
-      "verified": true
+      "verified": true,
+      "validated": true
     },
     {
-      "name": "OP45_17",
+      "name": "Camera_RotateBy",
       "op": 45,
       "opname": "OP45",
       "selectors": [
@@ -3727,29 +3742,35 @@
           "role": "selector"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "interpolation"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "delta_pitch_deg"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "delta_yaw_deg"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "delta_roll_deg"
         },
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "duration_ms"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "shortest_path_flag"
         }
       ],
       "verified": true,
       "validated": true
     },
     {
-      "name": "OP45_18",
+      "name": "Camera_SetFlags",
       "op": 45,
       "opname": "OP45",
       "selectors": [
@@ -3764,14 +3785,15 @@
           "role": "selector"
         },
         {
-          "t": "bytes",
-          "size": 2
+          "t": "u16",
+          "name": "flags",
+          "sem": "bitmask"
         }
       ],
       "verified": true
     },
     {
-      "name": "OP45_19",
+      "name": "Camera_AlignToEntity",
       "op": 45,
       "opname": "OP45",
       "selectors": [
@@ -3786,29 +3808,35 @@
           "role": "selector"
         },
         {
-          "t": "s16"
+          "t": "u16",
+          "name": "entity_id"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "interpolation"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "pitch_deg"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "yaw_offset_deg"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "roll_deg"
         },
         {
-          "t": "s16"
+          "t": "u16",
+          "name": "duration_ms"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "shortest_path_flag"
         }
       ],
-      "verified": true,
-      "validated": true
+      "verified": true
     },
     {
       "name": "Camera_LookAtEntityNodeRelative",
@@ -3857,7 +3885,7 @@
       "validated": true
     },
     {
-      "name": "OP45_21",
+      "name": "Camera_AddYaw",
       "op": 45,
       "opname": "OP45",
       "selectors": [
@@ -3872,26 +3900,26 @@
           "role": "selector"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "interpolation"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "yaw_offset_deg"
         },
         {
-          "t": "s16"
+          "t": "s32",
+          "name": "duration_ms"
         },
         {
-          "t": "s16"
-        },
-        {
-          "t": "u8"
+          "t": "u8",
+          "name": "shortest_path_flag"
         }
       ],
-      "verified": true,
-      "validated": true
+      "verified": true
     },
     {
-      "name": "OP45_22",
+      "name": "Camera_ZoomBy",
       "op": 45,
       "opname": "OP45",
       "selectors": [
@@ -3906,14 +3934,22 @@
           "role": "selector"
         },
         {
-          "t": "bytes",
-          "size": 7
+          "t": "u8",
+          "name": "interpolation"
+        },
+        {
+          "t": "f32",
+          "name": "distance_delta"
+        },
+        {
+          "t": "u16",
+          "name": "duration_ms"
         }
       ],
       "verified": true
     },
     {
-      "name": "OP45_23",
+      "name": "Camera_ClearFlags",
       "op": 45,
       "opname": "OP45",
       "selectors": [
@@ -3928,8 +3964,9 @@
           "role": "selector"
         },
         {
-          "t": "bytes",
-          "size": 2
+          "t": "u16",
+          "name": "flags",
+          "sem": "bitmask"
         }
       ],
       "verified": true

@@ -1073,6 +1073,7 @@ public sealed class ViewerForm : Form
         if (!state.HasViewValue) return;
 
         var distance = state.Distance is > 0f ? state.Distance.Value : cameraNavigation.Distance;
+        distance += state.DistanceDelta ?? 0f;
         var forward = state.Forward ?? cameraNavigation.Forward;
         var roll = 0f;
 
@@ -1113,6 +1114,40 @@ public sealed class ViewerForm : Form
         else if (state.Position is null && (state.YawDegrees is not null || state.PitchDegrees is not null))
         {
             // Garder le target actuel, recalculer Eye depuis les nouveaux angles
+            position = cameraNavigation.Target - forward * distance;
+        }
+        // CameraAlignToEntity : Yaw = entity.Yaw + offset, Pitch/Roll absolus
+        if (state.AlignEntityId is { } entId && state.AlignYawOffsetDegrees is { } yawOffDeg)
+        {
+            var entYaw = 0f; // TODO: lire le Yaw reel de l'entite via ID decoder
+            var targetYaw = (entYaw + yawOffDeg) * MathF.PI / 180f;
+            var targetPitch = (state.PitchDegrees ?? cameraNavigation.Pitch * 180f / MathF.PI) * MathF.PI / 180f;
+            if (state.UseShortestPath)
+            {
+                var dY = targetYaw - cameraNavigation.Yaw;
+                dY = (dY + MathF.PI) % (2f * MathF.PI) - MathF.PI;
+                targetYaw = cameraNavigation.Yaw + dY;
+            }
+            var cosP = MathF.Cos(targetPitch);
+            forward = Vector3.Normalize(new Vector3(
+                MathF.Sin(targetYaw) * cosP,
+                MathF.Sin(targetPitch),
+                MathF.Cos(targetYaw) * cosP));
+            if (state.RollDegrees is { } rollDeg)
+                roll = rollDeg * MathF.PI / 180f;
+        }
+
+        // CameraRotateBy : ajouter aux angles courants
+        if (state.AngleDeltaDegrees is { } deltaDeg)
+        {
+            var tYaw = cameraNavigation.Yaw + deltaDeg.X * MathF.PI / 180f;
+            var tPitch = cameraNavigation.Pitch + deltaDeg.Y * MathF.PI / 180f;
+            roll += deltaDeg.Z * MathF.PI / 180f;
+            var cosP = MathF.Cos(tPitch);
+            forward = Vector3.Normalize(new Vector3(
+                MathF.Sin(tYaw) * cosP,
+                MathF.Sin(tPitch),
+                MathF.Cos(tYaw) * cosP));
             position = cameraNavigation.Target - forward * distance;
         }
         // CameraSetTarget_Relative : decaler le target actuel
