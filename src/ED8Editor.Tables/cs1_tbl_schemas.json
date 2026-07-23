@@ -202,6 +202,99 @@
         }
       ]
     },
+    "fish_pnt": {
+	"fields": [
+
+        {
+          "name": "id",
+          "type": "i16"
+        },
+	{
+          "name": "unknown_short_2",
+          "type": "i16"
+        },
+	{
+          "name": "unknown_short_3",
+          "type": "i16"
+        },
+
+	{
+          "name": "unknown_short_4",
+          "type": "i16"
+        },
+	{
+          "name": "unknown_short_5",
+          "type": "i16"
+        },
+	{
+          "name": "unknown_short_6",
+          "type": "i16"
+        },
+	{
+          "name": "unknown_short_7",
+          "type": "i16"
+        },
+	{
+          "name": "unknown_short_8",
+          "type": "i16"
+        },
+
+	{
+          "name": "unknown_short_9",
+          "type": "i16"
+        },
+
+	{
+          "name": "unknown_short_10",
+          "type": "i16"
+        },
+
+	{
+          "name": "unknown_short_11",
+          "type": "i16"
+        },
+
+	{
+          "name": "unknown_short_12",
+          "type": "i16"
+        },
+
+	{
+          "name": "unknown_short_13",
+          "type": "i16"
+        },
+
+	{
+          "name": "unknown_short_14",
+          "type": "i16"
+        },
+
+	{
+          "name": "unknown_short_15",
+          "type": "i16"
+        },
+
+	{
+          "name": "unknown_short_16",
+          "type": "i16"
+        },
+
+	{
+          "name": "unknown_short_17",
+          "type": "i16"
+        },
+
+	{
+          "name": "unknown_short_18",
+          "type": "i16"
+        }
+
+
+      ]
+
+
+
+	},
     "FootStepData": {
       "fields": [
         {
@@ -1087,6 +1180,23 @@
         {
           "name": "mirage_sepith_cost",
           "type": "u16"
+        }
+      ]
+    },
+
+"rod_lst": {
+      "fields": [
+        {
+          "name": "unknown_short",
+          "type": "i16"
+        },
+        {
+          "name": "unknown_float",
+          "type": "f32"
+        },
+        {
+          "name": "unknown_float_2",
+          "type": "f32"
         }
       ]
     },

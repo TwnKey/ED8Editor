@@ -3256,7 +3256,8 @@
           "role": "selector"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "interpolation"
         },
         {
           "t": "f32",
@@ -3294,7 +3295,8 @@
           "role": "selector"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "interpolation"
         },
         {
           "t": "s16",
@@ -3342,7 +3344,7 @@
         },
         {
           "t": "u8",
-          "name": "ease_flag"
+          "name": "interpolation"
         },
         {
           "t": "f32",
@@ -3384,7 +3386,8 @@
           "role": "selector"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "interpolation"
         },
         {
           "t": "f32",
@@ -3854,7 +3857,8 @@
           "role": "selector"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "interpolation"
         },
         {
           "t": "s16",

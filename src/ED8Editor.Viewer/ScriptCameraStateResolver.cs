@@ -40,6 +40,20 @@ internal static class ScriptCameraStateResolver
         return state;
     }
 
+    /// <summary>État caméra juste AVANT l'instruction cible (exclut l'instruction elle-même).</summary>
+    public static ScriptCameraState ResolveBefore(DecompiledFunction function, int selectedInstructionIndex)
+    {
+        ArgumentNullException.ThrowIfNull(function);
+        var path = FindFirstPath(function, selectedInstructionIndex);
+        var state = new ScriptCameraState();
+        foreach (var instructionIndex in path)
+        {
+            if (instructionIndex == selectedInstructionIndex) break;
+            state = Apply(function.Instructions[instructionIndex], state);
+        }
+        return state;
+    }
+
     private static IReadOnlyList<int> FindFirstPath(DecompiledFunction function, int target)
     {
         if (target < 0 || target >= function.Instructions.Count) return Array.Empty<int>();
@@ -259,6 +273,37 @@ internal static class ScriptCameraStateResolver
         }
 
         return state;
+    }
+
+    /// <summary>Détecte si l'instruction a un octet interpolation ET un paramètre duration_ms.</summary>
+    public static bool HasInterpolation(DecompiledInstruction instruction)
+    {
+        if (instruction.Opcode != 45) return false;
+        var args = instruction.Arguments;
+        var hasInterp = args.Any(a => a.Name == "interpolation" && a.Kind == "scalar" && a.Type == "u8");
+        var hasDuration = args.Any(a => (a.Name ?? "").Contains("duration", StringComparison.OrdinalIgnoreCase));
+        return hasInterp && hasDuration;
+    }
+
+    /// <summary>Lit l'octet interpolation (0-4 ou -1).</summary>
+    public static int ReadInterpolationType(DecompiledInstruction instruction)
+    {
+        var arg = instruction.Arguments.FirstOrDefault(a => a.Name == "interpolation" && a.Kind == "scalar" && a.Type == "u8");
+        return arg?.IntValue ?? 0;
+    }
+
+    /// <summary>Lit la durée en millisecondes depuis l'argument duration_ms.</summary>
+    public static int ReadDurationMs(DecompiledInstruction instruction)
+    {
+        var durArg = instruction.Arguments.FirstOrDefault(a => (a.Name ?? "").Contains("duration", StringComparison.OrdinalIgnoreCase));
+        if (durArg is null) return 0;
+        if (durArg.Type == "s16" && durArg.Raw is { Length: >= 2 } r16)
+            return r16[0] | (r16[1] << 8);
+        if (durArg.Type == "u16" && durArg.Raw is { Length: >= 2 } ru16)
+            return ru16[0] | (ru16[1] << 8);
+        if (durArg.Type == "s32" && durArg.Raw is { Length: >= 4 } r32)
+            return r32[0] | (r32[1] << 8) | (r32[2] << 16) | (r32[3] << 24);
+        return durArg.IntValue;
     }
 
     private static ScriptCameraState ApplySemanticArguments(

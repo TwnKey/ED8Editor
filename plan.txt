@@ -6,6 +6,8 @@ et facilement permettre à l'utilisateur de les modifier avec la caméra de l'é
 - Implémenter les "entités" cad spawn les acteurs, leur attribuer une id dans une liste d'entité qui se maintient à jour selon la position dans la fonction (depuis le départ de la fonction), etc, comme le fait le script, de manière similaire à la caméra cad que depuis le départ de la fonction courante, retracer les spawn/mouvements des acteurs pour qu'ils soient positionnés correctement par rapport à la caméra (de cette façon l'utilisateur saura cadrer la caméra dans l'éditeur)
 de cette façon aussi on pourra remplir les champs avec sem = entity pour qu'il pointe vers l'entité avec l'id correspondante, et permettre à l'utilisateur de sélectionner d'autres entités dans la liste
 - implémenter correctement le rempalcement des valeurs par les propriétés associées de la caméra courante
+- voir ce qui manque pour gérer les crafts (des fichiers non liés à une map, si pas de map on charge une scène avec un ground de debug. et si c'est un fichier ani on charge le personnage dont c'est le fichier ani.
+- Impémenter les animations faciales. (se baser sur : https://github.com/Trails-Research-Group/Doc/blob/main/tutorials/Animate-faces-in-late-Cold-Steels.md)
 PLUS TARD:
 - "Le shader Phyre complet n’est pas encore activé : il manque le binding vérifié de tous les paramètres moteur ($Globals, brouillard, caméra, éclairage…)."
 - Implémenter les lumières et ombres (comme dans le jeu ?)

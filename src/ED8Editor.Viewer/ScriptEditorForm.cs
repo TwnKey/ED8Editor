@@ -777,36 +777,57 @@ public sealed class ScriptEditorForm : Form
             Margin = new Padding(8, 6, 8, 10),
             Padding = new Padding(8),
         };
-        var apply = new Button { AutoSize = true, Text = "Apply current viewport camera" };
+        var hasInterp = ScriptCameraStateResolver.HasInterpolation(instruction);
+
+        var apply = new Button { AutoSize = true, Text = hasInterp ? "Set Camera Properties (exit preview)" : "Apply current viewport camera" };
         apply.Click += (_, _) =>
         {
             var snapshot = semanticContext!.GetCameraSnapshot();
             var bindings = GetCameraBindings(instruction.Arguments, snapshot);
             var byteUpdates = ScriptCameraInstructionCodec.Capture(instruction, snapshot);
+            var typedWrites = CameraPropertyWriter.WriteOperands(instruction, snapshot, beforeState: null);
+
             RunEdit(() =>
             {
+                // Semantic bindings (position, distance, fov, etc.)
                 foreach (var binding in bindings)
                 {
                     for (var index = 0; index < binding.Arguments.Count; index++)
                         SetScalar(instruction.Index, binding.Arguments[index], binding.Values[index]);
                 }
+                // Byte-level codec (legacy)
                 foreach (var update in byteUpdates)
                     document!.SetBytes(selectedFunctionIndex, instruction.Index, update.ArgumentIndex, update.Value);
+                // Typed operand writes (CameraPropertyWriter)
+                foreach (var (argIdx, value) in typedWrites)
+                    SetScalar(instruction.Index, instruction.Arguments[argIdx], value);
             }, instruction.Index);
+
+            // Notifier le parent d'arreter l'animation
+            StopPreview?.Invoke();
         };
         var initialBindings = GetCameraBindings(instruction.Arguments, semanticContext!.GetCameraSnapshot());
         var initialByteUpdates = ScriptCameraInstructionCodec.Capture(instruction, semanticContext.GetCameraSnapshot());
+        var components = initialBindings.Select(value => value.Component)
+            .Concat(initialByteUpdates.Select(value => value.Component)).Distinct().ToList();
+        if (components.Count == 0 && CameraPropertyWriter.WriteOperands(instruction, semanticContext.GetCameraSnapshot()).Count > 0)
+            components.Add("camera properties");
+
         panel.Controls.Add(apply);
         panel.Controls.Add(new Label
         {
             AutoSize = true,
             ForeColor = Color.Gainsboro,
             Padding = new Padding(6, 7, 0, 0),
-            Text = $"Copies: {string.Join(", ", initialBindings.Select(value => value.Component)
-                .Concat(initialByteUpdates.Select(value => value.Component)).Distinct())}",
+            Text = components.Count > 0
+                ? $"Copies: {string.Join(", ", components)}"
+                : "Click to capture current camera state",
         });
         return panel;
     }
+
+    /// <summary>Événement déclenché quand l'utilisateur clique sur Set Camera Properties.</summary>
+    public event Action? StopPreview;
 
     private static IReadOnlyList<CameraSemanticBinding> GetCameraBindings(
         IReadOnlyList<InstructionArgument> arguments,
@@ -825,8 +846,13 @@ public sealed class ScriptEditorForm : Form
     }
 
     private static bool HasCameraCapture(DecompiledInstruction instruction, ScriptCameraSnapshot snapshot)
-        => GetCameraBindings(instruction.Arguments, snapshot).Count > 0
+    {
+        if (instruction.Opcode != 45) return false;
+        // Toute instruction Camera_* avec interpolation est eligible
+        if (ScriptCameraStateResolver.HasInterpolation(instruction)) return true;
+        return GetCameraBindings(instruction.Arguments, snapshot).Count > 0
             || ScriptCameraInstructionCodec.Capture(instruction, snapshot).Count > 0;
+    }
 
     private void ApplySemanticValues(
         DecompiledInstruction instruction,

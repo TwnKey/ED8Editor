@@ -70,6 +70,7 @@ public sealed class ViewerForm : Form
     private readonly TextBox cameraYaw = new() { Text = "0", Width = 55 };
     private readonly TextBox cameraPitch = new() { Text = "0", Width = 55 };
     private readonly TextBox cameraRoll = new() { Text = "0", Width = 55 };
+    private readonly ToolStripButton cameraPlayButton = new("▶ Preview") { ToolTipText = "Replay camera interpolation preview", Enabled = false };
     private bool suppressCameraTextUpdate;
     private readonly Panel scenePanel = new() { Dock = DockStyle.Left, Width = 340, Padding = new Padding(8) };
     private readonly GroupBox sceneOutlinerGroup = new()
@@ -264,6 +265,8 @@ public sealed class ViewerForm : Form
             new ToolStripControlHost(cameraYaw),
             new ToolStripControlHost(cameraPitch),
             new ToolStripControlHost(cameraRoll),
+            new ToolStripSeparator(),
+            cameraPlayButton,
         });
         Controls.Add(gizmoToolStrip);
         Controls.Add(mainMenu);
@@ -275,10 +278,20 @@ public sealed class ViewerForm : Form
         scaleToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Scale);
         cameraFovSlider.ValueChanged += (_, _) => cameraFovLabel.Text = $"FOV: {cameraFovSlider.Value}°";
 
+        cameraPlayButton.Click += (_, _) =>
+        {
+            if (animationBefore is not null && animationAfter is not null)
+            {
+                animationElapsed = 0f;
+                isCameraAnimating = true;
+            }
+        };
+
         // Camera position edit handlers (angles in radians)
         EventHandler onCameraEdit = (_, _) =>
         {
             if (suppressCameraTextUpdate) return;
+            if (isCameraAnimating) PauseAnimation();
             if (float.TryParse(cameraPosX.Text, out var px) &&
                 float.TryParse(cameraPosY.Text, out var py) &&
                 float.TryParse(cameraPosZ.Text, out var pz) &&
@@ -765,6 +778,7 @@ public sealed class ViewerForm : Form
         var elapsed = Math.Clamp((float)(ticks - previousFrameTicks) / Stopwatch.Frequency, 0f, 0.1f);
         previousFrameTicks = ticks;
         UpdateCamera(elapsed);
+        UpdateCameraAnimation(elapsed);
         UpdateCameraTextFields();
         RefreshAnimationPoses();
         var camera = CreateCamera();
@@ -835,13 +849,18 @@ public sealed class ViewerForm : Form
         if (pressedKeys.Contains(Keys.C)) movement -= Vector3.UnitY;
         if (movement != Vector3.Zero)
         {
+            if (isCameraAnimating) PauseAnimation();
             var fast = pressedKeys.Contains(Keys.ShiftKey) ? 4f : 1f;
             var speed = Math.Max(sceneRadius * 0.12f, 2f);
             var translation = Vector3.Normalize(movement) * speed * fast * elapsed;
             cameraNavigation.Translate(translation);
         }
         var dollyDistance = cameraDollySmoother.Advance(elapsed);
-        if (dollyDistance != 0f) cameraNavigation.Dolly(dollyDistance);
+        if (dollyDistance != 0f)
+        {
+            if (isCameraAnimating) PauseAnimation();
+            cameraNavigation.Dolly(dollyDistance);
+        }
     }
 
     private void ChangeKeyboardLayout()
@@ -1020,6 +1039,14 @@ public sealed class ViewerForm : Form
     private TblEditorControl? tblEditor;
     private Cs1TableCatalog? tableCatalog;
 
+    // Camera animation interpolation
+    private ScriptCameraState? animationBefore;
+    private ScriptCameraState? animationAfter;
+    private int animationDurationMs;
+    private int animationEasingType;
+    private float animationElapsed;
+    private bool isCameraAnimating;
+
     private bool IsCameraMovementKey(Keys key) => key == Keys.ShiftKey
         || key == Keys.S
         || key == Keys.D
@@ -1055,6 +1082,7 @@ public sealed class ViewerForm : Form
             };
             editor.ViewportKeyUp += key => pressedKeys.Remove(key);
             editor.InstructionSelected += ApplySelectedScriptCamera;
+            editor.StopPreview += () => { isCameraAnimating = false; cameraPlayButton.Enabled = true; };
             scriptsTab.Controls.Add(editor);
             editor.Show();
         }
@@ -1072,6 +1100,28 @@ public sealed class ViewerForm : Form
         var state = ScriptCameraStateResolver.Resolve(function, instruction.Index);
         if (!state.HasViewValue) return;
 
+        // Si l'instruction a interpolation + duration, démarrer l'animation en boucle
+        if (ScriptCameraStateResolver.HasInterpolation(instruction))
+        {
+            animationBefore = ScriptCameraStateResolver.ResolveBefore(function, instruction.Index);
+            animationAfter = state;
+            animationDurationMs = ScriptCameraStateResolver.ReadDurationMs(instruction);
+            animationEasingType = ScriptCameraStateResolver.ReadInterpolationType(instruction);
+            animationElapsed = 0f;
+            isCameraAnimating = true;
+            cameraPlayButton.Enabled = true;
+            if (animationDurationMs <= 0) animationDurationMs = 1000; // fallback 1s
+            return;
+        }
+
+        // Comportement normal : appliquer l'état final directement
+        isCameraAnimating = false;
+        cameraPlayButton.Enabled = false;
+        ApplyCameraState(state);
+    }
+
+    private void ApplyCameraState(ScriptCameraState state)
+    {
         var distance = state.Distance is > 0f ? state.Distance.Value : cameraNavigation.Distance;
         distance += state.DistanceDelta ?? 0f;
         var forward = state.Forward ?? cameraNavigation.Forward;
@@ -1083,7 +1133,6 @@ public sealed class ViewerForm : Form
             var targetYaw = (state.YawDegrees ?? cameraNavigation.Yaw * 180f / MathF.PI) * MathF.PI / 180f;
             var targetPitch = (state.PitchDegrees ?? cameraNavigation.Pitch * 180f / MathF.PI) * MathF.PI / 180f;
 
-            // Shortest path: normaliser la différence entre -PI et PI
             if (state.UseShortestPath)
             {
                 var deltaYaw = targetYaw - cameraNavigation.Yaw;
@@ -1104,40 +1153,29 @@ public sealed class ViewerForm : Form
                 roll = rollDeg * MathF.PI / 180f;
         }
 
-        // La caméra orbite autour de Target (si défini) ou conserve sa position
         var position = state.Position ?? cameraNavigation.Position;
         if (state.Target is { } target)
-        {
-            // Eye = Target - Forward * Distance
             position = target - forward * distance;
-        }
         else if (state.Position is null && (state.YawDegrees is not null || state.PitchDegrees is not null))
-        {
-            // Garder le target actuel, recalculer Eye depuis les nouveaux angles
             position = cameraNavigation.Target - forward * distance;
-        }
-        // CameraAlignToEntity : Yaw = entity.Yaw + offset, Pitch/Roll absolus
+
         if (state.AlignEntityId is { } entId && state.AlignYawOffsetDegrees is { } yawOffDeg)
         {
-            var entYaw = 0f; // TODO: lire le Yaw reel de l'entite via ID decoder
-            var targetYaw = (entYaw + yawOffDeg) * MathF.PI / 180f;
-            var targetPitch = (state.PitchDegrees ?? cameraNavigation.Pitch * 180f / MathF.PI) * MathF.PI / 180f;
+            var entYaw = 0f;
+            var tYaw = (entYaw + yawOffDeg) * MathF.PI / 180f;
+            var tPitch = (state.PitchDegrees ?? cameraNavigation.Pitch * 180f / MathF.PI) * MathF.PI / 180f;
             if (state.UseShortestPath)
             {
-                var dY = targetYaw - cameraNavigation.Yaw;
+                var dY = tYaw - cameraNavigation.Yaw;
                 dY = (dY + MathF.PI) % (2f * MathF.PI) - MathF.PI;
-                targetYaw = cameraNavigation.Yaw + dY;
+                tYaw = cameraNavigation.Yaw + dY;
             }
-            var cosP = MathF.Cos(targetPitch);
+            var cosP = MathF.Cos(tPitch);
             forward = Vector3.Normalize(new Vector3(
-                MathF.Sin(targetYaw) * cosP,
-                MathF.Sin(targetPitch),
-                MathF.Cos(targetYaw) * cosP));
-            if (state.RollDegrees is { } rollDeg)
-                roll = rollDeg * MathF.PI / 180f;
+                MathF.Sin(tYaw) * cosP, MathF.Sin(tPitch), MathF.Cos(tYaw) * cosP));
+            if (state.RollDegrees is { } rollDeg) roll = rollDeg * MathF.PI / 180f;
         }
 
-        // CameraRotateBy : ajouter aux angles courants
         if (state.AngleDeltaDegrees is { } deltaDeg)
         {
             var tYaw = cameraNavigation.Yaw + deltaDeg.X * MathF.PI / 180f;
@@ -1145,24 +1183,124 @@ public sealed class ViewerForm : Form
             roll += deltaDeg.Z * MathF.PI / 180f;
             var cosP = MathF.Cos(tPitch);
             forward = Vector3.Normalize(new Vector3(
-                MathF.Sin(tYaw) * cosP,
-                MathF.Sin(tPitch),
-                MathF.Cos(tYaw) * cosP));
+                MathF.Sin(tYaw) * cosP, MathF.Sin(tPitch), MathF.Cos(tYaw) * cosP));
             position = cameraNavigation.Target - forward * distance;
         }
-        // CameraSetTarget_Relative : decaler le target actuel
+
         if (state.TargetOffset is { } offset)
             position = (cameraNavigation.Target + offset) - forward * distance;
-        // CameraSetEye_Relative : decaler l'oeil (target fixe -> angles/distance changent)
         if (state.PositionOffset is { } eyeOffset)
             position = cameraNavigation.Position + eyeOffset;
+
         cameraDollySmoother.Reset();
         cameraNavigation.SetRoll(roll);
         cameraNavigation.SetView(position, forward, distance);
         if (state.VerticalFieldOfViewDegrees is { } fov && float.IsFinite(fov))
             cameraFovSlider.Value = Math.Clamp((int)MathF.Round(fov), cameraFovSlider.Minimum, cameraFovSlider.Maximum);
         UpdateCameraTextFields();
-        Text = $"{baseTitle} — camera state at {function.Name} #{instruction.Index}";
+    }
+
+    private void UpdateCameraAnimation(float deltaSeconds)
+    {
+        if (!isCameraAnimating || animationBefore is null || animationAfter is null) return;
+
+        animationElapsed += deltaSeconds * 1000f; // convertir en ms
+        var duration = (float)animationDurationMs;
+        if (duration <= 0f) duration = 1000f;
+
+        // t normalisé 0..1, reboucle
+        var tRaw = animationElapsed / duration;
+        if (tRaw >= 1f) { animationElapsed = 0f; tRaw = 0f; }
+        var t = CameraEasing.Apply(tRaw, animationEasingType);
+
+        // Interpole entre before et after
+        var lerpFov = t;
+        var lerpDistance = t;
+        var lerpPosition = t;
+        var lerpAngles = t;
+
+        var state = new ScriptCameraState();
+
+        // Distance
+        var distBefore = animationBefore.Distance ?? cameraNavigation.Distance;
+        var distAfter = animationAfter.Distance ?? distBefore;
+        state = state with { Distance = distBefore + (distAfter - distBefore) * lerpDistance };
+
+        // Distance delta relatif
+        if (animationAfter.DistanceDelta is { } dd)
+            state = state with { DistanceDelta = dd * lerpDistance };
+
+        // FOV
+        var fovBefore = animationBefore.VerticalFieldOfViewDegrees ?? cameraFovSlider.Value;
+        var fovAfter = animationAfter.VerticalFieldOfViewDegrees ?? fovBefore;
+        state = state with { VerticalFieldOfViewDegrees = fovBefore + (fovAfter - fovBefore) * lerpFov };
+
+        // Position
+        if (animationAfter.Position is { } posAfter)
+        {
+            var posBefore = animationBefore.Position ?? cameraNavigation.Position;
+            state = state with { Position = posBefore + (posAfter - posBefore) * lerpPosition };
+        }
+
+        // Target
+        if (animationAfter.Target is { } tgtAfter)
+        {
+            var tgtBefore = animationBefore.Target ?? cameraNavigation.Target;
+            state = state with { Target = tgtBefore + (tgtAfter - tgtBefore) * lerpPosition };
+        }
+
+        // Angles (en degrés)
+        if (animationAfter.YawDegrees is { } yawAfter || animationAfter.PitchDegrees is { } pitchAfter)
+        {
+            var yawB = animationBefore.YawDegrees ?? cameraNavigation.Yaw * 180f / MathF.PI;
+            var pitchB = animationBefore.PitchDegrees ?? cameraNavigation.Pitch * 180f / MathF.PI;
+            var rollB = animationBefore.RollDegrees ?? 0f;
+            var yawA = animationAfter.YawDegrees ?? yawB;
+            var pitchA = animationAfter.PitchDegrees ?? pitchB;
+            var rollA = animationAfter.RollDegrees ?? rollB;
+            state = state with
+            {
+                YawDegrees = yawB + (yawA - yawB) * lerpAngles,
+                PitchDegrees = pitchB + (pitchA - pitchB) * lerpAngles,
+                RollDegrees = rollB + (rollA - rollB) * lerpAngles,
+            };
+        }
+
+        // Angle deltas (RotateBy, AddYaw)
+        if (animationAfter.AngleDeltaDegrees is { } deltaDeg)
+        {
+            // Le delta est interpolé linéairement
+            var effectiveDelta = new Vector3(
+                deltaDeg.X * lerpAngles,
+                deltaDeg.Y * lerpAngles,
+                deltaDeg.Z * lerpAngles);
+            // Appliquer le delta partiel aux angles courants de l'état before
+            var yawBDeg = animationBefore.YawDegrees ?? cameraNavigation.Yaw * 180f / MathF.PI;
+            var pitchBDeg = animationBefore.PitchDegrees ?? cameraNavigation.Pitch * 180f / MathF.PI;
+            var rollBDeg = animationBefore.RollDegrees ?? 0f;
+            state = state with
+            {
+                YawDegrees = yawBDeg + effectiveDelta.Y,
+                PitchDegrees = pitchBDeg + effectiveDelta.X,
+                RollDegrees = rollBDeg + effectiveDelta.Z,
+            };
+        }
+
+        // Target offset
+        if (animationAfter.TargetOffset is { } tgtOff)
+            state = state with { TargetOffset = tgtOff * lerpPosition };
+
+        // Eye offset
+        if (animationAfter.PositionOffset is { } eyeOff)
+            state = state with { PositionOffset = eyeOff * lerpPosition };
+
+        ApplyCameraState(state);
+    }
+
+    private void PauseAnimation()
+    {
+        isCameraAnimating = false;
+        cameraPlayButton.Enabled = true;
     }
 
     private void UpdateCameraTextFields()
