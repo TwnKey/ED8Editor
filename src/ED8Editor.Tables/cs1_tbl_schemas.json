@@ -1665,6 +1665,27 @@
         }
       ]
     },
+"VoiceTiming": {
+      "fields": [
+        {
+          "name": "voice_id",
+          "type": "u16"
+        },
+        {
+          "name": "timings",
+          "type": "bytes",
+          "size": 8
+        }
+      ]
+    },
+"VoiceTimingInfo": {
+      "fields": [
+        {
+          "name": "timing_factor",
+          "type": "u32"
+        }
+      ]
+    },
     "weapon_attribute": {
       "fields": [
         {

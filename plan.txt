@@ -8,6 +8,10 @@ de cette façon aussi on pourra remplir les champs avec sem = entity pour qu'il 
 - implémenter correctement le rempalcement des valeurs par les propriétés associées de la caméra courante
 - voir ce qui manque pour gérer les crafts (des fichiers non liés à une map, si pas de map on charge une scène avec un ground de debug. et si c'est un fichier ani on charge le personnage dont c'est le fichier ani.
 - Impémenter les animations faciales. (se baser sur : https://github.com/Trails-Research-Group/Doc/blob/main/tutorials/Animate-faces-in-late-Cold-Steels.md)
+- Ajouter la possibilité d'ajouter ses propres props custom, avec repacking en nouveau pkg automatisé
+- Ajouter la possibilité d'importer ses propres personnages (modèle + skinning / transfert de weight + nouveau script ani/entrées tables)
+- Ajouter un moyen de faire des quêtes custom de A à Z
+- Ajouter un moyen de gérer facilement les fichiers d'un mod à part du jeu de base pour facilement bundle/distribuer (avoir une archive spéciale ?)
 PLUS TARD:
 - "Le shader Phyre complet n’est pas encore activé : il manque le binding vérifié de tous les paramètres moteur ($Globals, brouillard, caméra, éclairage…)."
 - Implémenter les lumières et ombres (comme dans le jeu ?)
