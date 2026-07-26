@@ -11,7 +11,7 @@
 
   <ItemGroup>
     <!-- Garantit que la DLL native et le document sont a cote de l'exe du probe. -->
-    <None Include="..\..\opcode_analyzer\cs1_instructions.json" Link="cs1_instructions.json">
+    <None Include="..\ED8Editor.Decompiler\cs1_instructions.json" Link="cs1_instructions.json">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
     <None Include="..\ED8Editor.Decompiler\native\cs1_decompiler.dll" Link="cs1_decompiler.dll"

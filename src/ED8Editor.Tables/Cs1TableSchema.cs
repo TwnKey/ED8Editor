@@ -123,7 +123,15 @@ public sealed class Cs1TableRecordCodec
 {
     private static readonly UTF8Encoding Utf8 = new(false, true);
     private readonly Cs1TableSchemaSet schemas;
-    public Cs1TableRecordCodec(Cs1TableSchemaSet? schemas = null) => this.schemas = schemas ?? Cs1TableSchemaSet.Default;
+    private readonly Encoding textEncoding;
+
+    public Cs1TableRecordCodec(
+        Cs1TableSchemaSet? schemas = null,
+        Encoding? textEncoding = null)
+    {
+        this.schemas = schemas ?? Cs1TableSchemaSet.Default;
+        this.textEncoding = textEncoding ?? Utf8;
+    }
 
     public IReadOnlyList<Cs1TableFieldValue>? Decode(Cs1TableEntry entry)
     {
@@ -148,7 +156,7 @@ public sealed class Cs1TableRecordCodec
         return output.ToArray();
     }
 
-    private static string ReadValue(byte[] data, ref int offset, Cs1TableAtomicField field)
+    private string ReadValue(byte[] data, ref int offset, Cs1TableAtomicField field)
     {
         return field.Type switch
         {
@@ -175,16 +183,16 @@ public sealed class Cs1TableRecordCodec
         return result;
     }
 
-    private static string ReadString(byte[] data, ref int offset, string name)
+    private string ReadString(byte[] data, ref int offset, string name)
     {
         var end = Array.IndexOf(data, (byte)0, offset);
         if (end < 0) throw new InvalidDataException($"Field '{name}' has no NUL terminator.");
-        var value = Utf8.GetString(data, offset, end - offset);
+        var value = textEncoding.GetString(data, offset, end - offset);
         offset = end + 1;
         return value;
     }
 
-    private static void WriteValue(Stream output, Cs1TableAtomicField field, string text)
+    private void WriteValue(Stream output, Cs1TableAtomicField field, string text)
     {
         Span<byte> bytes = stackalloc byte[4];
         switch (field.Type)
@@ -198,7 +206,7 @@ public sealed class Cs1TableRecordCodec
             case "f32": BinaryPrimitives.WriteInt32LittleEndian(bytes, BitConverter.SingleToInt32Bits(float.Parse(text, CultureInfo.InvariantCulture))); output.Write(bytes); break;
             case "cutf8":
                 if (text.IndexOf('\0') >= 0) throw new FormatException($"Field '{field.Name}' cannot contain NUL.");
-                output.Write(Utf8.GetBytes(text)); output.WriteByte(0); break;
+                output.Write(textEncoding.GetBytes(text)); output.WriteByte(0); break;
             case "bytes":
                 var raw = Convert.FromHexString(new string(text.Where(value => !char.IsWhiteSpace(value)).ToArray()));
                 if (raw.Length != field.Size) throw new FormatException($"Field '{field.Name}' requires exactly {field.Size} bytes.");

@@ -523,6 +523,48 @@ public sealed class D3D11Viewport : IDisposable
         swapChain.Present(verticalSync ? 1 : 0, PresentFlags.None).CheckError();
     }
 
+    public byte[] CaptureBackBufferBgra()
+    {
+        using var backBuffer = swapChain.GetBuffer<ID3D11Texture2D>(0);
+        var source = backBuffer.Description;
+        var stagingDescription = new Texture2DDescription
+        {
+            Width = source.Width,
+            Height = source.Height,
+            MipLevels = 1,
+            ArraySize = 1,
+            Format = source.Format,
+            SampleDescription = new SampleDescription(1, 0),
+            Usage = ResourceUsage.Staging,
+            BindFlags = BindFlags.None,
+            CPUAccessFlags = CpuAccessFlags.Read,
+            MiscFlags = ResourceOptionFlags.None,
+        };
+        using var staging = graphics.Device.CreateTexture2D(stagingDescription);
+        graphics.Context.CopyResource(staging, backBuffer);
+        var mapped = graphics.Context.Map(
+            staging, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
+        try
+        {
+            const int bytesPerPixel = 4;
+            var rowBytes = checked(source.Width * bytesPerPixel);
+            var pixels = new byte[checked(rowBytes * source.Height)];
+            for (var row = 0; row < source.Height; row++)
+            {
+                Marshal.Copy(
+                    mapped.DataPointer + row * mapped.RowPitch,
+                    pixels,
+                    row * rowBytes,
+                    rowBytes);
+            }
+            return pixels;
+        }
+        finally
+        {
+            graphics.Context.Unmap(staging, 0);
+        }
+    }
+
     private void DrawScenePhase(
         IReadOnlyList<D3D11SceneInstance> instances,
         ViewportCamera camera,
@@ -1232,6 +1274,22 @@ public sealed class D3D11Viewport : IDisposable
         => primitive.VertexBuffers.FirstOrDefault(value => value.Attributes.Any(attribute =>
             attribute.Semantic == semantic && attribute.SemanticIndex == semanticIndex));
 
+    public static bool SupportsSkinningInputs(D3D11PrimitiveResources primitive)
+    {
+        ArgumentNullException.ThrowIfNull(primitive);
+        if (primitive.SkinBones is not { Count: > 0 }) return false;
+        var indices = FindBuffer(primitive, VertexSemantic.JointIndices);
+        var indexAttribute = indices?.Attributes.FirstOrDefault(value =>
+            value.Semantic == VertexSemantic.JointIndices);
+        var weights = FindBuffer(primitive, VertexSemantic.JointWeights);
+        var weightAttribute = weights?.Attributes.FirstOrDefault(value =>
+            value.Semantic == VertexSemantic.JointWeights);
+        return indexAttribute is not null
+            && weightAttribute is not null
+            && TryMapFormat(indexAttribute.SourceFormat, out _)
+            && TryMapFormat(weightAttribute.SourceFormat, out _);
+    }
+
     private static bool TryMapFormat(string source, out Format format)
     {
         format = source switch
@@ -1241,6 +1299,16 @@ public sealed class D3D11Viewport : IDisposable
             "Float32x4" => Format.R32G32B32A32_Float,
             "Float16x2" => Format.R16G16_Float,
             "Float16x4" => Format.R16G16B16A16_Float,
+            "UInt32x1" => Format.R32_UInt,
+            "UInt32x2" => Format.R32G32_UInt,
+            "UInt32x3" => Format.R32G32B32_UInt,
+            "UInt32x4" => Format.R32G32B32A32_UInt,
+            "UInt16x1" => Format.R16_UInt,
+            "UInt16x2" => Format.R16G16_UInt,
+            "UInt16x4" => Format.R16G16B16A16_UInt,
+            "UInt8x1" => Format.R8_UInt,
+            "UInt8x2" => Format.R8G8_UInt,
+            "UInt8x4" => Format.R8G8B8A8_UInt,
             "UNorm16x2" => Format.R16G16_UNorm,
             "UNorm16x4" => Format.R16G16B16A16_UNorm,
             "UNorm8x2" => Format.R8G8_UNorm,

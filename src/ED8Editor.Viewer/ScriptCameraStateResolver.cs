@@ -21,11 +21,16 @@ internal sealed record ScriptCameraState(
     Vector3? AngleDeltaDegrees = null,
     int? AlignEntityId = null,
     float? AlignYawOffsetDegrees = null,
-    float? DistanceDelta = null)
+    float? DistanceDelta = null,
+    int? TargetEntityId = null,
+    int? SecondaryTargetEntityId = null,
+    Vector3? TargetEntityOffset = null,
+    bool TargetOffsetUsesEntityRotation = false)
 {
     public bool HasViewValue => Position is not null || Target is not null || Forward is not null
         || Distance is not null || VerticalFieldOfViewDegrees is not null
-        || YawDegrees is not null || PitchDegrees is not null || RollDegrees is not null;
+        || YawDegrees is not null || PitchDegrees is not null || RollDegrees is not null
+        || TargetEntityId is not null;
 }
 
 internal static class ScriptCameraStateResolver
@@ -36,7 +41,7 @@ internal static class ScriptCameraStateResolver
         var path = FindFirstPath(function, selectedInstructionIndex);
         var state = new ScriptCameraState();
         foreach (var instructionIndex in path)
-            state = Apply(function.Instructions[instructionIndex], state);
+            state = ApplyInstruction(function.Instructions[instructionIndex], state);
         return state;
     }
 
@@ -49,12 +54,12 @@ internal static class ScriptCameraStateResolver
         foreach (var instructionIndex in path)
         {
             if (instructionIndex == selectedInstructionIndex) break;
-            state = Apply(function.Instructions[instructionIndex], state);
+            state = ApplyInstruction(function.Instructions[instructionIndex], state);
         }
         return state;
     }
 
-    private static IReadOnlyList<int> FindFirstPath(DecompiledFunction function, int target)
+    internal static IReadOnlyList<int> FindFirstPath(DecompiledFunction function, int target)
     {
         if (target < 0 || target >= function.Instructions.Count) return Array.Empty<int>();
         var path = new List<int>();
@@ -73,7 +78,7 @@ internal static class ScriptCameraStateResolver
         }
     }
 
-    private static IEnumerable<int> Successors(DecompiledFunction function, int index)
+    internal static IEnumerable<int> Successors(DecompiledFunction function, int index)
     {
         var instruction = function.Instructions[index];
         var fallthrough = index + 1;
@@ -94,7 +99,7 @@ internal static class ScriptCameraStateResolver
             if (target != fallthrough) yield return target;
     }
 
-    private static ScriptCameraState Apply(DecompiledInstruction instruction, ScriptCameraState state)
+    internal static ScriptCameraState ApplyInstruction(DecompiledInstruction instruction, ScriptCameraState state)
     {
         state = ApplySemanticArguments(instruction.Arguments, state);
         if (instruction.Opcode != 45) return state;
@@ -137,12 +142,20 @@ internal static class ScriptCameraStateResolver
         if (name.Equals("Camera_LookAtEntityNode", StringComparison.OrdinalIgnoreCase))
         {
             var floats = args.Where(a => a.Kind == "scalar" && a.Type == "f32").Select(a => (float)a.FloatValue).ToArray();
-            if (floats.Length >= 3)
+            var entityId = args.FirstOrDefault(a => a.Name == "target_id")?.IntValue;
+            if (floats.Length >= 3 && entityId is not null)
             {
-                var target = new Vector3(floats[0], floats[1], floats[2]);
+                var offset = new Vector3(floats[0], floats[1], floats[2]);
                 var durMs = args.LastOrDefault(a => a.Type == "s16")?.Raw is { Length: >= 2 } r
                     ? r[0] | (r[1] << 8) : 0;
-                return state with { Target = target, TargetDurationMs = durMs };
+                return state with
+                {
+                    TargetEntityId = entityId,
+                    SecondaryTargetEntityId = null,
+                    TargetEntityOffset = offset,
+                    TargetOffsetUsesEntityRotation = false,
+                    TargetDurationMs = durMs,
+                };
             }
         }
 
@@ -150,12 +163,20 @@ internal static class ScriptCameraStateResolver
         if (name.Equals("Camera_LookAtEntityNodeRelative", StringComparison.OrdinalIgnoreCase))
         {
             var floats = args.Where(a => a.Kind == "scalar" && a.Type == "f32").Select(a => (float)a.FloatValue).ToArray();
-            if (floats.Length >= 3)
+            var entityId = args.FirstOrDefault(a => a.Name == "target_id")?.IntValue;
+            if (floats.Length >= 3 && entityId is not null)
             {
-                var target = new Vector3(floats[0], floats[1], floats[2]);
+                var offset = new Vector3(floats[0], floats[1], floats[2]);
                 var durMs = args.LastOrDefault(a => a.Type == "s16")?.Raw is { Length: >= 2 } r
                     ? r[0] | (r[1] << 8) : 0;
-                return state with { Target = target, TargetDurationMs = durMs };
+                return state with
+                {
+                    TargetEntityId = entityId,
+                    SecondaryTargetEntityId = null,
+                    TargetEntityOffset = offset,
+                    TargetOffsetUsesEntityRotation = true,
+                    TargetDurationMs = durMs,
+                };
             }
         }
 
@@ -188,21 +209,36 @@ internal static class ScriptCameraStateResolver
 
         if (name.Equals("Camera_LookAtMidpoint", StringComparison.OrdinalIgnoreCase))
         {
-            var floats = args.Where(a => a.Kind == "scalar" && a.Type == "f32").Select(a => (float)a.FloatValue).ToArray();
-            var floatVal = floats.Length > 0 ? floats[0] : 0f;
+            var firstId = args.FirstOrDefault(a => a.Name == "entity_A_id")?.IntValue;
+            var secondId = args.FirstOrDefault(a => a.Name == "entity_B_id")?.IntValue;
+            var verticalOffset = args.FirstOrDefault(a => a.Type == "f32");
             var durMs = args.LastOrDefault(a => a.Type == "s16")?.Raw is { Length: >= 2 } r
                 ? r[0] | (r[1] << 8) : 0;
-            var midpointTarget = new Vector3(0, floatVal, 0);
-            return state with { Target = midpointTarget, TargetDurationMs = durMs };
+            if (firstId is not null && secondId is not null)
+                return state with
+                {
+                    TargetEntityId = firstId,
+                    SecondaryTargetEntityId = secondId,
+                    TargetEntityOffset = new Vector3(
+                        0f, verticalOffset is null ? 0f : (float)verticalOffset.FloatValue, 0f),
+                    TargetOffsetUsesEntityRotation = false,
+                    TargetDurationMs = durMs,
+                };
         }
 
         if (name.Equals("CameraTrackEntity", StringComparison.OrdinalIgnoreCase))
         {
             var floats = args.Where(a => a.Kind == "scalar" && a.Type == "f32").Select(a => (float)a.FloatValue).ToArray();
-            if (floats.Length >= 3)
+            var entityId = args.FirstOrDefault(a => a.Name == "entity_id")?.IntValue;
+            if (floats.Length >= 3 && entityId is not null)
             {
-                var target = new Vector3(floats[0], floats[1], floats[2]);
-                return state with { Target = target };
+                return state with
+                {
+                    TargetEntityId = entityId,
+                    SecondaryTargetEntityId = null,
+                    TargetEntityOffset = new Vector3(floats[0], floats[1], floats[2]),
+                    TargetOffsetUsesEntityRotation = false,
+                };
             }
         }
 
@@ -334,6 +370,8 @@ internal static class ScriptCameraStateResolver
                     state = state with { YawDegrees = yaw };
                 else if (semantic == "pitch-degrees" && TryReadFloat(group, out var pitch))
                     state = state with { PitchDegrees = pitch };
+                else if (semantic == "roll-degrees" && TryReadFloat(group, out var roll))
+                    state = state with { RollDegrees = roll };
             }
             index += group.Length - 1;
         }

@@ -21,7 +21,7 @@
       "verified": true
     },
     {
-      "name": "OP1",
+      "name": "Return",
       "op": 1,
       "opname": "RETURN",
       "selectors": [],
@@ -29,7 +29,7 @@
       "verified": true
     },
     {
-      "name": "OP2",
+      "name": "Call",
       "op": 2,
       "opname": "CALL",
       "selectors": [],
@@ -44,7 +44,7 @@
       "verified": true
     },
     {
-      "name": "OP3",
+      "name": "Jump",
       "op": 3,
       "opname": "JMP",
       "selectors": [],
@@ -56,7 +56,7 @@
       "verified": true
     },
     {
-      "name": "OP4",
+      "name": "CallExt",
       "op": 4,
       "opname": "CALL_EXT",
       "selectors": [],
@@ -71,7 +71,7 @@
       "verified": true
     },
     {
-      "name": "OP5",
+      "name": "Jump_if_false",
       "op": 5,
       "opname": "JMP_IF_FALSE",
       "selectors": [],
@@ -86,7 +86,7 @@
       "verified": true
     },
     {
-      "name": "OP6",
+      "name": "Switch",
       "op": 6,
       "opname": "SWITCH",
       "selectors": [],
@@ -233,13 +233,14 @@
       "verified": true
     },
     {
-      "name": "OP16",
+      "name": "Ani_Delay",
       "op": 16,
       "opname": "OP16",
       "selectors": [],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "delay_ticks"
         }
       ],
       "verified": true
@@ -275,70 +276,93 @@
       "verified": true
     },
     {
-      "name": "OP19",
+      "name": "Entity_Spawn",
       "op": 19,
       "opname": "OP19",
       "selectors": [],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "model_asset"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "display_name"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "initial_animation"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "entity_type"
         },
         {
-          "t": "s32"
+          "t": "s32",
+          "name": "flags",
+          "sem": "bitmask"
         },
         {
-          "t": "f32"
-        },
-        {
-          "t": "f32"
-        },
-        {
-          "t": "f32"
-        },
-        {
-          "t": "f32"
-        },
-        {
-          "t": "f32"
-        },
-        {
-          "t": "f32"
+          "t": "f32",
+          "name": "position",
+          "sem": "position",
+          "sem_span": 3
         },
         {
           "t": "f32"
         },
         {
-          "t": "string"
+          "t": "f32"
         },
         {
-          "t": "string"
+          "t": "f32",
+          "name": "yaw_degrees"
         },
         {
-          "t": "s32"
+          "t": "f32",
+          "name": "scale"
         },
         {
-          "t": "u8"
+          "t": "f32",
+          "name": "collision_height"
         },
         {
-          "t": "s32"
+          "t": "f32",
+          "name": "collision_radius"
         },
         {
-          "t": "s32"
+          "t": "string",
+          "name": "script_file"
         },
         {
-          "t": "s16"
+          "t": "string",
+          "name": "init_function",
+          "sem": "func_name"
+        },
+        {
+          "t": "s32",
+          "name": "script_argument"
+        },
+        {
+          "t": "u8",
+          "name": "unknown_behavior"
+        },
+        {
+          "t": "s32",
+          "name": "unknown_parameter_1"
+        },
+        {
+          "t": "s32",
+          "name": "unknown_parameter_2"
+        },
+        {
+          "t": "s16",
+          "name": "unknown_parameter_3"
         }
       ],
       "verified": true
@@ -1055,37 +1079,49 @@
       "selectors": [],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "animation_name"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "loop_flag"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "animation_flag_2"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "animation_flag_3"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "animation_flag_4"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "animation_flag_5"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "blend_time"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "time_parameter_1"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "time_parameter_2"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "time_parameter_3"
         }
       ],
       "verified": true
@@ -1097,31 +1133,39 @@
       "selectors": [],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "s32"
+          "t": "s32",
+          "name": "unknown_parameter"
         }
       ],
       "verified": true
     },
     {
-      "name": "OP36",
+      "name": "Entity_AnimationBank",
       "op": 36,
       "opname": "OP36",
       "selectors": [],
       "read": [
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "operation"
         },
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "animation_bank"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "alias"
         }
       ],
       "verified": true
@@ -1175,16 +1219,18 @@
       "verified": true
     },
     {
-      "name": "OP38",
+      "name": "Animation_PreloadBank",
       "op": 38,
       "opname": "OP38",
       "selectors": [],
       "read": [
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "operation"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "animation_bank"
         }
       ],
       "verified": true
@@ -3262,7 +3308,8 @@
         {
           "t": "f32",
           "name": "target_position",
-          "sem": "position",
+          "sem": "camera",
+          "sem_arg": "target",
           "sem_span": 3
         },
         {
@@ -3348,15 +3395,21 @@
         },
         {
           "t": "f32",
-          "name": "pitch_deg"
+          "name": "pitch_deg",
+          "sem": "camera",
+          "sem_arg": "pitch-degrees"
         },
         {
           "t": "f32",
-          "name": "yaw_deg"
+          "name": "yaw_deg",
+          "sem": "camera",
+          "sem_arg": "yaw-degrees"
         },
         {
           "t": "f32",
-          "name": "roll_deg"
+          "name": "roll_deg",
+          "sem": "camera",
+          "sem_arg": "roll-degrees"
         },
         {
           "t": "s16",
@@ -3546,7 +3599,9 @@
         },
         {
           "t": "f32",
-          "name": "fov"
+          "name": "fov",
+          "sem": "camera",
+          "sem_arg": "fov-degrees"
         },
         {
           "t": "s16",
@@ -3576,7 +3631,10 @@
         },
         {
           "t": "f32",
-          "name": "offset_X"
+          "name": "offset_X",
+          "sem": "camera",
+          "sem_arg": "target-offset",
+          "sem_span": 3
         },
         {
           "t": "f32",
@@ -3615,7 +3673,10 @@
         },
         {
           "t": "f32",
-          "name": "offset_X"
+          "name": "offset_X",
+          "sem": "camera",
+          "sem_arg": "position-offset",
+          "sem_span": 3
         },
         {
           "t": "f32",
@@ -3696,7 +3757,10 @@
         },
         {
           "t": "f32",
-          "name": "offset_X"
+          "name": "offset_X",
+          "sem": "camera",
+          "sem_arg": "target-entity-offset",
+          "sem_span": 3
         },
         {
           "t": "f32",
@@ -3750,15 +3814,21 @@
         },
         {
           "t": "f32",
-          "name": "delta_pitch_deg"
+          "name": "delta_pitch_deg",
+          "sem": "camera",
+          "sem_arg": "pitch-delta"
         },
         {
           "t": "f32",
-          "name": "delta_yaw_deg"
+          "name": "delta_yaw_deg",
+          "sem": "camera",
+          "sem_arg": "yaw-delta"
         },
         {
           "t": "f32",
-          "name": "delta_roll_deg"
+          "name": "delta_roll_deg",
+          "sem": "camera",
+          "sem_arg": "roll-delta"
         },
         {
           "t": "s16",
@@ -3812,7 +3882,8 @@
         },
         {
           "t": "u16",
-          "name": "entity_id"
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
           "t": "u8",
@@ -3820,15 +3891,21 @@
         },
         {
           "t": "f32",
-          "name": "pitch_deg"
+          "name": "pitch_deg",
+          "sem": "camera",
+          "sem_arg": "pitch-degrees"
         },
         {
           "t": "f32",
-          "name": "yaw_offset_deg"
+          "name": "yaw_offset_deg",
+          "sem": "camera",
+          "sem_arg": "yaw-relative-entity"
         },
         {
           "t": "f32",
-          "name": "roll_deg"
+          "name": "roll_deg",
+          "sem": "camera",
+          "sem_arg": "roll-degrees"
         },
         {
           "t": "u16",
@@ -3862,7 +3939,8 @@
         },
         {
           "t": "s16",
-          "name": "target_id"
+          "name": "target_id",
+          "sem": "entity"
         },
         {
           "t": "string",
@@ -3909,7 +3987,9 @@
         },
         {
           "t": "f32",
-          "name": "yaw_offset_deg"
+          "name": "yaw_offset_deg",
+          "sem": "camera",
+          "sem_arg": "yaw-delta"
         },
         {
           "t": "s32",
@@ -3943,7 +4023,9 @@
         },
         {
           "t": "f32",
-          "name": "distance_delta"
+          "name": "distance_delta",
+          "sem": "camera",
+          "sem_arg": "distance-delta"
         },
         {
           "t": "u16",
@@ -3993,43 +4075,56 @@
       "verified": true
     },
     {
-      "name": "OP46",
+      "name": "Entity_SetPosition",
       "op": 46,
       "opname": "OP46",
       "selectors": [],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "position_x",
+          "sem": "position",
+          "sem_span": 3
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "position_y"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "position_z"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "yaw_degrees"
         }
       ],
       "verified": true
     },
     {
-      "name": "OP47",
+      "name": "Script_CallAniFun",
       "op": 47,
       "opname": "OP47",
       "selectors": [],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "animation_slot"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "animation_function",
+          "sem": "entity_animation_function"
         }
       ],
       "verified": true
@@ -4911,7 +5006,7 @@
       "verified": true
     },
     {
-      "name": "OP54_65026",
+      "name": "Entity_JumpAbsolute",
       "op": 54,
       "opname": "OP54",
       "selectors": [
@@ -4922,24 +5017,47 @@
       ],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
           "t": "u16",
-          "role": "sel16"
-        },
-        {
-          "t": "bytes",
-          "size": 19
+          "role": "sel16",
+          "name": "target_position",
+          "sem": "position",
+          "sem_span": 3
         },
         {
           "t": "f32"
+        },
+        {
+          "t": "f32"
+        },
+        {
+          "t": "f32",
+          "name": "jump_height"
+        },
+        {
+          "t": "f32",
+          "name": "speed"
+        },
+        {
+          "t": "f32",
+          "name": "animation_state"
+        },
+        {
+          "t": "u8",
+          "name": "movement_flags"
+        },
+        {
+          "t": "u16"
         }
       ],
       "verified": true
     },
     {
-      "name": "OP54_65027",
+      "name": "Entity_JumpRelative",
       "op": 54,
       "opname": "OP54",
       "selectors": [
@@ -4950,24 +5068,47 @@
       ],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
           "t": "u16",
-          "role": "sel16"
-        },
-        {
-          "t": "bytes",
-          "size": 19
+          "role": "sel16",
+          "name": "position_offset",
+          "sem": "position",
+          "sem_span": 3
         },
         {
           "t": "f32"
+        },
+        {
+          "t": "f32"
+        },
+        {
+          "t": "f32",
+          "name": "jump_height"
+        },
+        {
+          "t": "f32",
+          "name": "speed"
+        },
+        {
+          "t": "f32",
+          "name": "animation_state"
+        },
+        {
+          "t": "u8",
+          "name": "movement_flags"
+        },
+        {
+          "t": "u16"
         }
       ],
       "verified": true
     },
     {
-      "name": "OP54_default",
+      "name": "Entity_MoveByMode",
       "op": 54,
       "opname": "OP54",
       "selectors": [
@@ -4978,56 +5119,121 @@
       ],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "u16"
+          "t": "u16",
+          "name": "move_mode"
         },
         {
-          "t": "bytes",
-          "size": 19
+          "t": "f32",
+          "name": "target_or_offset",
+          "sem": "position",
+          "sem_span": 3
+        },
+        {
+          "t": "f32"
+        },
+        {
+          "t": "f32"
+        },
+        {
+          "t": "f32",
+          "name": "speed"
+        },
+        {
+          "t": "u8",
+          "name": "animation_state"
+        },
+        {
+          "t": "u16",
+          "name": "movement_flags"
         }
       ],
       "verified": true
     },
     {
-      "name": "OP55",
+      "name": "Entity_WaitMovement",
       "op": 55,
       "opname": "OP55",
-      "selectors": [],
+      "selectors": [
+        {
+          "value": 0,
+          "kind": "selector"
+        }
+      ],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "role": "selector",
+          "name": "movement_control"
         }
       ],
       "verified": true
     },
     {
-      "name": "OP56",
+      "name": "Entity_StopMovement",
+      "op": 55,
+      "opname": "OP55",
+      "selectors": [
+        {
+          "value": 1,
+          "kind": "selector"
+        }
+      ],
+      "read": [
+        {
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
+        },
+        {
+          "t": "u8",
+          "role": "selector",
+          "name": "movement_control"
+        }
+      ],
+      "verified": true
+    },
+    {
+      "name": "Entity_Wander",
       "op": 56,
       "opname": "OP56",
       "selectors": [],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "wander_center",
+          "sem": "position",
+          "sem_span": 3
         },
         {
-          "t": "s32"
+          "t": "f32",
+          "name": "center_y"
         },
         {
-          "t": "s32"
+          "t": "f32",
+          "name": "center_z"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "radius"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "speed"
         }
       ],
       "verified": true
@@ -5821,16 +6027,18 @@
       "verified": true
     },
     {
-      "name": "OP69",
+      "name": "Prop_PlayAnimation",
       "op": 69,
       "opname": "OP69",
       "selectors": [],
       "read": [
         {
-          "t": "string"
+          "t": "string",
+          "name": "prop_name"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "animation_name"
         }
       ],
       "verified": true
@@ -7822,7 +8030,7 @@
       "verified": true
     },
     {
-      "name": "OP95_0",
+      "name": "Entity_Move",
       "op": 95,
       "opname": "OP95",
       "selectors": [
@@ -7833,26 +8041,33 @@
       ],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
           "t": "u8",
-          "role": "selector"
+          "role": "selector",
+          "name": "movement_subtype"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "speed"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "animation_state"
         },
         {
-          "t": "s16"
+          "t": "u16",
+          "name": "movement_flags",
+          "sem": "bitmask"
         }
       ],
       "verified": true
     },
     {
-      "name": "OP95_3",
+      "name": "Entity_Move2",
       "op": 95,
       "opname": "OP95",
       "selectors": [
@@ -7863,26 +8078,33 @@
       ],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
           "t": "u8",
-          "role": "selector"
+          "role": "selector",
+          "name": "movement_subtype"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "speed"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "animation_state"
         },
         {
-          "t": "s16"
+          "t": "u16",
+          "name": "movement_flags",
+          "sem": "bitmask"
         }
       ],
       "verified": true
     },
     {
-      "name": "OP95_2",
+      "name": "Entity_AddWayPoint",
       "op": 95,
       "opname": "OP95",
       "selectors": [
@@ -7893,20 +8115,50 @@
       ],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
           "t": "u8",
-          "role": "selector"
+          "role": "selector",
+          "name": "movement_subtype"
+        },
+        {
+          "t": "f32",
+          "name": "waypoint",
+          "sem": "position",
+          "sem_span": 3
         },
         {
           "t": "f32"
         },
         {
           "t": "f32"
+        }
+      ],
+      "verified": true
+    },
+    {
+      "name": "Entity_InitPath",
+      "op": 95,
+      "opname": "OP95",
+      "selectors": [
+        {
+          "value": 1,
+          "kind": "selector"
+        }
+      ],
+      "read": [
+        {
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "f32"
+          "t": "u8",
+          "role": "selector",
+          "name": "movement_subtype"
         }
       ],
       "verified": true
@@ -7923,7 +8175,9 @@
       ],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
           "t": "u8"

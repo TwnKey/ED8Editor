@@ -529,8 +529,18 @@ if (args is ["--phyre-pose", var poseModelPackage, var poseModelEntry,
     var animationArchive = new PkgArchiveReader().Read(poseAnimationPackage);
     var clip = new PhyreAnimationReader().Read(poseAnimationAsset, animationArchive.ReadEntry(poseAnimationEntry));
     var skeleton = model.Skeleton ?? throw new InvalidDataException("Model has no skeleton.");
-    var start = new CpuSkeletonPoseEvaluator().Evaluate(skeleton, clip, clip.StartTime);
-    var middle = new CpuSkeletonPoseEvaluator().Evaluate(skeleton, clip, (clip.StartTime + clip.EndTime) * 0.5f);
+    var jointNames = skeleton.Joints.Select(value => value.Name)
+        .ToHashSet(StringComparer.Ordinal);
+    var unboundTargets = clip.Channels.Select(value => value.TargetName)
+        .Distinct(StringComparer.Ordinal)
+        .Where(value => !jointNames.Contains(value))
+        .ToArray();
+    Console.WriteLine($"Unbound animation targets: {string.Join(", ", unboundTargets)}");
+    var start = new CpuSkeletonPoseEvaluator().Evaluate(
+        skeleton, clip, clip.StartTime, CpuAnimationUnboundTargetBehavior.Ignore);
+    var middle = new CpuSkeletonPoseEvaluator().Evaluate(
+        skeleton, clip, (clip.StartTime + clip.EndTime) * 0.5f,
+        CpuAnimationUnboundTargetBehavior.Ignore);
     Console.WriteLine($"Pose: {skeleton.Joints.Count} joints, {start.SkinMatrices.Count} skin matrices");
     Console.WriteLine($"Start finite: {start.SkinMatrices.All(IsFinite)}; middle finite: {middle.SkinMatrices.All(IsFinite)}");
     foreach (var (primitive, index) in model.Meshes.SelectMany(value => value.Primitives).Select((value, index) => (value, index)))
@@ -539,9 +549,71 @@ if (args is ["--phyre-pose", var poseModelPackage, var poseModelEntry,
             .FirstOrDefault(value => value.Semantic == VertexSemantic.JointIndices);
         var weights = primitive.VertexBuffers.SelectMany(value => value.Attributes)
             .FirstOrDefault(value => value.Semantic == VertexSemantic.JointWeights);
-        Console.WriteLine($"Primitive {index}: bones={primitive.SkinBones?.Count ?? 0}, indices={indices?.SourceFormat}, weights={weights?.SourceFormat}");
+        var maximumDisplacement = MeasureMaximumSkinnedVertexDisplacement(
+            primitive, start.SkinMatrices, middle.SkinMatrices);
+        Console.WriteLine(
+            $"Primitive {index}: bones={primitive.SkinBones?.Count ?? 0},"
+            + $" indices={indices?.SourceFormat}, weights={weights?.SourceFormat},"
+            + $" animated displacement={maximumDisplacement:R}");
     }
     return 0;
+
+    static float MeasureMaximumSkinnedVertexDisplacement(
+        CpuMeshPrimitive primitive,
+        IReadOnlyList<Matrix4x4> bindMatrices,
+        IReadOnlyList<Matrix4x4> animatedMatrices)
+    {
+        if (primitive.SkinBones is not { Count: > 0 } bones) return 0f;
+        var positionBuffer = primitive.VertexBuffers.FirstOrDefault(value =>
+            value.Attributes.Any(attribute => attribute.Semantic == VertexSemantic.Position));
+        var indexBuffer = primitive.VertexBuffers.FirstOrDefault(value =>
+            value.Attributes.Any(attribute => attribute.Semantic == VertexSemantic.JointIndices));
+        var weightBuffer = primitive.VertexBuffers.FirstOrDefault(value =>
+            value.Attributes.Any(attribute => attribute.Semantic == VertexSemantic.JointWeights));
+        var positionAttribute = positionBuffer?.Attributes.FirstOrDefault(value =>
+            value.Semantic == VertexSemantic.Position);
+        var indexAttribute = indexBuffer?.Attributes.FirstOrDefault(value =>
+            value.Semantic == VertexSemantic.JointIndices);
+        var weightAttribute = weightBuffer?.Attributes.FirstOrDefault(value =>
+            value.Semantic == VertexSemantic.JointWeights);
+        if (positionBuffer is null || indexBuffer is null || weightBuffer is null
+            || positionAttribute?.SourceFormat != "Float32x3"
+            || indexAttribute?.SourceFormat != "UInt8x4"
+            || weightAttribute?.SourceFormat != "Float32x4")
+        {
+            return 0f;
+        }
+
+        var maximum = 0f;
+        var vertexCount = Math.Min(
+            positionBuffer.VertexCount,
+            Math.Min(indexBuffer.VertexCount, weightBuffer.VertexCount));
+        for (var vertex = 0; vertex < vertexCount; vertex++)
+        {
+            var positionOffset = vertex * positionBuffer.Stride + positionAttribute.Offset;
+            var position = new Vector3(
+                BitConverter.ToSingle(positionBuffer.Data, positionOffset),
+                BitConverter.ToSingle(positionBuffer.Data, positionOffset + 4),
+                BitConverter.ToSingle(positionBuffer.Data, positionOffset + 8));
+            var indicesOffset = vertex * indexBuffer.Stride + indexAttribute.Offset;
+            var weightsOffset = vertex * weightBuffer.Stride + weightAttribute.Offset;
+            var bindPosition = Vector3.Zero;
+            var animatedPosition = Vector3.Zero;
+            for (var influence = 0; influence < 4; influence++)
+            {
+                var localBoneIndex = indexBuffer.Data[indicesOffset + influence];
+                var weight = BitConverter.ToSingle(
+                    weightBuffer.Data,
+                    weightsOffset + influence * sizeof(float));
+                if (weight == 0f || localBoneIndex >= bones.Count) continue;
+                var skeletonIndex = bones[localBoneIndex].SkeletonMatrixIndex;
+                bindPosition += Vector3.Transform(position, bindMatrices[skeletonIndex]) * weight;
+                animatedPosition += Vector3.Transform(position, animatedMatrices[skeletonIndex]) * weight;
+            }
+            maximum = Math.Max(maximum, Vector3.Distance(bindPosition, animatedPosition));
+        }
+        return maximum;
+    }
 
     static bool IsFinite(Matrix4x4 value) =>
         float.IsFinite(value.M11) && float.IsFinite(value.M12) && float.IsFinite(value.M13) && float.IsFinite(value.M14)
@@ -1478,6 +1550,22 @@ static void EvaluatesSkeletonAnimation()
     var pose = new CpuSkeletonPoseEvaluator().Evaluate(skeleton, clip, 0.5f);
     Near(2f, pose.WorldTransforms[1].M41);
     Near(1f, pose.SkinMatrices[1].M41);
+
+    var clipWithAuxiliaryTarget = clip with
+    {
+        Channels = clip.Channels.Append(new CpuAnimationChannel(
+            "effector1", CpuAnimationPath.Translation, CpuAnimationInterpolation.Linear,
+            new[] { 0f, 1f },
+            new[] { Vector4.Zero, Vector4.One })).ToArray(),
+    };
+    Throws<InvalidDataException>(() =>
+        new CpuSkeletonPoseEvaluator().Evaluate(skeleton, clipWithAuxiliaryTarget, 0.5f));
+    var projected = new CpuSkeletonPoseEvaluator().Evaluate(
+        skeleton,
+        clipWithAuxiliaryTarget,
+        0.5f,
+        CpuAnimationUnboundTargetBehavior.Ignore);
+    Near(2f, projected.WorldTransforms[1].M41);
 }
 
 static void EvaluatesSceneNodeAnimation()

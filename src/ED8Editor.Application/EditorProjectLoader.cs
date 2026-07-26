@@ -1,6 +1,7 @@
 using ED8Editor.Core;
 using ED8Editor.Phyre;
 using ED8Editor.ScriptHeaders;
+using System.Collections.Concurrent;
 
 namespace ED8Editor.Application;
 
@@ -14,6 +15,8 @@ public sealed class EditorProjectLoader
     private readonly IAssetManifestReader? assetManifestReader;
     private readonly IPhyreModelReader? modelReader;
     private readonly IPhyreTextureReader? textureReader;
+    private readonly ConcurrentDictionary<string, Lazy<AssetManifestSymbolIndex>>
+        manifestSymbolIndices = new(StringComparer.OrdinalIgnoreCase);
 
     public EditorProjectLoader(
         IMapSceneReader mapSceneReader,
@@ -88,8 +91,39 @@ public sealed class EditorProjectLoader
                 return new AssetAnimationLoad(assetId, clipName, AssetAnimationLoadStatus.Invalid, null, exception.Message);
             }
         }
+        var symbolIndex = manifestSymbolIndices.GetOrAdd(
+            Path.GetFullPath(gameDataPath),
+            path => new Lazy<AssetManifestSymbolIndex>(
+                () => new AssetManifestSymbolIndex(
+                    path, packageArchiveReader, assetManifestReader),
+                LazyThreadSafetyMode.ExecutionAndPublication)).Value;
+        var declaringPackage = symbolIndex.Resolve(symbol, preference);
+        if (declaringPackage is not null)
+        {
+            try
+            {
+                var archive = packageArchiveReader.Read(declaringPackage.Path);
+                var manifest = assetManifestReader.Read(archive, symbol);
+                var definition = manifest.Assets.Single(value =>
+                    value.Symbol.Equals(symbol, StringComparison.OrdinalIgnoreCase));
+                var resource = definition.Resources.SingleOrDefault(value =>
+                        value.Kind == AssetResourceKind.Model)
+                    ?? throw new InvalidDataException(
+                        $"Animation asset '{symbol}' has no p_collada cluster.");
+                var clip = new PhyreAnimationReader().Read(
+                    symbol, archive.ReadEntry(resource.ArchiveEntryName));
+                return new AssetAnimationLoad(
+                    assetId, clipName, AssetAnimationLoadStatus.Loaded, clip, null);
+            }
+            catch (Exception exception) when (exception is IOException
+                or InvalidDataException or ArgumentException or InvalidOperationException)
+            {
+                return new AssetAnimationLoad(
+                    assetId, clipName, AssetAnimationLoadStatus.Invalid, null, exception.Message);
+            }
+        }
         return new AssetAnimationLoad(assetId, clipName, AssetAnimationLoadStatus.Missing, null,
-            $"No manifest declares animation asset '{symbol}' in the model or default-field package.");
+            $"No game manifest declares animation asset '{symbol}'.");
     }
 
     public Task<IReadOnlyDictionary<string, CpuModel>> LoadEffectMetadataAsync(

@@ -1,7 +1,7 @@
 # CS1 camera instruction semantics
 
 The bundled instruction registry comes from
-`opcode_analyzer/cs1_instructions.json`. A different registry can be selected
+`src/ED8Editor.Decompiler/cs1_instructions.json`. A different registry can be selected
 from **Options > Instruction definitions...**; the path is persisted in the user
 settings.
 

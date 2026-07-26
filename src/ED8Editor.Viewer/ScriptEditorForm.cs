@@ -11,6 +11,7 @@ namespace ED8Editor.Viewer;
 /// </summary>
 public sealed class ScriptEditorForm : Form
 {
+    private static readonly Encoding ScriptEncoding = CreateScriptEncoding();
     private static readonly ExpressionTokenChoice[] ExpressionTokens =
     {
         new("Constant (0x00)", 0x00),
@@ -38,6 +39,7 @@ public sealed class ScriptEditorForm : Form
 
     private readonly ListBox scenesList = new() { Dock = DockStyle.Fill, IntegralHeight = false };
     private readonly TreeView tablesTree = new() { Dock = DockStyle.Fill, HideSelection = false };
+    private readonly ListBox entitiesList = new() { Dock = DockStyle.Fill, IntegralHeight = false };
     private readonly ScriptFlowPanel blocks = new()
     {
         Dock = DockStyle.Fill,
@@ -65,6 +67,13 @@ public sealed class ScriptEditorForm : Form
     private readonly ToolStripButton moveUpButton = new("Move up");
     private readonly ToolStripButton moveDownButton = new("Move down");
     private readonly ToolStripButton deleteInstructionButton = new("Delete");
+    private readonly ToolStripTextBox blockSearch = new()
+    {
+        AutoSize = false,
+        Width = 180,
+        ToolTipText = "Find an instruction by opcode or operand value",
+    };
+    private readonly ToolStripButton findNextButton = new("Find next");
     private readonly Button navigatorButton = new()
     {
         Dock = DockStyle.Left,
@@ -88,6 +97,8 @@ public sealed class ScriptEditorForm : Form
     private DecompiledScript? script;
     private int selectedFunctionIndex = -1;
     private int? selectedInstructionIndex;
+    private bool suppressInstructionSelected;
+    private bool suppressFunctionSelected;
     private Form? activeInstructionEditor;
     private readonly Func<Cs1TableReference, IReadOnlyList<Cs1TableChoice>>? tableChoices;
     private readonly ScriptEditorSemanticContext? semanticContext;
@@ -117,6 +128,50 @@ public sealed class ScriptEditorForm : Form
     public event Action<Keys>? ViewportKeyUp;
 
     public event Action<DecompiledFunction, DecompiledInstruction>? InstructionSelected;
+
+    public event Action<DecompiledFunction>? FunctionSelected;
+
+    public event Action<int>? EntityActivated;
+
+    public DecompiledScript? CurrentScript => script;
+
+    public void ShowPlaybackInstruction(int functionIndex, int instructionIndex)
+    {
+        if (script is null) return;
+        var function = script.Functions.FirstOrDefault(value => value.Index == functionIndex);
+        var instruction = function?.Instructions.FirstOrDefault(value => value.Index == instructionIndex);
+        if (function is null || instruction is null) return;
+
+        suppressInstructionSelected = true;
+        suppressFunctionSelected = true;
+        try
+        {
+            if (selectedFunctionIndex != functionIndex)
+            {
+                PopulateScenes(functionIndex);
+            }
+            SelectInstruction(function, instruction);
+        }
+        finally
+        {
+            suppressInstructionSelected = false;
+            suppressFunctionSelected = false;
+        }
+    }
+
+    public void SetRuntimeEntities(IReadOnlyList<ScriptEntityChoice> entities)
+    {
+        entitiesList.BeginUpdate();
+        try
+        {
+            entitiesList.DataSource = entities.OrderBy(value => value.EntityId).ToArray();
+            entitiesList.DisplayMember = nameof(ScriptEntityChoice.Label);
+        }
+        finally
+        {
+            entitiesList.EndUpdate();
+        }
+    }
 
     private void LoadBitmaskDefs()
     {
@@ -183,6 +238,10 @@ public sealed class ScriptEditorForm : Form
         editorTools.Items.Add(moveUpButton);
         editorTools.Items.Add(moveDownButton);
         editorTools.Items.Add(deleteInstructionButton);
+        editorTools.Items.Add(new ToolStripSeparator());
+        editorTools.Items.Add(new ToolStripLabel("Find:"));
+        editorTools.Items.Add(blockSearch);
+        editorTools.Items.Add(findNextButton);
         addInstructionButton.Click += (_, _) => InsertInstruction(position: null);
         addAfterButton.Click += (_, _) =>
         {
@@ -200,6 +259,13 @@ public sealed class ScriptEditorForm : Form
         {
             if (GetSelectedInstruction() is { } instruction) RemoveInstruction(instruction);
         };
+        blockSearch.KeyDown += (_, eventArgs) =>
+        {
+            if (eventArgs.KeyCode != Keys.Enter) return;
+            FindNextBlock();
+            eventArgs.SuppressKeyPress = true;
+        };
+        findNextButton.Click += (_, _) => FindNextBlock();
         navigatorButton.Click += (_, _) => SetNavigatorVisible(navigationSplit.Panel1Collapsed);
         SetInstructionToolsEnabled(false);
 
@@ -213,9 +279,23 @@ public sealed class ScriptEditorForm : Form
         var scenesGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Scenes (functions)" };
         scenesGroup.Controls.Add(scenesList);
         leftSplit.Panel1.Controls.Add(scenesGroup);
+        var lowerNavigator = new SplitContainer
+        {
+            Dock = DockStyle.Fill,
+            Orientation = Orientation.Horizontal,
+            SplitterWidth = 5,
+        };
         var tablesGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Tables (double-click to edit)" };
         tablesGroup.Controls.Add(tablesTree);
-        leftSplit.Panel2.Controls.Add(tablesGroup);
+        lowerNavigator.Panel1.Controls.Add(tablesGroup);
+        var entitiesGroup = new GroupBox
+        {
+            Dock = DockStyle.Fill,
+            Text = "Entities at selected instruction",
+        };
+        entitiesGroup.Controls.Add(entitiesList);
+        lowerNavigator.Panel2.Controls.Add(entitiesGroup);
+        leftSplit.Panel2.Controls.Add(lowerNavigator);
         navigationSplit.Panel1.Controls.Add(leftSplit);
 
         var rightPanel = new Panel { Dock = DockStyle.Fill };
@@ -238,6 +318,12 @@ public sealed class ScriptEditorForm : Form
             }
             catch (InvalidOperationException) { }
             try { leftSplit.SplitterDistance = leftSplit.Height / 2; } catch (InvalidOperationException) { }
+            try
+            {
+                lowerNavigator.SplitterDistance = Math.Max(
+                    lowerNavigator.Panel1MinSize, lowerNavigator.Height / 2);
+            }
+            catch (InvalidOperationException) { }
         };
         scenesList.SelectedIndexChanged += (_, _) => ShowSelectedScene();
         tablesTree.AfterSelect += (_, eventArgs) =>
@@ -246,6 +332,11 @@ public sealed class ScriptEditorForm : Form
                 statusLabel.Text = $"{function.Name}: {table.Kind} — double-click to edit";
         };
         tablesTree.NodeMouseDoubleClick += (_, eventArgs) => ShowTable(eventArgs.Node);
+        entitiesList.DoubleClick += (_, _) =>
+        {
+            if (entitiesList.SelectedItem is ScriptEntityChoice entity)
+                EntityActivated?.Invoke(entity.EntityId);
+        };
     }
 
     private void OpenDialog()
@@ -315,6 +406,7 @@ public sealed class ScriptEditorForm : Form
 
         if (script is not null && selectedFunctionIndex >= 0)
         {
+            ScriptSceneStateResolver.VerifyReplaySmoke(script);
             var function = script.Functions[selectedFunctionIndex];
             if (function.Instructions.Where(value => value.Opcode == 5)
                 .Any(value => blockByIndex.ContainsKey(value.Index)))
@@ -473,6 +565,9 @@ public sealed class ScriptEditorForm : Form
         var function = codeFunctions[scenesList.SelectedIndex];
         selectedFunctionIndex = function.Index;
         selectedInstructionIndex = null;
+        if (!suppressFunctionSelected)
+            FunctionSelected?.Invoke(function);
+        SetRuntimeEntities(Array.Empty<ScriptEntityChoice>());
         SetInstructionToolsEnabled(true);
         ClearInstructionInspector();
         blocks.SuspendLayout();
@@ -489,6 +584,60 @@ public sealed class ScriptEditorForm : Form
         }
         blocks.SetGraph(blockByIndex, function);
         blocks.ResumeLayout();
+    }
+
+    private void FindNextBlock()
+    {
+        if (script is null || selectedFunctionIndex < 0) return;
+        var query = blockSearch.Text.Trim();
+        if (query.Length == 0)
+        {
+            statusLabel.Text = "Enter an opcode or operand value to search.";
+            blockSearch.Focus();
+            return;
+        }
+
+        var function = script.Functions[selectedFunctionIndex];
+        var matches = function.Instructions
+            .Where(instruction => blockByIndex.ContainsKey(instruction.Index))
+            .Where(instruction => MatchesSearch(instruction, query))
+            .ToArray();
+        if (matches.Length == 0)
+        {
+            statusLabel.Text = $"No block contains \"{query}\".";
+            return;
+        }
+
+        var currentMatch = selectedInstructionIndex is { } selected
+            ? Array.FindIndex(matches, value => value.Index == selected)
+            : -1;
+        var next = matches[(currentMatch + 1) % matches.Length];
+        SelectInstruction(function, next);
+        ScrollToBlock(next.Index);
+        var matchNumber = Array.FindIndex(matches, value => value.Index == next.Index) + 1;
+        statusLabel.Text = $"Match {matchNumber}/{matches.Length}: #{next.Index} {next.Name}";
+    }
+
+    private static bool MatchesSearch(DecompiledInstruction instruction, string query)
+    {
+        if (instruction.Name.Contains(query, StringComparison.OrdinalIgnoreCase)) return true;
+        return instruction.Arguments.Any(argument => MatchesSearch(argument, query));
+    }
+
+    private static bool MatchesSearch(InstructionArgument argument, string query)
+    {
+        if (!string.IsNullOrEmpty(argument.Name)
+            && argument.Name.Contains(query, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+        if (FormatArg(argument).Contains(query, StringComparison.OrdinalIgnoreCase)) return true;
+        if (argument.Kind != "scalar") return false;
+
+        var exactValue = argument.Type == "f32"
+            ? argument.FloatValue.ToString("R", CultureInfo.InvariantCulture)
+            : argument.IntValue.ToString(CultureInfo.InvariantCulture);
+        return exactValue.Contains(query, StringComparison.OrdinalIgnoreCase);
     }
 
     private Panel BuildCompactInstructionBlock(
@@ -582,7 +731,8 @@ public sealed class ScriptEditorForm : Form
         selectedInstructionIndex = instruction.Index;
         blocks.SelectInstruction(instruction.Index);
         SetSelectedInstructionToolsEnabled(instruction.Index, function.Instructions.Count);
-        InstructionSelected?.Invoke(function, instruction);
+        if (!suppressInstructionSelected)
+            InstructionSelected?.Invoke(function, instruction);
     }
 
     private DecompiledInstruction? GetSelectedInstruction()
@@ -635,6 +785,13 @@ public sealed class ScriptEditorForm : Form
         bool branchOnly = false,
         int branchArgumentIndex = -1)
     {
+        var currentFunction = script?.Functions.FirstOrDefault(value =>
+            value.Index == function.Index);
+        var currentInstruction = currentFunction?.Instructions.FirstOrDefault(value =>
+            value.Index == instruction.Index);
+        if (currentFunction is null || currentInstruction is null) return;
+        function = currentFunction;
+        instruction = currentInstruction;
         activeInstructionEditor?.Close();
         SelectInstruction(function, instruction);
         var editor = new Form
@@ -757,6 +914,22 @@ public sealed class ScriptEditorForm : Form
             };
             row.Controls.Add(choose);
         }
+        if (ScriptSemanticValueConverter.IsPosition(arguments)
+            && semanticContext?.BeginSurfacePositionCapture is { } beginCapture)
+        {
+            var pick = new Button { AutoSize = true, Text = "Pick on map…" };
+            pick.Click += (_, _) =>
+            {
+                beginCapture(position =>
+                {
+                    if (row.IsDisposed) return;
+                    var values = ScriptSemanticValueConverter.WritePosition(position);
+                    for (var index = 0; index < fields.Count; index++)
+                        fields[index].Text = values[index];
+                });
+            };
+            row.Controls.Add(pick);
+        }
         var apply = new Button { AutoSize = true, Text = "Apply" };
         apply.Click += (_, _) => RunEdit(() =>
         {
@@ -783,35 +956,29 @@ public sealed class ScriptEditorForm : Form
         apply.Click += (_, _) =>
         {
             var snapshot = semanticContext!.GetCameraSnapshot();
-            var bindings = GetCameraBindings(instruction.Arguments, snapshot);
+            var capture = CameraPropertyWriter.Capture(
+                instruction, snapshot, ResolveSceneBefore(instruction));
             var byteUpdates = ScriptCameraInstructionCodec.Capture(instruction, snapshot);
-            var typedWrites = CameraPropertyWriter.WriteOperands(instruction, snapshot, beforeState: null);
 
             RunEdit(() =>
             {
-                // Semantic bindings (position, distance, fov, etc.)
-                foreach (var binding in bindings)
-                {
-                    for (var index = 0; index < binding.Arguments.Count; index++)
-                        SetScalar(instruction.Index, binding.Arguments[index], binding.Values[index]);
-                }
-                // Byte-level codec (legacy)
+                foreach (var write in capture.Writes)
+                    SetScalar(instruction.Index, write.Argument, write.Value);
                 foreach (var update in byteUpdates)
                     document!.SetBytes(selectedFunctionIndex, instruction.Index, update.ArgumentIndex, update.Value);
-                // Typed operand writes (CameraPropertyWriter)
-                foreach (var (argIdx, value) in typedWrites)
-                    SetScalar(instruction.Index, instruction.Arguments[argIdx], value);
             }, instruction.Index);
 
-            // Notifier le parent d'arreter l'animation
             StopPreview?.Invoke();
         };
-        var initialBindings = GetCameraBindings(instruction.Arguments, semanticContext!.GetCameraSnapshot());
-        var initialByteUpdates = ScriptCameraInstructionCodec.Capture(instruction, semanticContext.GetCameraSnapshot());
-        var components = initialBindings.Select(value => value.Component)
-            .Concat(initialByteUpdates.Select(value => value.Component)).Distinct().ToList();
-        if (components.Count == 0 && CameraPropertyWriter.WriteOperands(instruction, semanticContext.GetCameraSnapshot()).Count > 0)
-            components.Add("camera properties");
+        var initialSnapshot = semanticContext!.GetCameraSnapshot();
+        var initialCapture = CameraPropertyWriter.Capture(
+            instruction, initialSnapshot, ResolveSceneBefore(instruction));
+        var initialByteUpdates = ScriptCameraInstructionCodec.Capture(instruction, initialSnapshot);
+        var components = initialCapture.Components
+            .Concat(initialByteUpdates.Select(value => value.Component))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        apply.Enabled = initialCapture.CanCapture || initialByteUpdates.Count > 0;
 
         panel.Controls.Add(apply);
         panel.Controls.Add(new Label
@@ -821,7 +988,9 @@ public sealed class ScriptEditorForm : Form
             Padding = new Padding(6, 7, 0, 0),
             Text = components.Count > 0
                 ? $"Copies: {string.Join(", ", components)}"
-                : "Click to capture current camera state",
+                : initialCapture.UnavailableComponents.Count > 0
+                    ? $"Unavailable until defined earlier: {string.Join(", ", initialCapture.UnavailableComponents)}"
+                    : "No camera property is mapped for this instruction",
         });
         return panel;
     }
@@ -829,28 +998,22 @@ public sealed class ScriptEditorForm : Form
     /// <summary>Événement déclenché quand l'utilisateur clique sur Set Camera Properties.</summary>
     public event Action? StopPreview;
 
-    private static IReadOnlyList<CameraSemanticBinding> GetCameraBindings(
-        IReadOnlyList<InstructionArgument> arguments,
-        ScriptCameraSnapshot snapshot)
+    private ScriptSceneState? ResolveSceneBefore(DecompiledInstruction instruction)
     {
-        var bindings = new List<CameraSemanticBinding>();
-        for (var index = 0; index < arguments.Count; index++)
-        {
-            var span = Math.Max(1, arguments[index].SemSpan);
-            var group = arguments.Skip(index).Take(span).ToArray();
-            if (ScriptSemanticValueConverter.TryWriteCamera(group, snapshot, out var component, out var values))
-                bindings.Add(new CameraSemanticBinding(group, values, component));
-            index += group.Length - 1;
-        }
-        return bindings;
+        if (script is null || selectedFunctionIndex < 0) return null;
+        var function = script.Functions.FirstOrDefault(value => value.Index == selectedFunctionIndex);
+        return function is null
+            ? null
+            : ScriptSceneStateResolver.ResolveBefore(script, function, instruction.Index);
     }
 
-    private static bool HasCameraCapture(DecompiledInstruction instruction, ScriptCameraSnapshot snapshot)
+    private bool HasCameraCapture(DecompiledInstruction instruction, ScriptCameraSnapshot snapshot)
     {
         if (instruction.Opcode != 45) return false;
-        // Toute instruction Camera_* avec interpolation est eligible
-        if (ScriptCameraStateResolver.HasInterpolation(instruction)) return true;
-        return GetCameraBindings(instruction.Arguments, snapshot).Count > 0
+        var capture = CameraPropertyWriter.Capture(
+            instruction, snapshot, ResolveSceneBefore(instruction));
+        return capture.CanCapture
+            || capture.UnavailableComponents.Count > 0
             || ScriptCameraInstructionCodec.Capture(instruction, snapshot).Count > 0;
     }
 
@@ -866,11 +1029,6 @@ public sealed class ScriptEditorForm : Form
                 SetScalar(instruction.Index, arguments[index], values[index]);
         }, instruction.Index);
     }
-
-    private sealed record CameraSemanticBinding(
-        IReadOnlyList<InstructionArgument> Arguments,
-        IReadOnlyList<string> Values,
-        string Component);
 
     private Control BuildArgumentEditor(
         DecompiledFunction function, DecompiledInstruction instruction, InstructionArgument argument)
@@ -889,12 +1047,19 @@ public sealed class ScriptEditorForm : Form
             && reference is not null)
             return BuildTableReferenceEditor(instruction, argument, reference);
 
+        if (argument.Kind == "scalar" && argument.Type != "ptr32"
+            && (argument.Sem == "entity"
+                || argument.Sem?.StartsWith("entity:", StringComparison.OrdinalIgnoreCase) == true))
+            return BuildEntityReferenceEditor(instruction, argument);
+
         if (argument.Kind == "scalar" && argument.Type != "ptr32")
             return BuildScalarEditor(instruction, new[] { argument });
 
         var row = CreateArgumentRow(argument);
         if (argument.Kind == "string")
         {
+            if (argument.Sem == "entity_animation_function")
+                return BuildEntityAnimationFunctionEditor(function, instruction, argument);
             var field = new TextBox { Width = 320, Text = DecodeText(argument.Raw) };
             var apply = new Button { AutoSize = true, Text = "Apply" };
             apply.Click += (_, _) => RunEdit(
@@ -968,6 +1133,91 @@ public sealed class ScriptEditorForm : Form
             Text = FormatArg(argument) + "  (structured editor not connected yet)",
             Padding = new Padding(3, 5, 3, 3),
         });
+        return row;
+    }
+
+    private Control BuildEntityAnimationFunctionEditor(
+        DecompiledFunction function,
+        DecompiledInstruction instruction,
+        InstructionArgument argument)
+    {
+        var row = CreateArgumentRow(argument);
+        var entityId = instruction.Arguments.FirstOrDefault(value =>
+            value.Kind == "scalar"
+            && (value.Sem == "entity"
+                || value.Sem?.StartsWith("entity:", StringComparison.OrdinalIgnoreCase) == true))
+            ?.IntValue;
+        var current = DecodeText(argument.Raw);
+        var choices = entityId is { } id
+            ? semanticContext?.GetEntityAnimationFunctions(id) ?? Array.Empty<string>()
+            : Array.Empty<string>();
+        var selector = new ComboBox
+        {
+            Width = 320,
+            DropDownStyle = ComboBoxStyle.DropDown,
+            AutoCompleteMode = AutoCompleteMode.SuggestAppend,
+            AutoCompleteSource = AutoCompleteSource.ListItems,
+        };
+        selector.Items.AddRange(choices.Cast<object>().ToArray());
+        var currentChoiceIndex = choices
+            .Select((value, index) => (value, index))
+            .Where(value => value.value.Equals(current, StringComparison.Ordinal))
+            .Select(value => value.index)
+            .DefaultIfEmpty(-1)
+            .First();
+        selector.SelectedIndex = currentChoiceIndex;
+        if (currentChoiceIndex < 0)
+            selector.Text = current;
+        var apply = new Button { AutoSize = true, Text = "Apply ANI function" };
+        apply.Click += (_, _) => RunEdit(
+            () => document!.SetString(
+                function.Index, instruction.Index, argument.Index, selector.Text),
+            instruction.Index);
+        row.Controls.Add(selector);
+        row.Controls.Add(apply);
+        row.Controls.Add(new Label
+        {
+            AutoSize = true,
+            ForeColor = Color.Gainsboro,
+            Padding = new Padding(4, 5, 0, 0),
+            Text = choices.Count > 0
+                ? $"{choices.Count} functions from the entity ANI script"
+                : "ANI script unresolved; arbitrary names remain allowed",
+        });
+        return row;
+    }
+
+    private Control BuildEntityReferenceEditor(
+        DecompiledInstruction instruction,
+        InstructionArgument argument)
+    {
+        var row = CreateArgumentRow(argument);
+        var currentId = argument.IntValue;
+        var choices = semanticContext?.GetEntities()
+            .OrderBy(value => value.EntityId)
+            .ToList() ?? new List<ScriptEntityChoice>();
+        if (choices.All(value => value.EntityId != currentId))
+            choices.Insert(0, new ScriptEntityChoice(
+                currentId, string.Empty, ScriptEntityReferences.DisplayName(currentId)));
+
+        var selector = new ComboBox
+        {
+            Width = 330,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            DisplayMember = nameof(ScriptEntityChoice.Label),
+        };
+        selector.Items.AddRange(choices.Cast<object>().ToArray());
+        selector.SelectedIndex = choices.FindIndex(value => value.EntityId == currentId);
+        var apply = new Button { AutoSize = true, Text = "Apply entity" };
+        apply.Click += (_, _) =>
+        {
+            if (selector.SelectedItem is not ScriptEntityChoice selected) return;
+            RunEdit(() => document!.SetInteger(
+                selectedFunctionIndex, instruction.Index, argument.Index, selected.EntityId),
+                instruction.Index);
+        };
+        row.Controls.Add(selector);
+        row.Controls.Add(apply);
         return row;
     }
 
@@ -1442,7 +1692,13 @@ public sealed class ScriptEditorForm : Form
     {
         var length = raw.Length;
         if (length > 0 && raw[length - 1] == 0) length--;
-        return Encoding.UTF8.GetString(raw, 0, length);
+        return ScriptEncoding.GetString(raw, 0, length);
+    }
+
+    private static Encoding CreateScriptEncoding()
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        return Encoding.GetEncoding(932);
     }
 
     private static Color GetInstructionColor(string instructionName)

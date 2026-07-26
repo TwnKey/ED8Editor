@@ -7,9 +7,20 @@ public sealed record CpuSkeletonPose(
     IReadOnlyList<Matrix4x4> WorldTransforms,
     IReadOnlyList<Matrix4x4> SkinMatrices);
 
+public enum CpuAnimationUnboundTargetBehavior
+{
+    Reject,
+    Ignore,
+}
+
 public sealed class CpuSkeletonPoseEvaluator
 {
-    public CpuSkeletonPose Evaluate(CpuSkeleton skeleton, CpuAnimationClip? clip, float time)
+    public CpuSkeletonPose Evaluate(
+        CpuSkeleton skeleton,
+        CpuAnimationClip? clip,
+        float time,
+        CpuAnimationUnboundTargetBehavior unboundTargetBehavior =
+            CpuAnimationUnboundTargetBehavior.Reject)
     {
         ArgumentNullException.ThrowIfNull(skeleton);
         var jointCount = skeleton.Joints.Count;
@@ -31,8 +42,12 @@ public sealed class CpuSkeletonPoseEvaluator
             foreach (var channel in clip.Channels)
             {
                 if (!jointIndices.TryGetValue(channel.TargetName, out var jointIndex))
+                {
+                    if (unboundTargetBehavior == CpuAnimationUnboundTargetBehavior.Ignore)
+                        continue;
                     throw new InvalidDataException(
                         $"Animation '{clip.Name}' targets joint '{channel.TargetName}', which is absent from the model skeleton.");
+                }
                 var value = CpuAnimationSampler.Sample(channel, time);
                 switch (channel.Path)
                 {

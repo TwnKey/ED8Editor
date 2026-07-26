@@ -11,14 +11,45 @@ public sealed record ScriptCameraSnapshot(
     float Distance,
     float YawDegrees,
     float PitchDegrees,
+    float RollDegrees,
     float VerticalFieldOfViewDegrees);
+
+public sealed record ScriptEntityChoice(
+    int EntityId,
+    string AssetId,
+    string DisplayName)
+{
+    public string Label
+    {
+        get
+        {
+            var description = string.IsNullOrWhiteSpace(DisplayName) ? AssetId : DisplayName;
+            return string.IsNullOrWhiteSpace(description)
+                ? EntityId.ToString(CultureInfo.InvariantCulture)
+                : $"{EntityId} — {description} [{AssetId}]";
+        }
+    }
+}
 
 public sealed class ScriptEditorSemanticContext
 {
-    public ScriptEditorSemanticContext(Func<ScriptCameraSnapshot> getCameraSnapshot)
-        => GetCameraSnapshot = getCameraSnapshot ?? throw new ArgumentNullException(nameof(getCameraSnapshot));
+    public ScriptEditorSemanticContext(
+        Func<ScriptCameraSnapshot> getCameraSnapshot,
+        Func<IReadOnlyList<ScriptEntityChoice>>? getEntities = null,
+        Func<int, IReadOnlyList<string>>? getEntityAnimationFunctions = null,
+        Action<Action<Vector3>>? beginSurfacePositionCapture = null)
+    {
+        GetCameraSnapshot = getCameraSnapshot ?? throw new ArgumentNullException(nameof(getCameraSnapshot));
+        GetEntities = getEntities ?? (() => Array.Empty<ScriptEntityChoice>());
+        GetEntityAnimationFunctions =
+            getEntityAnimationFunctions ?? (_ => Array.Empty<string>());
+        BeginSurfacePositionCapture = beginSurfacePositionCapture;
+    }
 
     public Func<ScriptCameraSnapshot> GetCameraSnapshot { get; }
+    public Func<IReadOnlyList<ScriptEntityChoice>> GetEntities { get; }
+    public Func<int, IReadOnlyList<string>> GetEntityAnimationFunctions { get; }
+    public Action<Action<Vector3>>? BeginSurfacePositionCapture { get; }
 }
 
 internal static class ScriptSemanticValueConverter
@@ -36,9 +67,20 @@ internal static class ScriptSemanticValueConverter
             && arguments[0].Sem == "color"
             && arguments.All(value => value.Kind == "scalar" && value.Type is "f32" or "u8");
 
+    public static bool IsPosition(IReadOnlyList<InstructionArgument> arguments)
+        => arguments.Count == 3
+            && arguments[0].Sem == "position"
+            && arguments.All(value => value.Kind == "scalar" && value.Type == "f32");
+
+    public static string[] WritePosition(Vector3 position)
+        => new[] { position.X, position.Y, position.Z }
+            .Select(FormatFloat)
+            .ToArray();
+
     public static bool TryWriteCamera(
         IReadOnlyList<InstructionArgument> arguments,
         ScriptCameraSnapshot snapshot,
+        ScriptCameraState? beforeState,
         out string component,
         out string[] values)
     {
@@ -76,6 +118,41 @@ internal static class ScriptSemanticValueConverter
         {
             component = "pitch";
             return TryWriteFloat(arguments, snapshot.PitchDegrees, out values);
+        }
+        if (IsCamera(arguments, "roll-degrees"))
+        {
+            component = "roll";
+            return TryWriteFloat(arguments, snapshot.RollDegrees, out values);
+        }
+        if (IsCamera(arguments, "target-offset") && beforeState?.Target is { } previousTarget)
+        {
+            component = "target offset";
+            return TryWriteVector3(arguments, snapshot.Target - previousTarget, out values);
+        }
+        if (IsCamera(arguments, "position-offset") && beforeState?.Position is { } previousPosition)
+        {
+            component = "eye offset";
+            return TryWriteVector3(arguments, snapshot.Position - previousPosition, out values);
+        }
+        if (IsCamera(arguments, "pitch-delta") && beforeState?.PitchDegrees is { } previousPitch)
+        {
+            component = "pitch delta";
+            return TryWriteFloat(arguments, snapshot.PitchDegrees - previousPitch, out values);
+        }
+        if (IsCamera(arguments, "yaw-delta") && beforeState?.YawDegrees is { } previousYaw)
+        {
+            component = "yaw delta";
+            return TryWriteFloat(arguments, snapshot.YawDegrees - previousYaw, out values);
+        }
+        if (IsCamera(arguments, "roll-delta") && beforeState?.RollDegrees is { } previousRoll)
+        {
+            component = "roll delta";
+            return TryWriteFloat(arguments, snapshot.RollDegrees - previousRoll, out values);
+        }
+        if (IsCamera(arguments, "distance-delta") && beforeState?.Distance is { } previousDistance)
+        {
+            component = "distance delta";
+            return TryWriteFloat(arguments, snapshot.Distance - previousDistance, out values);
         }
 
         component = string.Empty;

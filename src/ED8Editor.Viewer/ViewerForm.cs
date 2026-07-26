@@ -35,9 +35,16 @@ public sealed class ViewerForm : Form
     private readonly CancellationTokenSource effectMetadataCancellation = new();
     private readonly List<D3D11ModelResources> uploadedModels = new();
     private readonly Dictionary<string, CpuModel> loadedModelsByAsset = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, CpuAnimationClip> loadedCharacterAnimations = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Dictionary<string, CpuAnimationClip>> loadedCharacterAnimations =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> unavailableCharacterAnimations =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly CpuSkeletonPoseEvaluator poseEvaluator = new();
     private readonly CpuSceneAnimationEvaluator sceneAnimationEvaluator = new();
+    private readonly Dictionary<string, CpuAnimationClip> loadedPropAnimations =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> unavailablePropAnimations =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly Panel viewportHost = new() { Dock = DockStyle.Fill, TabStop = true };
     private readonly ToolStrip gizmoToolStrip = new()
     {
@@ -71,6 +78,11 @@ public sealed class ViewerForm : Form
     private readonly TextBox cameraPitch = new() { Text = "0", Width = 55 };
     private readonly TextBox cameraRoll = new() { Text = "0", Width = 55 };
     private readonly ToolStripButton cameraPlayButton = new("▶ Preview") { ToolTipText = "Replay camera interpolation preview", Enabled = false };
+    private readonly ToolStripButton ignoreScriptCameraButton = new("Ignore script camera")
+    {
+        CheckOnClick = true,
+        ToolTipText = "Keep entity/animation playback running while ignoring script camera commands",
+    };
     private bool suppressCameraTextUpdate;
     private readonly Panel scenePanel = new() { Dock = DockStyle.Left, Width = 340, Padding = new Padding(8) };
     private readonly GroupBox sceneOutlinerGroup = new()
@@ -165,6 +177,11 @@ public sealed class ViewerForm : Form
     private IReadOnlyList<D3D11SceneInstance> instances = Array.Empty<D3D11SceneInstance>();
     private IReadOnlyList<SceneModelInstance> sceneInstances = Array.Empty<SceneModelInstance>();
     private IReadOnlyList<SceneModelInstance> scriptMonsterInstances = Array.Empty<SceneModelInstance>();
+    private IReadOnlyDictionary<int, ScriptEntityState> activeScriptEntities =
+        new Dictionary<int, ScriptEntityState>();
+    private IReadOnlyDictionary<string, ScriptPropAnimation> activeScriptPropAnimations =
+        new Dictionary<string, ScriptPropAnimation>(StringComparer.Ordinal);
+    private int scriptEntityRefreshGeneration;
     private MapScene? currentMap;
     private float sceneRadius = 10f;
     private float overlayMarkerSize = 0.3f;
@@ -181,6 +198,7 @@ public sealed class ViewerForm : Form
     private GizmoMode gizmoMode = GizmoMode.Translate;
     private string? savedOpsPath;
     private PlacementState? placement;
+    private Action<Vector3>? scriptSurfacePositionCapture;
     private SceneCameraHandle cameraHandle = SceneCameraHandle.Eye;
     private IReadOnlyList<SceneElementSelection> outlinerSelections = Array.Empty<SceneElementSelection>();
     private bool refreshingOutliner;
@@ -188,6 +206,9 @@ public sealed class ViewerForm : Form
     private SceneEnvironmentVariant environmentVariant = SceneEnvironmentVariant.Daylight;
     private bool refreshingEnvironmentVariant;
     private string? instructionDefinitionsPath;
+    private readonly ScriptAnimationLibrary? scriptAnimationLibrary;
+    private readonly DecompiledScript? systemScript;
+    private bool manualScriptCameraOverride;
     private float CameraVerticalFieldOfView => cameraFovSlider.Value * MathF.PI / 180f;
 
     public ViewerForm(
@@ -204,6 +225,16 @@ public sealed class ViewerForm : Form
             && File.Exists(userSettings.InstructionDefinitionsPath)
                 ? Path.GetFullPath(userSettings.InstructionDefinitionsPath)
                 : null;
+        if (session.Script.GameDataPath is { } gameDataPath)
+        {
+            scriptAnimationLibrary = new ScriptAnimationLibrary(
+                gameDataPath,
+                session.Script.Header.SourcePath,
+                instructionDefinitionsPath);
+            systemScript = new ScriptSystemLibrary(
+                session.Script.Header.SourcePath,
+                instructionDefinitionsPath).Script;
+        }
         this.projectLoader = projectLoader ?? new EditorProjectLoader(
             new OpsReader(), new GameAssetResolverFactory(), new PkgArchiveReader(),
             new AssetManifestReader(), new PhyreD3D11ModelReader(), new PhyreD3D11TextureReader());
@@ -267,6 +298,7 @@ public sealed class ViewerForm : Form
             new ToolStripControlHost(cameraRoll),
             new ToolStripSeparator(),
             cameraPlayButton,
+            ignoreScriptCameraButton,
         });
         Controls.Add(gizmoToolStrip);
         Controls.Add(mainMenu);
@@ -280,18 +312,29 @@ public sealed class ViewerForm : Form
 
         cameraPlayButton.Click += (_, _) =>
         {
-            if (animationBefore is not null && animationAfter is not null)
+            if (!ignoreScriptCameraButton.Checked
+                && animationBefore is not null
+                && animationAfter is not null)
             {
+                manualScriptCameraOverride = false;
                 animationElapsed = 0f;
                 isCameraAnimating = true;
+                cameraAnimationLoops = true;
             }
+        };
+        ignoreScriptCameraButton.CheckedChanged += (_, _) =>
+        {
+            if (ignoreScriptCameraButton.Checked)
+                BeginManualScriptCameraOverride();
+            else
+                manualScriptCameraOverride = false;
         };
 
         // Camera position edit handlers (angles in radians)
         EventHandler onCameraEdit = (_, _) =>
         {
             if (suppressCameraTextUpdate) return;
-            if (isCameraAnimating) PauseAnimation();
+            BeginManualScriptCameraOverride();
             if (float.TryParse(cameraPosX.Text, out var px) &&
                 float.TryParse(cameraPosY.Text, out var py) &&
                 float.TryParse(cameraPosZ.Text, out var pz) &&
@@ -396,6 +439,12 @@ public sealed class ViewerForm : Form
                 eventArgs.SuppressKeyPress = true;
                 return;
             }
+            if (eventArgs.KeyCode == Keys.Escape && scriptSurfacePositionCapture is not null)
+            {
+                CancelScriptSurfacePositionCapture();
+                eventArgs.SuppressKeyPress = true;
+                return;
+            }
             if (eventArgs.Control && eventArgs.KeyCode == Keys.Z)
             {
                 document.Undo();
@@ -435,6 +484,11 @@ public sealed class ViewerForm : Form
             viewportHost.Focus();
             if (eventArgs.Button == MouseButtons.Left)
             {
+                if (scriptSurfacePositionCapture is not null)
+                {
+                    CaptureScriptSurfacePosition(eventArgs.Location);
+                    return;
+                }
                 if (placement is not null)
                 {
                     ConfirmPlacement();
@@ -540,8 +594,7 @@ public sealed class ViewerForm : Form
             effectMetadataStatus.Text = "Phyre effects: loading...";
             var effectCount = await LoadEffectMetadataAsync();
             if (IsDisposed) return;
-            var monsterCount = await LoadScriptMonstersAsync();
-            if (IsDisposed) return;
+            const int monsterCount = 0;
             var modelCount = session.AssetModels.Values.Count(value => value.Model is not null);
             if (effectCount >= 0)
             {
@@ -553,6 +606,8 @@ public sealed class ViewerForm : Form
                 OpenScriptEditor();
                 PerformLayout();
                 scriptEditor?.VerifyEmbeddedInteractionSmoke();
+                await VerifyScriptPropAnimationSmokeAsync();
+                await VerifyScriptAnimationReplaySmokeAsync();
                 RenderFrame();
                 Close();
             }
@@ -564,6 +619,13 @@ public sealed class ViewerForm : Form
         }
         catch (Exception exception)
         {
+            if (smokeTest)
+            {
+                Console.Error.WriteLine(exception);
+                Environment.ExitCode = 1;
+                Close();
+                return;
+            }
             MessageBox.Show(exception.ToString(), "Renderer initialization failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
             Close();
         }
@@ -694,83 +756,6 @@ public sealed class ViewerForm : Form
         }
     }
 
-    private async Task<int> LoadScriptMonstersAsync()
-    {
-        if (session.Script.GameDataPath is null || graphics is null) return 0;
-        try
-        {
-            var script = await Task.Run(
-                () => ScriptDecompiler.Decompile(
-                    session.Script.Header.SourcePath,
-                    instructionDefinitionsPath),
-                effectMetadataCancellation.Token);
-            var spawns = ScriptMonsterSpawnReader.Read(script);
-            foreach (var assetId in spawns.Select(value => value.AssetId)
-                         .Distinct(StringComparer.OrdinalIgnoreCase))
-            {
-                effectMetadataCancellation.Token.ThrowIfCancellationRequested();
-                if (!loadedModelsByAsset.TryGetValue(assetId, out var model))
-                {
-                    var load = await Task.Run(
-                        () => projectLoader.LoadAsset(assetId, session.Script.GameDataPath),
-                        effectMetadataCancellation.Token);
-                    if (load.Status != AssetModelLoadStatus.Loaded || load.Model is null)
-                    {
-                        Debug.WriteLine($"Could not load script monster asset '{assetId}': {load.Error}");
-                        continue;
-                    }
-                    model = load.Model;
-                    loadedModelsByAsset[assetId] = model;
-                }
-                if (uploadedModels.All(value => !value.AssetId.Equals(assetId, StringComparison.OrdinalIgnoreCase)))
-                {
-                    uploadedModels.Add(new D3D11ModelUploader(graphics.Device).Upload(model));
-                }
-                if (model.Skeleton is not null && !loadedCharacterAnimations.ContainsKey(assetId))
-                {
-                    var animation = await Task.Run(
-                        () => projectLoader.LoadAnimationAsset(assetId, "BTL_WAIT", session.Script.GameDataPath),
-                        effectMetadataCancellation.Token);
-                    if (animation.Status == AssetAnimationLoadStatus.Loaded && animation.Clip is not null)
-                        loadedCharacterAnimations[assetId] = animation.Clip;
-                    else
-                        Debug.WriteLine($"Could not load current field-monster animation for '{assetId}': {animation.Error}");
-                }
-            }
-
-            var loaded = new List<SceneModelInstance>();
-            for (var index = 0; index < spawns.Count; index++)
-            {
-                var spawn = spawns[index];
-                if (!loadedModelsByAsset.TryGetValue(spawn.AssetId, out var model)) continue;
-                var transform = Matrix4x4.CreateRotationY(spawn.HeadingDegrees * MathF.PI / 180f)
-                    * Matrix4x4.CreateTranslation(spawn.Position);
-                loaded.Add(new SceneModelInstance(
-                    int.MinValue + index,
-                    spawn.AssetId,
-                    $"Monster {spawn.EntityId}",
-                    model,
-                    transform,
-                    Vector4.One,
-                    Vector3.Zero,
-                    SceneElementKind.ScriptCharacter));
-            }
-            scriptMonsterInstances = loaded;
-            RefreshRenderInstances(uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase));
-            return loaded.Count;
-        }
-        catch (OperationCanceledException)
-        {
-            return 0;
-        }
-        catch (Exception exception) when (exception is IOException or InvalidDataException
-            or ArgumentException or InvalidOperationException)
-        {
-            Debug.WriteLine($"Could not load script monsters: {exception}");
-            return 0;
-        }
-    }
-
     private void RenderFrame()
     {
         if (viewport is null || viewportHost.ClientSize.Width <= 0 || viewportHost.ClientSize.Height <= 0) return;
@@ -778,6 +763,7 @@ public sealed class ViewerForm : Form
         var elapsed = Math.Clamp((float)(ticks - previousFrameTicks) / Stopwatch.Frequency, 0f, 0.1f);
         previousFrameTicks = ticks;
         UpdateCamera(elapsed);
+        UpdateScriptTimeline(elapsed);
         UpdateCameraAnimation(elapsed);
         UpdateCameraTextFields();
         RefreshAnimationPoses();
@@ -787,39 +773,100 @@ public sealed class ViewerForm : Form
 
     private void RefreshAnimationPoses()
     {
-        var characters = scriptMonsterInstances.ToDictionary(value => value.Id);
+        var characters = activeScriptEntities.Values.ToDictionary(
+            value => ScriptEntitySceneInstanceId(value.EntityId));
         var elapsed = (float)frameClock.Elapsed.TotalSeconds;
-        var sceneryPoses = new Dictionary<string, IReadOnlyList<Matrix4x4>>(StringComparer.OrdinalIgnoreCase);
         instances = instances.Select(instance =>
         {
             if (!loadedModelsByAsset.TryGetValue(instance.Model.AssetId, out var model)) return instance;
-            var animated = instance;
-            if (model is { Skeleton: null, SceneNodes: { Count: > 0 } nodes, EmbeddedAnimation: { } sceneryClip })
+            var animatedInstance = instance;
+            if (TryGetActivePropAnimation(
+                    instance.SceneInstanceId, model.AssetId, out var propAnimation, out var propClip)
+                && model.SceneNodes is { Count: > 0 } nodes)
             {
-                if (!sceneryPoses.TryGetValue(model.AssetId, out var nodeTransforms))
+                var propTime = propAnimation.HoldFinalFrame
+                    ? propClip.EndTime
+                    : Math.Min(
+                        propClip.EndTime,
+                        propClip.StartTime
+                            + Math.Max(0f, scriptTimelineFrame - propAnimation.StartFrame)
+                                / ScriptWaitDuration.PreviewFramesPerSecond);
+                var propPose = sceneAnimationEvaluator.Evaluate(nodes, propClip, propTime);
+                animatedInstance = animatedInstance with
                 {
-                    var sceneryTime = sceneryClip.Duration > 0f
-                        ? sceneryClip.StartTime + elapsed % sceneryClip.Duration
-                        : sceneryClip.StartTime;
-                    nodeTransforms = sceneAnimationEvaluator.Evaluate(nodes, sceneryClip, sceneryTime).WorldTransforms;
-                    sceneryPoses.Add(model.AssetId, nodeTransforms);
-                }
-                animated = animated with { SceneNodeTransforms = nodeTransforms };
+                    SceneNodeTransforms = propPose.WorldTransforms,
+                };
             }
-            if (!characters.TryGetValue(instance.SceneInstanceId, out var character)
-                || model.Skeleton is null
-                || !loadedCharacterAnimations.TryGetValue(character.AssetId, out var clip))
-                return animated;
+            if (!characters.TryGetValue(instance.SceneInstanceId, out var character))
+                return animatedInstance;
+            var position = scriptTimeline is not null
+                ? EvaluateEntityMotionPosition(character, scriptTimelineFrame)
+                : character.Position;
+            animatedInstance = animatedInstance with
+            {
+                Transform = Matrix4x4.CreateScale(character.Scale)
+                    * Matrix4x4.CreateRotationY(character.YawDegrees * MathF.PI / 180f)
+                    * Matrix4x4.CreateTranslation(position),
+            };
+            if (model.Skeleton is null
+                || !TryGetBaseAnimation(character, out var activeAnimation)
+                || !TryGetCharacterAnimation(character.AssetId, activeAnimation.Name, out var clip))
+                return animatedInstance;
             var selectedCharacter = selection is { Kind: SceneElementKind.ScriptCharacter }
-                && selection.SourceIndex == character.Id;
+                && selection.SourceIndex == instance.SceneInstanceId;
             var duration = clip.Duration;
-            var time = selectedCharacter && duration > 0f
-                ? clip.StartTime + elapsed % duration
-                : clip.StartTime;
-            var pose = poseEvaluator.Evaluate(model.Skeleton, clip, time);
-            return animated with { SkinMatrices = pose.SkinMatrices };
+            var play = scriptTimeline is not null || selectedCharacter;
+            var animationElapsed = scriptTimeline is not null
+                ? Math.Max(0f, scriptTimelineFrame - activeAnimation.StartFrame)
+                    / ScriptWaitDuration.PreviewFramesPerSecond
+                : elapsed;
+            var time = clip.StartTime;
+            if (activeAnimation.HoldFinalFrame)
+            {
+                time = clip.EndTime;
+            }
+            else if (play && duration > 0f)
+            {
+                time = activeAnimation.Loop
+                    ? clip.StartTime + animationElapsed % duration
+                    : Math.Min(clip.EndTime, clip.StartTime + animationElapsed);
+            }
+            // Character clips also animate authored controller/weapon targets
+            // (for example effector1..6 and buki) which are not skin joints in
+            // every model. Apply the exact intersection with the render skeleton.
+            var pose = poseEvaluator.Evaluate(
+                model.Skeleton,
+                clip,
+                time,
+                CpuAnimationUnboundTargetBehavior.Ignore);
+            return animatedInstance with { SkinMatrices = pose.SkinMatrices };
         }).ToArray();
     }
+
+    private bool TryGetActivePropAnimation(
+        int sceneInstanceId,
+        string assetId,
+        out ScriptPropAnimation animation,
+        out CpuAnimationClip clip)
+    {
+        animation = null!;
+        clip = null!;
+        var prop = sceneInstances.FirstOrDefault(value => value.Id == sceneInstanceId);
+        if (prop is null
+            || !activeScriptPropAnimations.TryGetValue(
+                prop.Name, out var resolvedAnimation))
+        {
+            return false;
+        }
+        animation = resolvedAnimation;
+        return loadedPropAnimations.TryGetValue(
+            PropAnimationKey(assetId, animation.AnimationName), out clip!);
+    }
+
+    private static Vector3 EvaluateEntityMotionPosition(
+        ScriptEntityState entity,
+        float timelineFrame)
+        => entity.Motion?.PositionAt(timelineFrame) ?? entity.Position;
 
     private ViewportCamera CreateCamera()
     {
@@ -849,7 +896,7 @@ public sealed class ViewerForm : Form
         if (pressedKeys.Contains(Keys.C)) movement -= Vector3.UnitY;
         if (movement != Vector3.Zero)
         {
-            if (isCameraAnimating) PauseAnimation();
+            BeginManualScriptCameraOverride();
             var fast = pressedKeys.Contains(Keys.ShiftKey) ? 4f : 1f;
             var speed = Math.Max(sceneRadius * 0.12f, 2f);
             var translation = Vector3.Normalize(movement) * speed * fast * elapsed;
@@ -858,7 +905,7 @@ public sealed class ViewerForm : Form
         var dollyDistance = cameraDollySmoother.Advance(elapsed);
         if (dollyDistance != 0f)
         {
-            if (isCameraAnimating) PauseAnimation();
+            BeginManualScriptCameraOverride();
             cameraNavigation.Dolly(dollyDistance);
         }
     }
@@ -919,6 +966,7 @@ public sealed class ViewerForm : Form
             var lookDeltaX = current.X - center.X;
             var lookDeltaY = current.Y - center.Y;
             if (lookDeltaX == 0 && lookDeltaY == 0) return;
+            BeginManualScriptCameraOverride();
             rightLookMoved = true;
             cameraNavigation.Look(lookDeltaX, lookDeltaY);
             CenterLookCursor();
@@ -926,6 +974,8 @@ public sealed class ViewerForm : Form
         }
         var deltaX = current.X - previousMouse.X;
         var deltaY = current.Y - previousMouse.Y;
+        if (deltaX != 0 || deltaY != 0)
+            BeginManualScriptCameraOverride();
         previousMouse = current;
         cameraNavigation.Pan(deltaX, deltaY, viewportHost.ClientSize.Height, CameraVerticalFieldOfView);
     }
@@ -1046,6 +1096,11 @@ public sealed class ViewerForm : Form
     private int animationEasingType;
     private float animationElapsed;
     private bool isCameraAnimating;
+    private bool cameraAnimationLoops;
+    private ScriptSceneTimeline? scriptTimeline;
+    private int scriptTimelinePointIndex;
+    private float scriptTimelineFrame;
+    private int scriptTimelineGeneration;
 
     private bool IsCameraMovementKey(Keys key) => key == Keys.ShiftKey
         || key == Keys.S
@@ -1070,7 +1125,18 @@ public sealed class ViewerForm : Form
                     cameraNavigation.Distance,
                     cameraNavigation.Yaw * 180f / MathF.PI,
                     cameraNavigation.Pitch * 180f / MathF.PI,
-                    cameraFovSlider.Value)),
+                    cameraNavigation.Roll * 180f / MathF.PI,
+                    cameraFovSlider.Value),
+                    () => activeScriptEntities.Values
+                        .OrderBy(value => value.EntityId)
+                        .Select(value => new ScriptEntityChoice(
+                            value.EntityId, value.AssetId, value.DisplayName))
+                        .ToArray(),
+                    entityId => activeScriptEntities.TryGetValue(entityId, out var entity)
+                        && scriptAnimationLibrary is not null
+                            ? scriptAnimationLibrary.GetFunctionNames(entity)
+                            : Array.Empty<string>(),
+                    BeginScriptSurfacePositionCapture),
                 instructionDefinitionsPath);
             scriptEditor = editor;
             editor.TopLevel = false;
@@ -1082,9 +1148,12 @@ public sealed class ViewerForm : Form
             };
             editor.ViewportKeyUp += key => pressedKeys.Remove(key);
             editor.InstructionSelected += ApplySelectedScriptCamera;
+            editor.FunctionSelected += _ => ClearScriptEntityPreview();
+            editor.EntityActivated += FocusScriptEntity;
             editor.StopPreview += () => { isCameraAnimating = false; cameraPlayButton.Enabled = true; };
             scriptsTab.Controls.Add(editor);
             editor.Show();
+            editor.SetRuntimeEntities(CreateScriptEntityChoices(activeScriptEntities));
         }
 
         rightPanelTabs.SelectedTab = scriptsTab;
@@ -1097,18 +1166,62 @@ public sealed class ViewerForm : Form
 
     private void ApplySelectedScriptCamera(DecompiledFunction function, DecompiledInstruction instruction)
     {
-        var state = ScriptCameraStateResolver.Resolve(function, instruction.Index);
+        var script = scriptEditor?.CurrentScript;
+        if (script is null) return;
+        manualScriptCameraOverride = false;
+        StopScriptTimeline();
+        var sceneState = ScriptSceneStateResolver.Resolve(
+            script, function, instruction.Index, scriptAnimationLibrary, systemScript);
+        activeScriptEntities = sceneState.Entities;
+        scriptEditor?.SetRuntimeEntities(CreateScriptEntityChoices(sceneState.Entities));
+        if (instruction.Opcode == 2
+            && ScriptSceneStateResolver.BuildCallTimeline(
+                script, function, instruction, scriptAnimationLibrary, systemScript) is { } timeline)
+        {
+            _ = StartScriptTimelineAsync(timeline);
+            return;
+        }
+        if (instruction.Opcode == 47
+            && ScriptSceneStateResolver.BuildAnimationCallTimeline(
+                script, function, instruction, scriptAnimationLibrary, systemScript) is { } animationTimeline)
+        {
+            _ = StartScriptTimelineAsync(animationTimeline);
+            return;
+        }
+        if (instruction.Opcode == 69
+            && ScriptSceneStateResolver.BuildPropAnimationTimeline(
+                script, function, instruction, scriptAnimationLibrary, systemScript)
+                is { } propTimeline)
+        {
+            _ = StartScriptTimelineAsync(propTimeline);
+            return;
+        }
+        if (instruction.Opcode == 54
+            && ScriptSceneStateResolver.BuildMovementTimeline(
+                script, function, instruction, scriptAnimationLibrary, systemScript)
+                is { } movementTimeline)
+        {
+            _ = StartScriptTimelineAsync(movementTimeline);
+            return;
+        }
+        activeScriptPropAnimations = sceneState.PropAnimations;
+        _ = RefreshScriptEntitiesAsync(sceneState.Entities);
+        _ = RefreshScriptPropAnimationsAsync(sceneState.PropAnimations);
+        RefreshOverlay();
+        var state = sceneState.Camera;
         if (!state.HasViewValue) return;
 
         // Si l'instruction a interpolation + duration, démarrer l'animation en boucle
         if (ScriptCameraStateResolver.HasInterpolation(instruction))
         {
-            animationBefore = ScriptCameraStateResolver.ResolveBefore(function, instruction.Index);
+            animationBefore = ScriptSceneStateResolver.ResolveBefore(
+                script, function, instruction.Index, scriptAnimationLibrary, systemScript).Camera;
             animationAfter = state;
             animationDurationMs = ScriptCameraStateResolver.ReadDurationMs(instruction);
             animationEasingType = ScriptCameraStateResolver.ReadInterpolationType(instruction);
             animationElapsed = 0f;
             isCameraAnimating = true;
+            cameraAnimationLoops = true;
             cameraPlayButton.Enabled = true;
             if (animationDurationMs <= 0) animationDurationMs = 1000; // fallback 1s
             return;
@@ -1117,15 +1230,18 @@ public sealed class ViewerForm : Form
         // Comportement normal : appliquer l'état final directement
         isCameraAnimating = false;
         cameraPlayButton.Enabled = false;
-        ApplyCameraState(state);
+        if (ShouldApplyScriptCamera)
+            ApplyCameraState(state, sceneState.Entities);
     }
 
-    private void ApplyCameraState(ScriptCameraState state)
+    private void ApplyCameraState(
+        ScriptCameraState state,
+        IReadOnlyDictionary<int, ScriptEntityState>? entities = null)
     {
         var distance = state.Distance is > 0f ? state.Distance.Value : cameraNavigation.Distance;
         distance += state.DistanceDelta ?? 0f;
         var forward = state.Forward ?? cameraNavigation.Forward;
-        var roll = 0f;
+        var roll = (state.RollDegrees ?? cameraNavigation.Roll * 180f / MathF.PI) * MathF.PI / 180f;
 
         // OP45_4 : angles en degrés → conversion en radians, avec shortest-path
         if (state.YawDegrees is not null || state.PitchDegrees is not null)
@@ -1153,15 +1269,35 @@ public sealed class ViewerForm : Form
                 roll = rollDeg * MathF.PI / 180f;
         }
 
+        var resolvedTarget = state.Target;
+        if (state.TargetEntityId is { } targetEntityId
+            && entities is not null
+            && entities.TryGetValue(targetEntityId, out var targetEntity))
+        {
+            var center = targetEntity.Position;
+            if (state.SecondaryTargetEntityId is { } secondEntityId
+                && entities.TryGetValue(secondEntityId, out var secondEntity))
+                center = (center + secondEntity.Position) * 0.5f;
+            var entityOffset = state.TargetEntityOffset ?? Vector3.Zero;
+            if (state.TargetOffsetUsesEntityRotation)
+                entityOffset = Vector3.Transform(
+                    entityOffset,
+                    Quaternion.CreateFromAxisAngle(
+                        Vector3.UnitY, targetEntity.YawDegrees * MathF.PI / 180f));
+            resolvedTarget = center + entityOffset;
+        }
+
         var position = state.Position ?? cameraNavigation.Position;
-        if (state.Target is { } target)
+        if (resolvedTarget is { } target)
             position = target - forward * distance;
         else if (state.Position is null && (state.YawDegrees is not null || state.PitchDegrees is not null))
             position = cameraNavigation.Target - forward * distance;
 
         if (state.AlignEntityId is { } entId && state.AlignYawOffsetDegrees is { } yawOffDeg)
         {
-            var entYaw = 0f;
+            var entYaw = entities is not null && entities.TryGetValue(entId, out var entity)
+                ? entity.YawDegrees
+                : 0f;
             var tYaw = (entYaw + yawOffDeg) * MathF.PI / 180f;
             var tPitch = (state.PitchDegrees ?? cameraNavigation.Pitch * 180f / MathF.PI) * MathF.PI / 180f;
             if (state.UseShortestPath)
@@ -1178,8 +1314,8 @@ public sealed class ViewerForm : Form
 
         if (state.AngleDeltaDegrees is { } deltaDeg)
         {
-            var tYaw = cameraNavigation.Yaw + deltaDeg.X * MathF.PI / 180f;
-            var tPitch = cameraNavigation.Pitch + deltaDeg.Y * MathF.PI / 180f;
+            var tPitch = cameraNavigation.Pitch + deltaDeg.X * MathF.PI / 180f;
+            var tYaw = cameraNavigation.Yaw + deltaDeg.Y * MathF.PI / 180f;
             roll += deltaDeg.Z * MathF.PI / 180f;
             var cosP = MathF.Cos(tPitch);
             forward = Vector3.Normalize(new Vector3(
@@ -1200,9 +1336,1040 @@ public sealed class ViewerForm : Form
         UpdateCameraTextFields();
     }
 
+    private async Task RefreshScriptEntitiesAsync(
+        IReadOnlyDictionary<int, ScriptEntityState> entities)
+    {
+        try
+        {
+            await RefreshScriptEntitiesCoreAsync(entities);
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException
+            or ArgumentException or InvalidOperationException)
+        {
+            Debug.WriteLine($"Could not refresh script entities: {exception}");
+        }
+    }
+
+    private async Task RefreshScriptEntitiesCoreAsync(
+        IReadOnlyDictionary<int, ScriptEntityState> entities)
+    {
+        var generation = ++scriptEntityRefreshGeneration;
+        if (session.Script.GameDataPath is null || graphics is null)
+        {
+            scriptMonsterInstances = Array.Empty<SceneModelInstance>();
+            return;
+        }
+
+        foreach (var assetId in entities.Values
+                     .Select(value => value.AssetId)
+                     .Where(value => !string.IsNullOrWhiteSpace(value))
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (generation != scriptEntityRefreshGeneration || IsDisposed) return;
+            if (!loadedModelsByAsset.TryGetValue(assetId, out var model))
+            {
+                model = await LoadScriptEntityModelAsync(
+                    assetId, session.Script.GameDataPath);
+                if (generation != scriptEntityRefreshGeneration || IsDisposed) return;
+                if (model is null)
+                {
+                    continue;
+                }
+                loadedModelsByAsset[assetId] = model;
+            }
+            if (uploadedModels.All(value =>
+                    !value.AssetId.Equals(assetId, StringComparison.OrdinalIgnoreCase)))
+                uploadedModels.Add(new D3D11ModelUploader(graphics.Device).Upload(model));
+        }
+
+        foreach (var request in entities.Values
+                     .Select(value => (
+                         value.AssetId,
+                         AnimationName: GetRequestedBaseAnimationName(value),
+                         AnimationBanks: value.AnimationBanks ?? Array.Empty<string>()))
+                     .Where(value => !string.IsNullOrWhiteSpace(value.AssetId)
+                         && !string.IsNullOrWhiteSpace(value.AnimationName))
+                     .DistinctBy(
+                         value => AnimationRequestKey(
+                             value.AssetId, value.AnimationName!, value.AnimationBanks),
+                         StringComparer.OrdinalIgnoreCase))
+        {
+            if (generation != scriptEntityRefreshGeneration || IsDisposed) return;
+            await EnsureCharacterAnimationAsync(
+                request.AssetId,
+                request.AnimationName!,
+                request.AnimationBanks,
+                session.Script.GameDataPath);
+        }
+
+        if (generation != scriptEntityRefreshGeneration || IsDisposed) return;
+        scriptMonsterInstances = entities.Values
+            .Where(value => value.HasPosition
+                && loadedModelsByAsset.ContainsKey(value.AssetId))
+            .OrderBy(value => value.EntityId)
+            .Select(value =>
+            {
+                var model = loadedModelsByAsset[value.AssetId];
+                var transform = Matrix4x4.CreateScale(value.Scale)
+                    * Matrix4x4.CreateRotationY(value.YawDegrees * MathF.PI / 180f)
+                    * Matrix4x4.CreateTranslation(value.Position);
+                var label = string.IsNullOrWhiteSpace(value.DisplayName)
+                    ? value.AssetId
+                    : value.DisplayName;
+                return new SceneModelInstance(
+                    ScriptEntitySceneInstanceId(value.EntityId),
+                    value.AssetId,
+                    $"{label} (entity {value.EntityId})",
+                    model,
+                    transform,
+                    Vector4.One,
+                    Vector3.Zero,
+                    SceneElementKind.ScriptCharacter);
+            })
+            .ToArray();
+        RefreshRenderInstances(
+            uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase));
+    }
+
+    private static int ScriptEntitySceneInstanceId(int entityId)
+        => int.MinValue + (entityId - short.MinValue);
+
+    private async Task<CpuModel?> LoadScriptEntityModelAsync(
+        string assetId,
+        string gameDataPath)
+    {
+        var sourceAssetId = assetId.Equals(
+            ScriptEntityReferences.PlaceholderAssetId,
+            StringComparison.OrdinalIgnoreCase)
+                ? ScriptEntityReferences.PlaceholderSourceAssetId
+                : assetId;
+        var load = await Task.Run(() => projectLoader.LoadAsset(sourceAssetId, gameDataPath));
+        if (load.Status != AssetModelLoadStatus.Loaded || load.Model is null)
+        {
+            Debug.WriteLine(
+                $"Could not load script entity asset '{sourceAssetId}'"
+                + $" for '{assetId}': {load.Error}");
+            return null;
+        }
+        return assetId.Equals(
+            ScriptEntityReferences.PlaceholderAssetId,
+            StringComparison.OrdinalIgnoreCase)
+                ? CreateUntexturedEntityPlaceholder(load.Model)
+                : load.Model;
+    }
+
+    private static CpuModel CreateUntexturedEntityPlaceholder(CpuModel source)
+    {
+        var materials = source.Materials.Select(material => material with
+        {
+            BaseColor = new Vector4(0.58f, 0.62f, 0.68f, 1f),
+            BaseColorTextureIndex = null,
+            SourceParameters = new Dictionary<string, float[]>(),
+            SourceTextureReferences = new Dictionary<string, string>(),
+            TextureBindings = new Dictionary<string, int>(),
+            RenderPassType = null,
+            EffectAssetName = null,
+            RenderPassState = null,
+            EffectSwitches = null,
+            RenderPhase = CpuMaterialRenderPhase.Opaque,
+            ResolvedRenderPassName = null,
+            EffectProgram = null,
+        }).ToArray();
+        return source with
+        {
+            AssetId = ScriptEntityReferences.PlaceholderAssetId,
+            Materials = materials,
+            Textures = Array.Empty<CpuTexture>(),
+            EmbeddedAnimation = null,
+        };
+    }
+
+    private static IReadOnlyList<ScriptEntityChoice> CreateScriptEntityChoices(
+        IReadOnlyDictionary<int, ScriptEntityState> entities)
+        => entities.Values
+            .OrderBy(value => value.EntityId)
+            .Select(value => new ScriptEntityChoice(
+                value.EntityId, value.AssetId, value.DisplayName))
+            .ToArray();
+
+    private static string? GetRequestedBaseAnimationName(ScriptEntityState entity)
+        => entity.AnimationSlots is not null
+            && entity.AnimationSlots.TryGetValue(0, out var animation)
+            && !string.IsNullOrWhiteSpace(animation.Name)
+                ? animation.Name
+                : !string.IsNullOrWhiteSpace(entity.InitialAnimation)
+                    ? entity.InitialAnimation
+                    : null;
+
+    private static bool TryGetBaseAnimation(
+        ScriptEntityState entity,
+        out ScriptEntityAnimation animation)
+    {
+        if (entity.AnimationSlots is not null
+            && entity.AnimationSlots.TryGetValue(0, out animation!)
+            && !string.IsNullOrWhiteSpace(animation.Name))
+        {
+            return true;
+        }
+        var requested = GetRequestedBaseAnimationName(entity);
+        if (string.IsNullOrWhiteSpace(requested))
+        {
+            animation = null!;
+            return false;
+        }
+        animation = new ScriptEntityAnimation(
+            0,
+            requested,
+            true,
+            0, 0, 0, 0,
+            0f, -1f, -1f, -1f,
+            0);
+        return true;
+    }
+
+    private void ClearScriptEntityPreview()
+    {
+        StopScriptTimeline();
+        activeScriptEntities = new Dictionary<int, ScriptEntityState>();
+        activeScriptPropAnimations =
+            new Dictionary<string, ScriptPropAnimation>(StringComparer.Ordinal);
+        if (selection is { Kind: SceneElementKind.ScriptCharacter })
+            selection = null;
+        scriptEditor?.SetRuntimeEntities(Array.Empty<ScriptEntityChoice>());
+        _ = RefreshScriptEntitiesAsync(activeScriptEntities);
+        RefreshOverlay();
+    }
+
+    private bool TryGetCharacterAnimation(
+        string assetId,
+        string animationName,
+        out CpuAnimationClip clip)
+    {
+        if (loadedCharacterAnimations.TryGetValue(assetId, out var clips)
+            && clips.TryGetValue(animationName, out var found))
+        {
+            clip = found;
+            return true;
+        }
+        clip = null!;
+        return false;
+    }
+
+    private async Task EnsureCharacterAnimationAsync(
+        string modelAssetId,
+        string animationName,
+        IReadOnlyList<string> animationBanks,
+        string gameDataPath)
+    {
+        if (TryGetCharacterAnimation(modelAssetId, animationName, out _)) return;
+        var requestKey = AnimationRequestKey(
+            modelAssetId, animationName, animationBanks);
+        if (unavailableCharacterAnimations.Contains(requestKey)) return;
+        if (!loadedModelsByAsset.TryGetValue(modelAssetId, out var model)
+            || model.Skeleton is null)
+        {
+            return;
+        }
+
+        var sourceAssets = animationBanks
+            .Reverse()
+            .Append(modelAssetId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var errors = new List<string>();
+        foreach (var sourceAssetId in sourceAssets)
+        {
+            var load = await Task.Run(
+                () => projectLoader.LoadAnimationAsset(
+                    sourceAssetId, animationName, gameDataPath));
+            if (load.Status == AssetAnimationLoadStatus.Loaded && load.Clip is not null)
+            {
+                if (!loadedCharacterAnimations.TryGetValue(modelAssetId, out var clips))
+                {
+                    clips = new Dictionary<string, CpuAnimationClip>(
+                        StringComparer.OrdinalIgnoreCase);
+                    loadedCharacterAnimations.Add(modelAssetId, clips);
+                }
+                clips[animationName] = load.Clip;
+                return;
+            }
+            errors.Add($"{sourceAssetId}: {load.Error}");
+        }
+        unavailableCharacterAnimations.Add(requestKey);
+        Debug.WriteLine(
+            $"Could not load script animation '{modelAssetId}:{animationName}'"
+            + $" from [{string.Join(", ", sourceAssets)}]: {string.Join(" | ", errors)}");
+    }
+
+    private static string AnimationRequestKey(
+        string modelAssetId,
+        string animationName,
+        IReadOnlyList<string> animationBanks)
+        => $"{modelAssetId}\0{animationName}\0"
+            + string.Join("\0", animationBanks);
+
+    private async Task RefreshScriptPropAnimationsAsync(
+        IReadOnlyDictionary<string, ScriptPropAnimation> animations)
+    {
+        if (session.Script.GameDataPath is null) return;
+        try
+        {
+            foreach (var animation in animations.Values)
+            {
+                await EnsurePropAnimationAsync(animation, session.Script.GameDataPath);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException
+            or ArgumentException or InvalidOperationException)
+        {
+            Debug.WriteLine($"Could not refresh script prop animations: {exception}");
+        }
+    }
+
+    private async Task EnsurePropAnimationAsync(
+        ScriptPropAnimation animation,
+        string gameDataPath)
+    {
+        var assets = sceneInstances
+            .Where(value => value.Name.Equals(
+                animation.PropName, StringComparison.Ordinal))
+            .Select(value => value.AssetId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        foreach (var assetId in assets)
+        {
+            var key = PropAnimationKey(assetId, animation.AnimationName);
+            if (loadedPropAnimations.ContainsKey(key)
+                || unavailablePropAnimations.Contains(key))
+            {
+                continue;
+            }
+            var load = await Task.Run(
+                () => projectLoader.LoadAnimationAsset(
+                    assetId, animation.AnimationName, gameDataPath));
+            if (load.Status == AssetAnimationLoadStatus.Loaded && load.Clip is not null)
+            {
+                loadedPropAnimations.Add(key, load.Clip);
+            }
+            else
+            {
+                unavailablePropAnimations.Add(key);
+                Debug.WriteLine(
+                    $"Could not load prop animation '{animation.PropName}'"
+                    + $" ({assetId}:{animation.AnimationName}): {load.Error}");
+            }
+        }
+    }
+
+    private static string PropAnimationKey(string assetId, string animationName)
+        => $"{assetId}\0{animationName}";
+
+    private async Task StartScriptTimelineAsync(ScriptSceneTimeline timeline)
+    {
+        var generation = ++scriptTimelineGeneration;
+        try
+        {
+            await EnsureTimelineResourcesAsync(timeline, generation);
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException
+            or ArgumentException or InvalidOperationException)
+        {
+            Debug.WriteLine($"Could not prepare script timeline '{timeline.FunctionName}': {exception}");
+        }
+        if (generation != scriptTimelineGeneration || IsDisposed) return;
+
+        timeline = ResolveAnimationWaits(timeline);
+        scriptTimeline = timeline;
+        scriptTimelinePointIndex = 0;
+        scriptTimelineFrame = 0f;
+        isCameraAnimating = false;
+        ApplyTimelineSceneState(timeline.InitialState, applyCamera: ShouldApplyScriptCamera);
+        ApplyTimelinePointsAtCurrentFrame();
+        Text = $"{baseTitle} - previewing call: {timeline.FunctionName}";
+    }
+
+    private async Task VerifyScriptAnimationReplaySmokeAsync()
+    {
+        var script = scriptEditor?.CurrentScript;
+        if (scriptAnimationLibrary is null || script is null) return;
+        if (systemScript is not null)
+        {
+            var systemCall = script.Functions.Where(value => value.IsCode)
+                .SelectMany(function => function.Instructions
+                    .Where(instruction => instruction.Opcode == 2
+                        && instruction.Arguments.FirstOrDefault()?.IntValue == 0x0A)
+                    .Select(instruction => (Function: function, Instruction: instruction)))
+                .FirstOrDefault(value =>
+                {
+                    var functionName = value.Instruction.Arguments.Count >= 2
+                        ? System.Text.Encoding.ASCII.GetString(
+                            value.Instruction.Arguments[1].Raw).TrimEnd('\0')
+                        : string.Empty;
+                    return systemScript.Functions.Any(candidate =>
+                        candidate.IsCode
+                        && candidate.Name.Equals(functionName, StringComparison.Ordinal));
+                });
+            if (systemCall.Instruction is not null)
+            {
+                var systemTimeline = ScriptSceneStateResolver.BuildCallTimeline(
+                    script,
+                    systemCall.Function,
+                    systemCall.Instruction,
+                    scriptAnimationLibrary,
+                    systemScript);
+                var expectedFunction = System.Text.Encoding.ASCII.GetString(
+                    systemCall.Instruction.Arguments[1].Raw).TrimEnd('\0');
+                if (systemTimeline is null
+                    || !systemTimeline.FunctionName.Equals(
+                        expectedFunction, StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        "CALL variant 0x0A did not execute its system.dat function.");
+                }
+            }
+        }
+        var attemptedCalls = new List<string>();
+        var calls = script.Functions.Where(value => value.IsCode)
+            .SelectMany(function => function.Instructions
+                .Where(instruction => instruction.Opcode == 47)
+                .Select(instruction => (Function: function, Instruction: instruction)))
+            .OrderByDescending(value =>
+                value.Function.Name.Equals("EV_C05E14S02", StringComparison.Ordinal)
+                && value.Instruction.Arguments.Count >= 3
+                && value.Instruction.Arguments[0].IntValue == 1005
+                && System.Text.Encoding.ASCII.GetString(
+                    value.Instruction.Arguments[2].Raw).TrimEnd('\0').Equals(
+                        "AniEv0006", StringComparison.Ordinal))
+            .ThenByDescending(value =>
+                value.Instruction.Arguments.Count >= 3
+                && value.Instruction.Arguments[0].IntValue == 0
+                && System.Text.Encoding.ASCII.GetString(
+                    value.Instruction.Arguments[2].Raw).TrimEnd('\0').Equals(
+                        "AniEv0555", StringComparison.Ordinal))
+            .ThenByDescending(value =>
+                value.Instruction.Arguments.Count >= 3
+                && System.Text.Encoding.ASCII.GetString(
+                    value.Instruction.Arguments[2].Raw).TrimEnd('\0').Equals(
+                        "AniEv0555", StringComparison.Ordinal))
+            .ToArray();
+        var idZeroCall = calls.FirstOrDefault(value =>
+            value.Instruction.Arguments.Count >= 3
+            && value.Instruction.Arguments[0].IntValue == 0);
+        if (idZeroCall.Instruction is not null)
+        {
+            var idZeroState = ScriptSceneStateResolver.Resolve(
+                script,
+                idZeroCall.Function,
+                idZeroCall.Instruction.Index,
+                scriptAnimationLibrary,
+                systemScript);
+            if (!idZeroState.Entities.TryGetValue(0, out var rean)
+                || rean.AssetId.Equals(
+                    ScriptEntityReferences.PlaceholderAssetId,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                var mapping = scriptAnimationLibrary.TryGetCharacter(0, out var character)
+                    ? $"t_name model='{character.ModelAssetId}', ANI='{character.AnimationScript}'"
+                    : $"no t_name character 0 mapping; {scriptAnimationLibrary.NameTableDiagnostics}";
+                throw new InvalidOperationException(
+                    "Entity ID 0 did not resolve to Rean's concrete character asset"
+                    + $" ({mapping}; runtime asset='{rean?.AssetId ?? "<missing>"}').");
+            }
+        }
+        var mistyCall = calls.FirstOrDefault(value =>
+            value.Function.Name.Equals("EV_C05E14S02", StringComparison.Ordinal)
+            && value.Instruction.Arguments.Count >= 3
+            && value.Instruction.Arguments[0].IntValue == 1005
+            && System.Text.Encoding.ASCII.GetString(
+                value.Instruction.Arguments[2].Raw).TrimEnd('\0').Equals(
+                    "AniEv0006", StringComparison.Ordinal));
+        var validationCalls = mistyCall.Instruction is not null
+            ? new[] { mistyCall }
+            : calls;
+        foreach (var call in validationCalls)
+        {
+            var requestedFunction = call.Instruction.Arguments.Count >= 3
+                ? System.Text.Encoding.ASCII.GetString(
+                    call.Instruction.Arguments[2].Raw).TrimEnd('\0')
+                : "<invalid OP47>";
+            var timeline = ScriptSceneStateResolver.BuildAnimationCallTimeline(
+                script, call.Function, call.Instruction, scriptAnimationLibrary, systemScript);
+            if (timeline is null)
+            {
+                if (mistyCall.Instruction is not null)
+                {
+                    var before = ScriptSceneStateResolver.ResolveBefore(
+                        script,
+                        call.Function,
+                        call.Instruction.Index,
+                        scriptAnimationLibrary,
+                        systemScript);
+                    before.Entities.TryGetValue(1005, out var misty);
+                    var functions = misty is null
+                        ? Array.Empty<string>()
+                        : scriptAnimationLibrary.GetFunctionNames(misty);
+                    var mapping = scriptAnimationLibrary.TryGetCharacter(
+                        1005, out var mistyDefinition)
+                            ? $"model='{mistyDefinition.ModelAssetId}',"
+                                + $" ani='{mistyDefinition.AnimationScript}'"
+                            : "no t_name mapping";
+                    throw new InvalidOperationException(
+                        "Misty AniEv0006 could not resolve its ANI function: "
+                        + $"{mapping}; runtime model='{misty?.AssetId ?? "<missing>"}',"
+                        + $" script='{misty?.ScriptFile ?? "<missing>"}',"
+                        + $" functions={functions.Count},"
+                        + $" contains AniEv0006={functions.Contains("AniEv0006", StringComparer.Ordinal)};"
+                        + $" {scriptAnimationLibrary.NameTableDiagnostics}");
+                }
+                attemptedCalls.Add($"{requestedFunction}: ANI function unresolved");
+                continue;
+            }
+            var generation = ++scriptTimelineGeneration;
+            await EnsureTimelineResourcesAsync(timeline, generation);
+            var animationPoint = timeline.Points.LastOrDefault(value =>
+                value.IsExternalScript && value.Instruction.Opcode == 34);
+            if (animationPoint?.SubjectEntityId is not { } entityId
+                || !animationPoint.After.Entities.TryGetValue(entityId, out var entity)
+                || !TryGetBaseAnimation(entity, out var animation)
+                || !TryGetCharacterAnimation(entity.AssetId, animation.Name, out var clip))
+            {
+                attemptedCalls.Add(
+                    $"{timeline.FunctionName}: no loadable OP34 character clip");
+                continue;
+            }
+            if (mistyCall.Instruction is not null
+                && (entity.AnimationBanks is null
+                    || !entity.AnimationBanks.Contains(
+                        "C_NPC017_EV0", StringComparer.OrdinalIgnoreCase)))
+            {
+                throw new InvalidOperationException(
+                    "Misty's AniEv0006 preview did not retain the C_NPC017_EV0"
+                    + " animation bank attached by Ani_EV0_Load.");
+            }
+            Console.WriteLine(
+                $"Animation smoke timeline: {timeline.FunctionName},"
+                + $" {timeline.Points.Count} points,"
+                + $" duration={GetScriptTimelineDurationFrames(timeline):R} frames,"
+                + $" animation={animation.Name}@{animation.StartFrame},"
+                + $" banks=[{string.Join(", ", entity.AnimationBanks ?? Array.Empty<string>())}]");
+            var skeleton = loadedModelsByAsset[entity.AssetId].Skeleton
+                ?? throw new InvalidOperationException(
+                    $"Animation model '{entity.AssetId}' has no skeleton.");
+            var pose = poseEvaluator.Evaluate(
+                skeleton,
+                clip,
+                (clip.StartTime + clip.EndTime) * 0.5f,
+                CpuAnimationUnboundTargetBehavior.Ignore);
+            var bindPose = poseEvaluator.Evaluate(skeleton, null, 0f);
+            if (!pose.SkinMatrices.Zip(
+                    bindPose.SkinMatrices,
+                    static (animated, bind) => !MatrixNearlyEqual(animated, bind))
+                .Any(static changed => changed))
+            {
+                var skeletonNames = skeleton.Joints
+                    .Select(value => value.Name)
+                    .ToHashSet(StringComparer.Ordinal);
+                var boundChannels = clip.Channels.Count(value =>
+                    skeletonNames.Contains(value.TargetName));
+                throw new InvalidOperationException(
+                    $"Animation '{clip.Name}' produced the bind pose for '{entity.AssetId}'"
+                    + $" ({boundChannels}/{clip.Channels.Count} channels target model joints).");
+            }
+            activeScriptEntities = animationPoint.After.Entities;
+            await RefreshScriptEntitiesCoreAsync(activeScriptEntities);
+            scriptTimeline = timeline;
+            scriptTimelineFrame = animation.StartFrame
+                + clip.Duration * ScriptWaitDuration.PreviewFramesPerSecond * 0.5f;
+            RefreshAnimationPoses();
+            var renderedCharacter = instances.FirstOrDefault(value =>
+                value.SceneInstanceId == ScriptEntitySceneInstanceId(entityId));
+            if (renderedCharacter?.SkinMatrices is not { Count: > 0 } renderedPose
+                || !renderedPose.Zip(
+                        bindPose.SkinMatrices,
+                        static (animated, bind) => !MatrixNearlyEqual(animated, bind))
+                    .Any(static changed => changed))
+            {
+                throw new InvalidOperationException(
+                    $"Animation '{clip.Name}' was evaluated but not attached to rendered"
+                    + $" entity {entityId} ({entity.AssetId}).");
+            }
+            if (!renderedCharacter.Model.Meshes
+                    .SelectMany(value => value.Primitives)
+                    .Any(D3D11Viewport.SupportsSkinningInputs))
+            {
+                var formats = renderedCharacter.Model.Meshes
+                    .SelectMany(value => value.Primitives)
+                    .SelectMany(value => value.VertexBuffers)
+                    .SelectMany(value => value.Attributes)
+                    .Where(value => value.Semantic is VertexSemantic.JointIndices
+                        or VertexSemantic.JointWeights)
+                    .Select(value => $"{value.Semantic}:{value.SourceFormat}")
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray();
+                throw new InvalidOperationException(
+                    $"Rendered entity {entityId} ({entity.AssetId}) has no primitive"
+                    + " accepted by the skinned vertex shader"
+                    + $" (inputs: {string.Join(", ", formats)}).");
+            }
+            if (viewport is null)
+                throw new InvalidOperationException("Animation smoke has no D3D11 viewport.");
+            cameraNavigation.Focus(entity.Position + Vector3.UnitY, 2.5f);
+            var animatedInstances = instances;
+            viewport.Render(animatedInstances, CreateCamera(), verticalSync: false);
+            var animatedPixels = viewport.CaptureBackBufferBgra();
+            var bindInstances = animatedInstances.Select(value =>
+                value.SceneInstanceId == renderedCharacter.SceneInstanceId
+                    ? value with { SkinMatrices = null }
+                    : value).ToArray();
+            viewport.Render(bindInstances, CreateCamera(), verticalSync: false);
+            var bindPixels = viewport.CaptureBackBufferBgra();
+            instances = animatedInstances;
+            var changedPixelBytes = animatedPixels.Zip(
+                    bindPixels,
+                    static (animated, bind) => animated != bind)
+                .Count(static changed => changed);
+            if (changedPixelBytes == 0)
+            {
+                throw new InvalidOperationException(
+                    $"Animation '{clip.Name}' changes CPU-skinned vertices but produced"
+                    + " the same D3D11 frame as the bind pose.");
+            }
+            if (mistyCall.Instruction is not null)
+            {
+                StopScriptTimeline();
+                ApplySelectedScriptCamera(mistyCall.Function, mistyCall.Instruction);
+                for (var attempt = 0;
+                     attempt < 100
+                     && (scriptTimeline is null
+                         || !scriptTimeline.FunctionName.Equals(
+                             "AniEv0006", StringComparison.Ordinal));
+                     attempt++)
+                {
+                    await Task.Delay(25);
+                }
+                if (scriptTimeline is null
+                    || !scriptTimeline.FunctionName.Equals(
+                        "AniEv0006", StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        "Selecting Misty's Script_CallAniFun block did not start"
+                        + " the resolved npc017.dat/AniEv0006 timeline.");
+                }
+                var interactiveAnimationPoint = scriptTimeline.Points.Last(value =>
+                    value.IsExternalScript
+                    && value.Instruction.Opcode == 34
+                    && value.SubjectEntityId == 1005);
+                scriptTimelineFrame = interactiveAnimationPoint.Frame;
+                scriptTimelinePointIndex = 0;
+                ApplyTimelineSceneState(
+                    scriptTimeline.InitialState, applyCamera: false);
+                ApplyTimelinePointsAtCurrentFrame();
+                await RefreshScriptEntitiesCoreAsync(activeScriptEntities);
+                RefreshAnimationPoses();
+                var interactiveMisty = instances.FirstOrDefault(value =>
+                    value.SceneInstanceId == ScriptEntitySceneInstanceId(1005));
+                if (interactiveMisty?.SkinMatrices is not { Count: > 0 } interactivePose
+                    || !interactivePose.Zip(
+                            bindPose.SkinMatrices,
+                            static (animated, bind) => !MatrixNearlyEqual(animated, bind))
+                        .Any(static changed => changed))
+                {
+                    throw new InvalidOperationException(
+                        "The interactive Misty CallAniFun preview started, but its"
+                        + " rendered entity remained in the bind pose.");
+                }
+            }
+            return;
+        }
+        throw new InvalidOperationException(
+            "No OP47 animation call resolved to a loadable character clip."
+            + (attemptedCalls.Count == 0
+                ? string.Empty
+                : $"{Environment.NewLine}{string.Join(Environment.NewLine, attemptedCalls.Take(12))}"));
+    }
+
+    private async Task VerifyScriptPropAnimationSmokeAsync()
+    {
+        var script = scriptEditor?.CurrentScript;
+        if (script is null || session.Script.GameDataPath is null) return;
+        var calls = script.Functions.Where(value => value.IsCode)
+            .SelectMany(function => function.Instructions
+                .Where(instruction => instruction.Opcode == 69
+                    && instruction.Arguments.Count >= 2)
+                .Select(instruction => (Function: function, Instruction: instruction)))
+            .Where(value =>
+            {
+                var propName = ScriptSceneStateResolver.ReadInstructionString(
+                    value.Instruction.Arguments[0]);
+                return sceneInstances.Any(instance =>
+                    instance.Name.Equals(propName, StringComparison.Ordinal));
+            })
+            .ToArray();
+        foreach (var call in calls)
+        {
+            var propName = ScriptSceneStateResolver.ReadInstructionString(
+                call.Instruction.Arguments[0]);
+            var animationName = ScriptSceneStateResolver.ReadInstructionString(
+                call.Instruction.Arguments[1]);
+            var prop = sceneInstances.First(value =>
+                value.Name.Equals(propName, StringComparison.Ordinal));
+            await EnsurePropAnimationAsync(
+                new ScriptPropAnimation(propName, animationName, 0, false),
+                session.Script.GameDataPath);
+            if (!loadedPropAnimations.TryGetValue(
+                    PropAnimationKey(prop.AssetId, animationName), out var clip)
+                || !loadedModelsByAsset.TryGetValue(prop.AssetId, out var model)
+                || model.SceneNodes is not { Count: > 0 } nodes)
+            {
+                continue;
+            }
+            var start = sceneAnimationEvaluator.Evaluate(nodes, clip, clip.StartTime);
+            var middle = sceneAnimationEvaluator.Evaluate(
+                nodes, clip, (clip.StartTime + clip.EndTime) * 0.5f);
+            if (!start.WorldTransforms.Zip(
+                    middle.WorldTransforms,
+                    static (left, right) => !MatrixNearlyEqual(left, right))
+                .Any(static changed => changed))
+            {
+                continue;
+            }
+
+            StopScriptTimeline();
+            ApplySelectedScriptCamera(call.Function, call.Instruction);
+            for (var attempt = 0;
+                 attempt < 100
+                 && (scriptTimeline is null
+                     || !scriptTimeline.FunctionName.Equals(
+                         animationName, StringComparison.Ordinal));
+                 attempt++)
+            {
+                await Task.Delay(25);
+            }
+            if (scriptTimeline is null)
+                throw new InvalidOperationException(
+                    $"Selecting OP69 for '{propName}:{animationName}' did not start playback.");
+            scriptTimelineFrame = clip.Duration
+                * ScriptWaitDuration.PreviewFramesPerSecond * 0.5f;
+            scriptTimelinePointIndex = 0;
+            ApplyTimelineSceneState(scriptTimeline.InitialState, applyCamera: false);
+            ApplyTimelinePointsAtCurrentFrame();
+            RefreshAnimationPoses();
+            var rendered = instances.FirstOrDefault(value =>
+                value.SceneInstanceId == prop.Id);
+            if (rendered?.SceneNodeTransforms is not { Count: > 0 })
+                throw new InvalidOperationException(
+                    $"OP69 '{propName}:{animationName}' did not reach the rendered prop.");
+            StopScriptTimeline();
+            var following = call.Function.Instructions.FirstOrDefault(value =>
+                value.Index > call.Instruction.Index);
+            if (following is not null)
+            {
+                var finalState = ScriptSceneStateResolver.Resolve(
+                    script,
+                    call.Function,
+                    following.Index,
+                    scriptAnimationLibrary,
+                    systemScript);
+                if (!finalState.PropAnimations.TryGetValue(
+                        propName, out var finalAnimation)
+                    || !finalAnimation.AnimationName.Equals(
+                        animationName, StringComparison.Ordinal)
+                    || !finalAnimation.HoldFinalFrame)
+                {
+                    throw new InvalidOperationException(
+                        $"OP69 '{propName}:{animationName}' did not persist its final"
+                        + " frame in the following script state.");
+                }
+            }
+            return;
+        }
+        throw new InvalidOperationException(
+            "No OP69 instruction resolved to a changing prop animation in this scene.");
+    }
+
+    private static bool MatrixNearlyEqual(Matrix4x4 left, Matrix4x4 right)
+    {
+        const float epsilon = 0.0001f;
+        return MathF.Abs(left.M11 - right.M11) <= epsilon
+            && MathF.Abs(left.M12 - right.M12) <= epsilon
+            && MathF.Abs(left.M13 - right.M13) <= epsilon
+            && MathF.Abs(left.M14 - right.M14) <= epsilon
+            && MathF.Abs(left.M21 - right.M21) <= epsilon
+            && MathF.Abs(left.M22 - right.M22) <= epsilon
+            && MathF.Abs(left.M23 - right.M23) <= epsilon
+            && MathF.Abs(left.M24 - right.M24) <= epsilon
+            && MathF.Abs(left.M31 - right.M31) <= epsilon
+            && MathF.Abs(left.M32 - right.M32) <= epsilon
+            && MathF.Abs(left.M33 - right.M33) <= epsilon
+            && MathF.Abs(left.M34 - right.M34) <= epsilon
+            && MathF.Abs(left.M41 - right.M41) <= epsilon
+            && MathF.Abs(left.M42 - right.M42) <= epsilon
+            && MathF.Abs(left.M43 - right.M43) <= epsilon
+            && MathF.Abs(left.M44 - right.M44) <= epsilon;
+    }
+
+    private async Task EnsureTimelineResourcesAsync(
+        ScriptSceneTimeline timeline,
+        int generation)
+    {
+        if (session.Script.GameDataPath is null || graphics is null) return;
+        var states = timeline.Points
+            .Select(value => value.After)
+            .Prepend(timeline.InitialState)
+            .ToArray();
+        var entities = states.SelectMany(value => value.Entities.Values).ToArray();
+
+        foreach (var assetId in entities
+                     .Select(value => value.AssetId)
+                     .Where(value => !string.IsNullOrWhiteSpace(value))
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (generation != scriptTimelineGeneration || IsDisposed) return;
+            if (!loadedModelsByAsset.TryGetValue(assetId, out var model))
+            {
+                model = await LoadScriptEntityModelAsync(
+                    assetId, session.Script.GameDataPath);
+                if (generation != scriptTimelineGeneration || IsDisposed) return;
+                if (model is null)
+                {
+                    continue;
+                }
+                loadedModelsByAsset[assetId] = model;
+            }
+            if (uploadedModels.All(value =>
+                    !value.AssetId.Equals(assetId, StringComparison.OrdinalIgnoreCase)))
+            {
+                uploadedModels.Add(new D3D11ModelUploader(graphics.Device).Upload(model));
+            }
+        }
+
+        foreach (var request in entities
+                     .Select(value => (
+                         value.AssetId,
+                         AnimationName: GetRequestedBaseAnimationName(value),
+                         AnimationBanks: value.AnimationBanks ?? Array.Empty<string>()))
+                     .Where(value => !string.IsNullOrWhiteSpace(value.AssetId)
+                         && !string.IsNullOrWhiteSpace(value.AnimationName))
+                     .DistinctBy(
+                         value => AnimationRequestKey(
+                             value.AssetId, value.AnimationName!, value.AnimationBanks),
+                         StringComparer.OrdinalIgnoreCase))
+        {
+            if (generation != scriptTimelineGeneration || IsDisposed) return;
+            await EnsureCharacterAnimationAsync(
+                request.AssetId,
+                request.AnimationName!,
+                request.AnimationBanks,
+                session.Script.GameDataPath);
+        }
+        foreach (var animation in states
+                     .SelectMany(value => value.PropAnimations.Values)
+                     .DistinctBy(
+                         value => $"{value.PropName}\0{value.AnimationName}",
+                         StringComparer.Ordinal))
+        {
+            if (generation != scriptTimelineGeneration || IsDisposed) return;
+            await EnsurePropAnimationAsync(animation, session.Script.GameDataPath);
+        }
+    }
+
+    private ScriptSceneTimeline ResolveAnimationWaits(ScriptSceneTimeline source)
+    {
+        var adjustedStarts = new Dictionary<ScriptEntityAnimation, int>(
+            ReferenceEqualityComparer.Instance);
+        var initialState = ShiftAnimationStartFrames(
+            source.InitialState, 0, adjustedStarts);
+        var points = new List<ScriptSceneTimelinePoint>(source.Points.Count);
+        var addedFrames = 0;
+        foreach (var original in source.Points)
+        {
+            var before = ShiftAnimationStartFrames(
+                original.Before, addedFrames, adjustedStarts);
+            var after = ShiftAnimationStartFrames(
+                original.After, addedFrames, adjustedStarts);
+            var frame = original.Frame + addedFrames;
+            points.Add(original with
+            {
+                Frame = frame,
+                Before = before,
+                After = after,
+            });
+
+            if (original.Instruction.Opcode != 35
+                || original.SubjectEntityId is not { } entityId
+                || !after.Entities.TryGetValue(entityId, out var entity)
+                || !TryGetBaseAnimation(entity, out var animation)
+                || !TryGetCharacterAnimation(entity.AssetId, animation.Name, out var clip))
+            {
+                continue;
+            }
+            var elapsedFrames = Math.Max(0, frame - animation.StartFrame);
+            var clipFrames = (int)MathF.Ceiling(
+                clip.Duration * ScriptWaitDuration.PreviewFramesPerSecond);
+            addedFrames += Math.Max(0, clipFrames - elapsedFrames);
+        }
+        return source with
+        {
+            InitialState = initialState,
+            Points = points,
+            DurationFrames = Math.Max(1, source.DurationFrames + addedFrames),
+        };
+    }
+
+    private static ScriptSceneState ShiftAnimationStartFrames(
+        ScriptSceneState state,
+        int addedFrames,
+        IDictionary<ScriptEntityAnimation, int> adjustedStarts)
+    {
+        var changed = false;
+        var entities = new Dictionary<int, ScriptEntityState>(state.Entities.Count);
+        foreach (var pair in state.Entities)
+        {
+            var entity = pair.Value;
+            if (entity.AnimationSlots is not { Count: > 0 })
+            {
+                entities.Add(pair.Key, entity);
+                continue;
+            }
+            var animations = new Dictionary<int, ScriptEntityAnimation>(
+                entity.AnimationSlots.Count);
+            foreach (var animationPair in entity.AnimationSlots)
+            {
+                var animation = animationPair.Value;
+                if (!adjustedStarts.TryGetValue(animation, out var adjustedStart))
+                {
+                    adjustedStart = animation.StartFrame + addedFrames;
+                    adjustedStarts.Add(animation, adjustedStart);
+                }
+                var adjusted = animation.StartFrame == adjustedStart
+                    ? animation
+                    : animation with { StartFrame = adjustedStart };
+                changed |= !ReferenceEquals(adjusted, animation);
+                animations.Add(animationPair.Key, adjusted);
+            }
+            entities.Add(pair.Key, entity with { AnimationSlots = animations });
+        }
+        return changed ? state with { Entities = entities } : state;
+    }
+
+    private void UpdateScriptTimeline(float elapsedSeconds)
+    {
+        if (scriptTimeline is null) return;
+        scriptTimelineFrame += elapsedSeconds * ScriptWaitDuration.PreviewFramesPerSecond;
+        var duration = GetScriptTimelineDurationFrames(scriptTimeline);
+        if (scriptTimelineFrame >= duration)
+        {
+            scriptTimelineFrame %= duration;
+            scriptTimelinePointIndex = 0;
+            isCameraAnimating = false;
+            ApplyTimelineSceneState(
+                scriptTimeline.InitialState,
+                applyCamera: ShouldApplyScriptCamera);
+        }
+        ApplyTimelinePointsAtCurrentFrame();
+    }
+
+    private void ApplyTimelinePointsAtCurrentFrame()
+    {
+        if (scriptTimeline is null) return;
+        while (scriptTimelinePointIndex < scriptTimeline.Points.Count
+               && scriptTimeline.Points[scriptTimelinePointIndex].Frame <= scriptTimelineFrame)
+        {
+            var point = scriptTimeline.Points[scriptTimelinePointIndex++];
+            if (!point.IsExternalScript)
+                scriptEditor?.ShowPlaybackInstruction(point.FunctionIndex, point.InstructionIndex);
+            ApplyTimelineSceneState(point.After, applyCamera: false);
+            if (point.Instruction.Opcode == 45 && ShouldApplyScriptCamera)
+            {
+                if (ScriptCameraStateResolver.HasInterpolation(point.Instruction)
+                    && ScriptCameraStateResolver.ReadDurationMs(point.Instruction) > 0)
+                {
+                    animationBefore = point.Before.Camera;
+                    animationAfter = point.After.Camera;
+                    animationDurationMs = ScriptCameraStateResolver.ReadDurationMs(point.Instruction);
+                    animationEasingType = ScriptCameraStateResolver.ReadInterpolationType(point.Instruction);
+                    animationElapsed = 0f;
+                    isCameraAnimating = true;
+                    cameraAnimationLoops = false;
+                }
+                else
+                {
+                    isCameraAnimating = false;
+                    ApplyCameraState(point.After.Camera, point.After.Entities);
+                }
+            }
+            else if (ShouldApplyScriptCamera
+                     && point.Before.Camera != point.After.Camera)
+            {
+                ApplyCameraState(point.After.Camera, point.After.Entities);
+            }
+        }
+    }
+
+    private void ApplyTimelineSceneState(ScriptSceneState state, bool applyCamera)
+    {
+        activeScriptEntities = state.Entities;
+        activeScriptPropAnimations = state.PropAnimations;
+        scriptEditor?.SetRuntimeEntities(CreateScriptEntityChoices(state.Entities));
+        _ = RefreshScriptEntitiesAsync(state.Entities);
+        _ = RefreshScriptPropAnimationsAsync(state.PropAnimations);
+        RefreshOverlay();
+        if (applyCamera && ShouldApplyScriptCamera && state.Camera.HasViewValue)
+            ApplyCameraState(state.Camera, state.Entities);
+    }
+
+    private float GetScriptTimelineDurationFrames(ScriptSceneTimeline timeline)
+    {
+        var duration = (float)timeline.DurationFrames;
+        var finalState = timeline.Points.LastOrDefault()?.After ?? timeline.InitialState;
+        foreach (var entity in finalState.Entities.Values)
+        {
+            if (!TryGetBaseAnimation(entity, out var animation)
+                || !TryGetCharacterAnimation(entity.AssetId, animation.Name, out var clip))
+            {
+                continue;
+            }
+            duration = Math.Max(
+                duration,
+                animation.StartFrame + clip.Duration * ScriptWaitDuration.PreviewFramesPerSecond);
+        }
+        foreach (var animation in finalState.PropAnimations.Values)
+        {
+            foreach (var prop in sceneInstances.Where(value =>
+                         value.Name.Equals(animation.PropName, StringComparison.Ordinal)))
+            {
+                if (!loadedPropAnimations.TryGetValue(
+                        PropAnimationKey(prop.AssetId, animation.AnimationName), out var clip))
+                {
+                    continue;
+                }
+                duration = Math.Max(
+                    duration,
+                    animation.StartFrame
+                        + clip.Duration * ScriptWaitDuration.PreviewFramesPerSecond);
+            }
+        }
+        return Math.Max(1f, duration);
+    }
+
+    private void StopScriptTimeline()
+    {
+        scriptTimelineGeneration++;
+        scriptTimeline = null;
+        scriptTimelinePointIndex = 0;
+        scriptTimelineFrame = 0f;
+        cameraAnimationLoops = false;
+    }
+
     private void UpdateCameraAnimation(float deltaSeconds)
     {
-        if (!isCameraAnimating || animationBefore is null || animationAfter is null) return;
+        if (!ShouldApplyScriptCamera
+            || !isCameraAnimating
+            || animationBefore is null
+            || animationAfter is null)
+        {
+            return;
+        }
 
         animationElapsed += deltaSeconds * 1000f; // convertir en ms
         var duration = (float)animationDurationMs;
@@ -1210,7 +2377,21 @@ public sealed class ViewerForm : Form
 
         // t normalisé 0..1, reboucle
         var tRaw = animationElapsed / duration;
-        if (tRaw >= 1f) { animationElapsed = 0f; tRaw = 0f; }
+        if (tRaw >= 1f)
+        {
+            if (cameraAnimationLoops)
+            {
+                animationElapsed %= duration;
+                tRaw = animationElapsed / duration;
+            }
+            else
+            {
+                ApplyCameraState(animationAfter, activeScriptEntities);
+                isCameraAnimating = false;
+                cameraPlayButton.Enabled = true;
+                return;
+            }
+        }
         var t = CameraEasing.Apply(tRaw, animationEasingType);
 
         // Interpole entre before et after
@@ -1247,6 +2428,16 @@ public sealed class ViewerForm : Form
         {
             var tgtBefore = animationBefore.Target ?? cameraNavigation.Target;
             state = state with { Target = tgtBefore + (tgtAfter - tgtBefore) * lerpPosition };
+        }
+        if (animationAfter.TargetEntityId is not null)
+        {
+            state = state with
+            {
+                TargetEntityId = animationAfter.TargetEntityId,
+                SecondaryTargetEntityId = animationAfter.SecondaryTargetEntityId,
+                TargetEntityOffset = animationAfter.TargetEntityOffset,
+                TargetOffsetUsesEntityRotation = animationAfter.TargetOffsetUsesEntityRotation,
+            };
         }
 
         // Angles (en degrés)
@@ -1294,11 +2485,22 @@ public sealed class ViewerForm : Form
         if (animationAfter.PositionOffset is { } eyeOff)
             state = state with { PositionOffset = eyeOff * lerpPosition };
 
-        ApplyCameraState(state);
+        ApplyCameraState(state, activeScriptEntities);
     }
 
     private void PauseAnimation()
     {
+        if (scriptTimeline is not null) StopScriptTimeline();
+        isCameraAnimating = false;
+        cameraPlayButton.Enabled = true;
+    }
+
+    private bool ShouldApplyScriptCamera
+        => !ignoreScriptCameraButton.Checked && !manualScriptCameraOverride;
+
+    private void BeginManualScriptCameraOverride()
+    {
+        manualScriptCameraOverride = true;
         isCameraAnimating = false;
         cameraPlayButton.Enabled = true;
     }
@@ -1416,10 +2618,44 @@ public sealed class ViewerForm : Form
             {
                 cameraNavigation.Focus(propElement.Transform.Position, Math.Max(sceneRadius * 0.025f, 1f));
             }
+            else if (selection.Kind == SceneElementKind.ScriptCharacter
+                     && activeScriptEntities.Values.FirstOrDefault(value =>
+                         ScriptEntitySceneInstanceId(value.EntityId) == selection.SourceIndex
+                         && value.HasPosition) is { } entity)
+            {
+                var entityRadius = Math.Max(
+                    Math.Max(entity.CollisionHeight, entity.CollisionRadius * 2f) * entity.Scale,
+                    sceneRadius * 0.01f);
+                cameraNavigation.Focus(entity.Position, Math.Max(entityRadius * 2.5f, 1f));
+            }
             return;
         }
         if (!TryGetOverlayFocus(selection, out var center, out var radius)) return;
         cameraNavigation.Focus(center, Math.Max(radius * 2.5f, sceneRadius * 0.01f));
+    }
+
+    private void FocusScriptEntity(int entityId)
+    {
+        if (!activeScriptEntities.TryGetValue(entityId, out var entity)) return;
+        if (!entity.HasPosition)
+        {
+            Text = $"{baseTitle} — entity {entityId}: position unresolved at this instruction";
+            return;
+        }
+        PauseAnimation();
+        var name = string.IsNullOrWhiteSpace(entity.DisplayName)
+            ? entity.AssetId
+            : entity.DisplayName;
+        selection = new SceneElementSelection(
+            SceneElementKind.ScriptCharacter,
+            ScriptEntitySceneInstanceId(entityId),
+            name);
+        RefreshRenderInstances(
+            uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase));
+        RefreshOverlay();
+        RefreshElementProperties();
+        FocusSelection();
+        Text = $"{baseTitle} — focused entity {entityId}: {name}";
     }
 
     private string DescribeSelection(SceneElementSelection selected)
@@ -1481,6 +2717,15 @@ public sealed class ViewerForm : Form
                 new SceneOverlayOptions(PointMarkerSize: overlayMarkerSize, Selection: selection))
             : new SceneOverlayGeometry(Array.Empty<SceneOverlayLine>(), Array.Empty<SceneOverlayTriangle>());
         var overlayLines = overlay.Lines.ToList();
+        var overlayTriangles = overlay.Triangles.ToList();
+        if (showIndicatorsCheckBox.Checked)
+        {
+            foreach (var entity in activeScriptEntities.Values.Where(value =>
+                         !value.HasSpawnDefinition && value.HasPosition))
+            {
+                AddReferencedEntityMarker(overlayLines, overlayTriangles, entity);
+            }
+        }
         var selectedElement = selection is null ? null : document.Find(selection);
         var showSelectedGizmo = selection is { Kind: SceneElementKind.Prop }
             || showIndicatorsCheckBox.Checked;
@@ -1520,10 +2765,47 @@ public sealed class ViewerForm : Form
         viewport.SetDebugLines(overlayLines
             .Select(line => new D3D11DebugLine(line.Start, line.End, line.Color, line.Thickness))
             .ToArray());
-        viewport.SetDebugTriangles(overlay.Triangles
+        viewport.SetDebugTriangles(overlayTriangles
             .Select(triangle => new D3D11DebugTriangle(
                 triangle.A, triangle.B, triangle.C, triangle.Color))
             .ToArray());
+    }
+
+    private void AddReferencedEntityMarker(
+        ICollection<SceneOverlayLine> lines,
+        ICollection<SceneOverlayTriangle> triangles,
+        ScriptEntityState entity)
+    {
+        var center = entity.Position;
+        var size = overlayMarkerSize * 1.75f;
+        var isSelected = selection is { Kind: SceneElementKind.ScriptCharacter }
+            && selection.SourceIndex == ScriptEntitySceneInstanceId(entity.EntityId);
+        var solidColor = isSelected
+            ? new Vector4(1f, 0.85f, 0.15f, 1f)
+            : new Vector4(0.85f, 0.25f, 1f, 1f);
+        var fillColor = solidColor with { W = isSelected ? 0.55f : 0.3f };
+        var top = center + Vector3.UnitY * size;
+        var bottom = center - Vector3.UnitY * size;
+        var east = center + Vector3.UnitX * size;
+        var west = center - Vector3.UnitX * size;
+        var north = center + Vector3.UnitZ * size;
+        var south = center - Vector3.UnitZ * size;
+
+        lines.Add(new SceneOverlayLine(west, east, solidColor, 3f));
+        lines.Add(new SceneOverlayLine(bottom, top, solidColor, 3f));
+        lines.Add(new SceneOverlayLine(south, north, solidColor, 3f));
+        var yaw = entity.YawDegrees * MathF.PI / 180f;
+        var facing = new Vector3(MathF.Sin(yaw), 0f, MathF.Cos(yaw));
+        lines.Add(new SceneOverlayLine(center, center + facing * size * 2f, solidColor, 4f));
+
+        triangles.Add(new SceneOverlayTriangle(top, east, north, fillColor));
+        triangles.Add(new SceneOverlayTriangle(top, north, west, fillColor));
+        triangles.Add(new SceneOverlayTriangle(top, west, south, fillColor));
+        triangles.Add(new SceneOverlayTriangle(top, south, east, fillColor));
+        triangles.Add(new SceneOverlayTriangle(bottom, north, east, fillColor));
+        triangles.Add(new SceneOverlayTriangle(bottom, west, north, fillColor));
+        triangles.Add(new SceneOverlayTriangle(bottom, south, west, fillColor));
+        triangles.Add(new SceneOverlayTriangle(bottom, east, south, fillColor));
     }
 
     private bool SelectCameraHandleAt(Point location)
@@ -1899,6 +3181,41 @@ public sealed class ViewerForm : Form
         var resourcesByAsset = uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase);
         RefreshRenderInstances(resourcesByAsset);
         RefreshOverlay();
+    }
+
+    private void BeginScriptSurfacePositionCapture(Action<Vector3> applyPosition)
+    {
+        scriptSurfacePositionCapture =
+            applyPosition ?? throw new ArgumentNullException(nameof(applyPosition));
+        Text = $"{baseTitle} — click a map surface to capture a script position; Esc cancels";
+        viewportHost.Focus();
+    }
+
+    private void CaptureScriptSurfacePosition(Point location)
+    {
+        if (scriptSurfacePositionCapture is not { } applyPosition
+            || viewportHost.ClientSize.Width <= 0
+            || viewportHost.ClientSize.Height <= 0)
+        {
+            return;
+        }
+        var hit = surfaceRaycaster.Cast(
+            CreatePointerRay(location), VisibleSceneInstances()).Hit;
+        if (hit is null)
+        {
+            Text = $"{baseTitle} — no surface at cursor; click another point or press Esc";
+            return;
+        }
+        scriptSurfacePositionCapture = null;
+        applyPosition(hit.Position);
+        Text = $"{baseTitle} — script position captured: "
+            + $"{hit.Position.X:0.###}, {hit.Position.Y:0.###}, {hit.Position.Z:0.###}";
+    }
+
+    private void CancelScriptSurfacePositionCapture()
+    {
+        scriptSurfacePositionCapture = null;
+        Text = baseTitle;
     }
 
     private void ConfirmPlacement()

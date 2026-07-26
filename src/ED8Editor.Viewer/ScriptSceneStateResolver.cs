@@ -1,0 +1,1555 @@
+using System.Numerics;
+using System.Runtime.CompilerServices;
+using System.Text;
+using ED8Editor.Decompiler;
+
+namespace ED8Editor.Viewer;
+
+internal sealed record ScriptEntityState(
+    int EntityId,
+    string AssetId,
+    string DisplayName,
+    string InitialAnimation,
+    int EntityType,
+    int Flags,
+    Vector3 Position,
+    float YawDegrees,
+    float Scale,
+    float CollisionHeight,
+    float CollisionRadius,
+    string ScriptFile,
+    string InitFunction,
+    int ScriptArgument,
+    int UnknownBehavior,
+    int UnknownParameter1,
+    int UnknownParameter2,
+    int UnknownParameter3,
+    IReadOnlyList<Vector3> PendingWaypoints,
+    ScriptEntityMotion? Motion = null,
+    IReadOnlyDictionary<int, ScriptEntityAnimation>? AnimationSlots = null,
+    bool HasSpawnDefinition = true,
+    bool HasPosition = true,
+    string ReferenceSymbol = "",
+    bool IsPlaceholder = false,
+    bool IsExecutable = true,
+    IReadOnlyList<string>? AnimationBanks = null);
+
+internal sealed record ScriptEntityMotion(
+    int Subtype,
+    float Speed,
+    int AnimationState,
+    int Flags,
+    IReadOnlyList<Vector3> Path,
+    int StartFrame,
+    int DurationFrames,
+    float JumpHeight = 0f)
+{
+    public int EndFrame => checked(StartFrame + DurationFrames);
+
+    public Vector3 PositionAt(float frame)
+    {
+        if (Path.Count == 0) return Vector3.Zero;
+        if (Path.Count == 1 || DurationFrames <= 0) return Path[^1];
+        var progress = Math.Clamp((frame - StartFrame) / DurationFrames, 0f, 1f);
+        var totalLength = 0f;
+        for (var index = 1; index < Path.Count; index++)
+            totalLength += Vector3.Distance(Path[index - 1], Path[index]);
+        if (totalLength <= 0f) return Path[^1];
+        var remaining = totalLength * progress;
+        for (var index = 1; index < Path.Count; index++)
+        {
+            var start = Path[index - 1];
+            var end = Path[index];
+            var segmentLength = Vector3.Distance(start, end);
+            if (remaining <= segmentLength)
+            {
+                var position = segmentLength > 0f
+                    ? Vector3.Lerp(start, end, remaining / segmentLength)
+                    : end;
+                return JumpHeight == 0f
+                    ? position
+                    : position + Vector3.UnitY
+                        * (4f * MathF.Abs(JumpHeight) * progress * (1f - progress));
+            }
+            remaining -= segmentLength;
+        }
+        return Path[^1];
+    }
+}
+
+internal sealed record ScriptEntityAnimation(
+    int Slot,
+    string Name,
+    bool Loop,
+    int Flag2,
+    int Flag3,
+    int Flag4,
+    int Flag5,
+    float BlendTime,
+    float TimeParameter1,
+    float TimeParameter2,
+    float TimeParameter3,
+    int StartFrame,
+    bool HoldFinalFrame = false);
+
+internal sealed record ScriptPropAnimation(
+    string PropName,
+    string AnimationName,
+    int StartFrame,
+    bool HoldFinalFrame);
+
+internal sealed record UnresolvedScriptCall(
+    int CallerFunctionIndex,
+    int InstructionIndex,
+    int Variant,
+    string FunctionName);
+
+internal sealed record ScriptSceneState(
+    ScriptCameraState Camera,
+    IReadOnlyDictionary<int, ScriptEntityState> Entities,
+    IReadOnlyDictionary<string, ScriptPropAnimation> PropAnimations,
+    IReadOnlyList<UnresolvedScriptCall> UnresolvedCalls);
+
+internal sealed record ScriptSceneTimelinePoint(
+    int Frame,
+    int FunctionIndex,
+    int InstructionIndex,
+    DecompiledInstruction Instruction,
+    ScriptSceneState Before,
+    ScriptSceneState After,
+    int? SubjectEntityId = null,
+    bool IsExternalScript = false);
+
+internal sealed record ScriptSceneTimeline(
+    string FunctionName,
+    ScriptSceneState InitialState,
+    IReadOnlyList<ScriptSceneTimelinePoint> Points,
+    int DurationFrames);
+
+/// <summary>
+/// Replays the deterministic first control-flow path used by the editor. Local calls
+/// execute synchronously and mutate the same camera/entity state before returning.
+/// </summary>
+internal static class ScriptSceneStateResolver
+{
+    private const int MaximumExecutedInstructions = 100_000;
+    private const int MaximumCallDepth = 64;
+    private static readonly Encoding ScriptEncoding = CreateScriptEncoding();
+
+    public static ScriptSceneState Resolve(
+        DecompiledScript script,
+        DecompiledFunction selectedFunction,
+        int selectedInstructionIndex,
+        ScriptAnimationLibrary? animationLibrary = null,
+        DecompiledScript? systemScript = null)
+    {
+        ArgumentNullException.ThrowIfNull(script);
+        ArgumentNullException.ThrowIfNull(selectedFunction);
+
+        var execution = new Execution(script, animationLibrary, systemScript);
+        execution.LoadInitialEntities(selectedFunction);
+        var path = ScriptCameraStateResolver.FindFirstPath(
+            selectedFunction, selectedInstructionIndex);
+        execution.ExecutePath(
+            script,
+            selectedFunction,
+            path,
+            CreateCallStack(selectedFunction));
+        return execution.Snapshot();
+    }
+
+    public static ScriptSceneState ResolveBefore(
+        DecompiledScript script,
+        DecompiledFunction selectedFunction,
+        int selectedInstructionIndex,
+        ScriptAnimationLibrary? animationLibrary = null,
+        DecompiledScript? systemScript = null)
+    {
+        ArgumentNullException.ThrowIfNull(script);
+        ArgumentNullException.ThrowIfNull(selectedFunction);
+
+        var path = ScriptCameraStateResolver.FindFirstPath(
+            selectedFunction, selectedInstructionIndex);
+        var exclusivePath = path.TakeWhile(index => index != selectedInstructionIndex).ToArray();
+        var execution = new Execution(script, animationLibrary, systemScript);
+        execution.LoadInitialEntities(selectedFunction);
+        execution.ExecutePath(
+            script,
+            selectedFunction,
+            exclusivePath,
+            CreateCallStack(selectedFunction));
+        return execution.Snapshot();
+    }
+
+    public static ScriptSceneTimeline? BuildCallTimeline(
+        DecompiledScript script,
+        DecompiledFunction caller,
+        DecompiledInstruction callInstruction,
+        ScriptAnimationLibrary? animationLibrary = null,
+        DecompiledScript? systemScript = null)
+    {
+        ArgumentNullException.ThrowIfNull(script);
+        ArgumentNullException.ThrowIfNull(caller);
+        ArgumentNullException.ThrowIfNull(callInstruction);
+        if (callInstruction.Opcode != 2) return null;
+
+        var execution = new Execution(script, animationLibrary, systemScript);
+        if (!execution.TryResolveCallTarget(
+                script, callInstruction, out var targetScript, out var target))
+        {
+            return null;
+        }
+        execution.LoadInitialEntities(caller);
+        var callerPath = ScriptCameraStateResolver.FindFirstPath(caller, callInstruction.Index);
+        execution.ExecutePath(
+            script,
+            caller,
+            callerPath.TakeWhile(index => index != callInstruction.Index),
+            CreateCallStack(caller));
+        var initialState = execution.Snapshot();
+        execution.BeginTimeline();
+        execution.ExecuteFunction(
+            targetScript,
+            target,
+            CreateCallStack(caller, target));
+        return execution.CreateTimeline(target.Name, initialState);
+    }
+
+    public static ScriptSceneTimeline? BuildAnimationCallTimeline(
+        DecompiledScript script,
+        DecompiledFunction caller,
+        DecompiledInstruction callInstruction,
+        ScriptAnimationLibrary? animationLibrary,
+        DecompiledScript? systemScript = null)
+    {
+        ArgumentNullException.ThrowIfNull(script);
+        ArgumentNullException.ThrowIfNull(caller);
+        ArgumentNullException.ThrowIfNull(callInstruction);
+        if (callInstruction.Opcode != 47 || animationLibrary is null) return null;
+
+        var execution = new Execution(script, animationLibrary, systemScript);
+        execution.LoadInitialEntities(caller);
+        var callerPath = ScriptCameraStateResolver.FindFirstPath(caller, callInstruction.Index);
+        execution.ExecutePath(
+            script,
+            caller,
+            callerPath.TakeWhile(index => index != callInstruction.Index),
+            CreateCallStack(caller));
+        if (!execution.CanResolveAnimationCall(callInstruction)) return null;
+        var initialState = execution.Snapshot();
+        execution.BeginTimeline();
+        execution.ExecuteInstructionForTimeline(
+            script, caller, callInstruction, CreateCallStack(caller));
+        return execution.CreateTimeline(
+            Execution.ReadArgumentString(callInstruction.Arguments[2]),
+            initialState);
+    }
+
+    public static ScriptSceneTimeline? BuildPropAnimationTimeline(
+        DecompiledScript script,
+        DecompiledFunction caller,
+        DecompiledInstruction instruction,
+        ScriptAnimationLibrary? animationLibrary = null,
+        DecompiledScript? systemScript = null)
+    {
+        ArgumentNullException.ThrowIfNull(script);
+        ArgumentNullException.ThrowIfNull(caller);
+        ArgumentNullException.ThrowIfNull(instruction);
+        if (instruction.Opcode != 69 || instruction.Arguments.Count < 2) return null;
+
+        var execution = new Execution(script, animationLibrary, systemScript);
+        execution.LoadInitialEntities(caller);
+        var callerPath = ScriptCameraStateResolver.FindFirstPath(caller, instruction.Index);
+        execution.ExecutePath(
+            script,
+            caller,
+            callerPath.TakeWhile(index => index != instruction.Index),
+            CreateCallStack(caller));
+        var initialState = execution.Snapshot();
+        execution.BeginTimeline();
+        execution.ExecuteInstructionForTimeline(
+            script, caller, instruction, CreateCallStack(caller));
+        return execution.CreateTimeline(
+            Execution.ReadArgumentString(instruction.Arguments[1]),
+            initialState);
+    }
+
+    public static ScriptSceneTimeline? BuildMovementTimeline(
+        DecompiledScript script,
+        DecompiledFunction caller,
+        DecompiledInstruction instruction,
+        ScriptAnimationLibrary? animationLibrary = null,
+        DecompiledScript? systemScript = null)
+    {
+        ArgumentNullException.ThrowIfNull(script);
+        ArgumentNullException.ThrowIfNull(caller);
+        ArgumentNullException.ThrowIfNull(instruction);
+        if (instruction.Opcode != 54) return null;
+
+        var execution = new Execution(script, animationLibrary, systemScript);
+        execution.LoadInitialEntities(caller);
+        var callerPath = ScriptCameraStateResolver.FindFirstPath(caller, instruction.Index);
+        execution.ExecutePath(
+            script,
+            caller,
+            callerPath.TakeWhile(index => index != instruction.Index),
+            CreateCallStack(caller));
+        var initialState = execution.Snapshot();
+        execution.BeginTimeline();
+        execution.ExecuteInstructionForTimeline(
+            script, caller, instruction, CreateCallStack(caller));
+        return execution.CreateTimeline(instruction.Name, initialState);
+    }
+
+    private static HashSet<DecompiledFunction> CreateCallStack(
+        params DecompiledFunction[] functions)
+        => new(functions, ReferenceEqualityComparer.Instance);
+
+    internal static string ReadInstructionString(InstructionArgument argument)
+        => Execution.ReadArgumentString(argument);
+
+    internal static void VerifyReplaySmoke(DecompiledScript script)
+    {
+        ArgumentNullException.ThrowIfNull(script);
+        VerifyMovementControlSmoke();
+        var spawnOwner = script.Functions
+            .Where(value => value.IsCode)
+            .SelectMany(function => function.Instructions
+                .Where(instruction => instruction.Opcode == 19)
+                .Select(instruction => (Function: function, Instruction: instruction)))
+            .FirstOrDefault();
+        if (spawnOwner.Instruction is not null)
+        {
+            var state = Resolve(
+                script, spawnOwner.Function, spawnOwner.Instruction.Index);
+            var entityId = spawnOwner.Instruction.Arguments[0].IntValue;
+            var expectedAsset = Execution.ReadArgumentString(
+                spawnOwner.Instruction.Arguments[1]);
+            if (!state.Entities.TryGetValue(entityId, out var entity)
+                || !entity.AssetId.Equals(expectedAsset, StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    "Script entity replay did not preserve the OP19 entity ID/model pair.");
+        }
+
+        var localCall = script.Functions
+            .Where(value => value.IsCode)
+            .SelectMany(function => function.Instructions
+                .Where(instruction => instruction.Opcode == 2)
+                .Select(instruction => (Function: function, Instruction: instruction)))
+            .FirstOrDefault(pair =>
+            {
+                var name = Execution.ReadArgumentString(
+                    pair.Instruction.Arguments.First(argument => argument.Kind == "string"));
+                return script.Functions.Any(candidate => candidate.IsCode && candidate.Name == name);
+            });
+        if (localCall.Instruction is not null)
+        {
+            _ = Resolve(script, localCall.Function, localCall.Instruction.Index);
+            var timeline = BuildCallTimeline(
+                script, localCall.Function, localCall.Instruction);
+            if (timeline is null
+                || timeline.DurationFrames <= 0
+                || timeline.Points.Zip(
+                    timeline.Points.Skip(1),
+                    (left, right) => left.Frame <= right.Frame).Any(value => !value))
+            {
+                throw new InvalidOperationException(
+                    "Script call preview did not produce a valid monotonic timeline.");
+            }
+        }
+    }
+
+    private static void VerifyMovementControlSmoke()
+    {
+        const int entityId = 7;
+        var waitFunction = CreateMovementSmokeFunction(
+            new DecompiledInstruction(
+                3, 0, "Entity_WaitMovement", 55,
+                new[] { ScalarArgument(0, "s16", entityId, sem: "entity") },
+                Array.Empty<JumpTarget>()));
+        var waitScript = new DecompiledScript("MovementWaitSmoke", new[] { waitFunction });
+        var waitExecution = new Execution(waitScript, null);
+        waitExecution.BeginTimeline();
+        waitExecution.ExecuteFunction(
+            waitScript,
+            waitFunction,
+            CreateCallStack(waitFunction));
+        var waitTimeline = waitExecution.CreateTimeline(waitFunction.Name, waitExecution.Snapshot());
+        if (waitTimeline.DurationFrames != 360
+            || waitTimeline.Points.Single(value =>
+                    value.Instruction.Name == "Entity_WaitMovement").Frame != 0)
+        {
+            throw new InvalidOperationException(
+                "Entity_WaitMovement did not wait for the active movement duration.");
+        }
+
+        var stopInstruction = new DecompiledInstruction(
+            4, 0, "Entity_StopMovement", 55,
+            new[] { ScalarArgument(0, "s16", entityId, sem: "entity") },
+            Array.Empty<JumpTarget>());
+        var stopFunction = CreateMovementSmokeFunction(
+            new DecompiledInstruction(
+                3, 0, "OP16", 16,
+                new[] { ScalarArgument(0, "u16", 120) },
+                Array.Empty<JumpTarget>()),
+            stopInstruction);
+        var stopScript = new DecompiledScript("MovementStopSmoke", new[] { stopFunction });
+        var stopExecution = new Execution(stopScript, null);
+        stopExecution.BeginTimeline();
+        stopExecution.ExecuteFunction(
+            stopScript,
+            stopFunction,
+            CreateCallStack(stopFunction));
+        var stopTimeline = stopExecution.CreateTimeline(stopFunction.Name, stopExecution.Snapshot());
+        var stopped = stopTimeline.Points
+            .Single(value => value.Instruction.Name == "Entity_StopMovement")
+            .After.Entities[entityId];
+        if (stopped.Motion is not null
+            || Vector3.Distance(stopped.Position, new Vector3(2f, 0f, 0f)) > 0.0001f)
+        {
+            throw new InvalidOperationException(
+                "Entity_StopMovement did not freeze the entity at its interpolated position.");
+        }
+
+        var wanderFunction = new DecompiledFunction(
+            0,
+            "Init",
+            true,
+            new DecompiledInstruction[]
+            {
+                new(
+                    0, 0x120, "Entity_Wander", 56,
+                    new[]
+                    {
+                        ScalarArgument(0, "s16", entityId, sem: "entity"),
+                        ScalarArgument(1, "f32", floatValue: 10f),
+                        ScalarArgument(2, "f32", floatValue: 2f),
+                        ScalarArgument(3, "f32", floatValue: 20f),
+                        ScalarArgument(4, "f32", floatValue: 3f),
+                        ScalarArgument(5, "f32", floatValue: 1.5f),
+                    },
+                    Array.Empty<JumpTarget>()),
+                new(
+                    1, 0, "Entity_WaitMovement", 55,
+                    new[] { ScalarArgument(0, "s16", entityId, sem: "entity") },
+                    Array.Empty<JumpTarget>()),
+                new(
+                    2, 0, "OP1", 1,
+                    Array.Empty<InstructionArgument>(),
+                    Array.Empty<JumpTarget>()),
+            });
+        var wanderScript = new DecompiledScript("WanderSmoke", new[] { wanderFunction });
+        var wanderExecution = new Execution(wanderScript, null);
+        wanderExecution.BeginTimeline();
+        wanderExecution.ExecuteFunction(
+            wanderScript,
+            wanderFunction,
+            CreateCallStack(wanderFunction));
+        var wanderTimeline = wanderExecution.CreateTimeline(
+            wanderFunction.Name, wanderExecution.Snapshot());
+        var wander = wanderTimeline.Points
+            .Single(value => value.Instruction.Name == "Entity_Wander")
+            .After.Entities[entityId];
+        var wanderCenter = new Vector3(10f, 2f, 20f);
+        if (wander.Motion is not { AnimationState: 1, Flags: 4 } wanderMotion
+            || Vector3.Distance(wander.Position, wanderCenter) > 3.0001f
+            || Math.Abs(wander.Position.Y - wanderCenter.Y) > 0.0001f
+            || wanderTimeline.DurationFrames < wanderMotion.DurationFrames)
+        {
+            throw new InvalidOperationException(
+                "Entity_Wander did not create a bounded walking movement.");
+        }
+
+        var modeFunction = new DecompiledFunction(
+            0,
+            "Init",
+            true,
+            new DecompiledInstruction[]
+            {
+                new(
+                    0, 0, "Entity_SetPosition", 46,
+                    new[]
+                    {
+                        ScalarArgument(0, "s16", entityId, sem: "entity"),
+                        ScalarArgument(1, "f32", floatValue: 10f),
+                        ScalarArgument(2, "f32", floatValue: 0f),
+                        ScalarArgument(3, "f32", floatValue: 0f),
+                        ScalarArgument(4, "f32", floatValue: 0f),
+                    },
+                    Array.Empty<JumpTarget>()),
+                new(
+                    1, 0, "Entity_MoveByMode", 54,
+                    new[]
+                    {
+                        ScalarArgument(0, "s16", entityId, sem: "entity"),
+                        ScalarArgument(1, "u16", ushort.MaxValue - 1),
+                        ScalarArgument(2, "f32", floatValue: 1f),
+                        ScalarArgument(3, "f32", floatValue: 2f),
+                        ScalarArgument(4, "f32", floatValue: 3f),
+                        ScalarArgument(5, "f32", floatValue: 1.5f),
+                        ScalarArgument(6, "u8", 2),
+                        ScalarArgument(7, "u16", 0),
+                    },
+                    Array.Empty<JumpTarget>()),
+                new(
+                    2, 0, "OP1", 1,
+                    Array.Empty<InstructionArgument>(),
+                    Array.Empty<JumpTarget>()),
+            });
+        var modeScript = new DecompiledScript("ModeMovementSmoke", new[] { modeFunction });
+        var modeExecution = new Execution(modeScript, null);
+        modeExecution.BeginTimeline();
+        modeExecution.ExecuteFunction(
+            modeScript, modeFunction, CreateCallStack(modeFunction));
+        var moved = modeExecution.Snapshot().Entities[entityId];
+        if (Vector3.Distance(moved.Position, new Vector3(11f, 2f, 3f)) > 0.0001f
+            || moved.Motion is not { AnimationState: 2, Speed: 1.5f })
+        {
+            throw new InvalidOperationException(
+                "OP54 relative movement did not preserve its target, speed, and Run state.");
+        }
+    }
+
+    private static DecompiledFunction CreateMovementSmokeFunction(
+        params DecompiledInstruction[] trailingInstructions)
+    {
+        const int entityId = 7;
+        var instructions = new List<DecompiledInstruction>
+        {
+            new(
+                0, 0, "Entity_InitPath", 95,
+                new[] { ScalarArgument(0, "s16", entityId, sem: "entity") },
+                Array.Empty<JumpTarget>()),
+            new(
+                1, 0, "Entity_AddWayPoint", 95,
+                new[]
+                {
+                    ScalarArgument(0, "s16", entityId, sem: "entity"),
+                    ScalarArgument(1, "f32", floatValue: 6f),
+                    ScalarArgument(2, "f32", floatValue: 0f),
+                    ScalarArgument(3, "f32", floatValue: 0f),
+                },
+                Array.Empty<JumpTarget>()),
+            new(
+                2, 0, "Entity_Move", 95,
+                new[]
+                {
+                    ScalarArgument(0, "s16", entityId, sem: "entity"),
+                    ScalarArgument(1, "f32", floatValue: 1f),
+                    ScalarArgument(2, "u8", 1),
+                    ScalarArgument(3, "u16", 0),
+                },
+                Array.Empty<JumpTarget>()),
+        };
+        instructions.AddRange(trailingInstructions);
+        instructions.Add(new DecompiledInstruction(
+            instructions.Count, 0, "OP1", 1,
+            Array.Empty<InstructionArgument>(),
+            Array.Empty<JumpTarget>()));
+        return new DecompiledFunction(0, "Init", true, instructions);
+    }
+
+    private static InstructionArgument ScalarArgument(
+        int index,
+        string type,
+        int intValue = 0,
+        double floatValue = 0,
+        string? sem = null)
+        => new(
+            index,
+            "scalar",
+            type,
+            intValue,
+            floatValue,
+            Array.Empty<byte>(),
+            null,
+            Sem: sem);
+
+    private sealed class Execution
+    {
+        private static readonly ConditionalWeakTable<DecompiledScript, SpawnCatalog> SpawnCatalogs = new();
+        private readonly DecompiledScript rootScript;
+        private readonly ScriptAnimationLibrary? animationLibrary;
+        private readonly DecompiledScript? systemScript;
+        private readonly IReadOnlyDictionary<int, ScriptEntityState> spawnCatalog;
+        private readonly Dictionary<int, ScriptEntityState> entities = new();
+        private readonly Dictionary<string, ScriptPropAnimation> propAnimations =
+            new(StringComparer.Ordinal);
+        private readonly List<UnresolvedScriptCall> unresolvedCalls = new();
+        private List<ScriptSceneTimelinePoint>? timelinePoints;
+        private int executedInstructions;
+        private int elapsedFrames;
+        private ScriptCameraState camera = new();
+
+        public Execution(
+            DecompiledScript script,
+            ScriptAnimationLibrary? animationLibrary,
+            DecompiledScript? systemScript = null)
+        {
+            rootScript = script;
+            this.animationLibrary = animationLibrary;
+            this.systemScript = systemScript;
+            spawnCatalog = SpawnCatalogs.GetValue(
+                script,
+                static value => new SpawnCatalog(BuildSpawnCatalog(value))).Entities;
+        }
+
+        public ScriptSceneState Snapshot() => new(
+            camera,
+            new Dictionary<int, ScriptEntityState>(entities),
+            new Dictionary<string, ScriptPropAnimation>(
+                propAnimations, StringComparer.Ordinal),
+            unresolvedCalls.ToArray());
+
+        public void BeginTimeline()
+        {
+            timelinePoints = new List<ScriptSceneTimelinePoint>();
+            elapsedFrames = 0;
+        }
+
+        public void LoadInitialEntities(DecompiledFunction selectedFunction)
+        {
+            if (selectedFunction.Name.Equals("Init", StringComparison.OrdinalIgnoreCase))
+                return;
+            var init = rootScript.Functions.FirstOrDefault(value =>
+                value.IsCode
+                && value.Name.Equals("Init", StringComparison.OrdinalIgnoreCase));
+            if (init is null) return;
+            ExecuteFunction(
+                rootScript,
+                init,
+                new HashSet<DecompiledFunction>(
+                    new[] { init }, ReferenceEqualityComparer.Instance));
+            camera = new ScriptCameraState();
+        }
+
+        public ScriptSceneTimeline CreateTimeline(
+            string functionName,
+            ScriptSceneState initialState)
+        {
+            var activeMotionEnd = entities.Values
+                .Where(value => value.Motion is not null)
+                .Select(value => value.Motion!.EndFrame)
+                .DefaultIfEmpty(0)
+                .Max();
+            return new ScriptSceneTimeline(
+                functionName,
+                initialState,
+                timelinePoints?.ToArray() ?? Array.Empty<ScriptSceneTimelinePoint>(),
+                Math.Max(
+                    1,
+                    Math.Max(
+                        activeMotionEnd,
+                        Math.Max(
+                            elapsedFrames,
+                            timelinePoints is { Count: > 0 }
+                                ? timelinePoints[^1].Frame + 1
+                                : 0))));
+        }
+
+        public void ExecutePath(
+            DecompiledScript ownerScript,
+            DecompiledFunction function,
+            IEnumerable<int> instructionIndices,
+            HashSet<DecompiledFunction> callStack,
+            int? selfEntityId = null)
+        {
+            foreach (var index in instructionIndices)
+            {
+                if (index < 0 || index >= function.Instructions.Count) continue;
+                ExecuteInstruction(
+                    ownerScript, function, function.Instructions[index], callStack, selfEntityId);
+            }
+        }
+
+        public void ExecuteInstructionForTimeline(
+            DecompiledScript ownerScript,
+            DecompiledFunction function,
+            DecompiledInstruction instruction,
+            HashSet<DecompiledFunction> callStack)
+            => ExecuteInstruction(ownerScript, function, instruction, callStack, null);
+
+        private void ExecuteInstruction(
+            DecompiledScript ownerScript,
+            DecompiledFunction function,
+            DecompiledInstruction instruction,
+            HashSet<DecompiledFunction> callStack,
+            int? selfEntityId)
+        {
+            if (++executedInstructions > MaximumExecutedInstructions)
+                throw new InvalidOperationException(
+                    "Script state replay exceeded its instruction limit.");
+
+            var before = timelinePoints is null ? null : Snapshot();
+            EnsureReferencedEntities(instruction, selfEntityId);
+            ApplyEntityInstruction(instruction, selfEntityId);
+            ApplyPropAnimation(instruction);
+            if (!RequiresNonExecutableEntity(instruction, selfEntityId))
+            {
+                camera = ResolveCameraEntityReferences(
+                    ScriptCameraStateResolver.ApplyInstruction(instruction, camera),
+                    selfEntityId);
+            }
+            if (timelinePoints is not null && IsTimelineInstruction(instruction))
+            {
+                timelinePoints.Add(new ScriptSceneTimelinePoint(
+                    elapsedFrames,
+                    function.Index,
+                    instruction.Index,
+                    instruction,
+                    before!,
+                    Snapshot(),
+                    ResolveInstructionEntityId(instruction, selfEntityId),
+                    !ReferenceEquals(ownerScript, rootScript)));
+            }
+            if (instruction.Opcode is 54 or 56 or 95
+                && ResolveInstructionEntityId(instruction, selfEntityId) is { } animatedEntityId
+                && entities.TryGetValue(animatedEntityId, out var animatedEntity)
+                && animatedEntity.Motion is { } entityMotion
+                && TryGetMovementAnimationFunction(
+                    entityMotion.AnimationState, out var movementAnimationFunction))
+            {
+                var movementStartFrame = elapsedFrames;
+                ExecuteNamedAnimationFunction(
+                    animatedEntityId,
+                    movementAnimationFunction,
+                    callStack,
+                    holdFinalFrame: false);
+                // Movement animation selection configures the actor's locomotion
+                // channel; waits inside the ANI helper do not delay the scenario VM.
+                elapsedFrames = movementStartFrame;
+            }
+            if (instruction.Opcode == 16)
+                elapsedFrames = checked(elapsedFrames + ScriptWaitDuration.DecodePreviewFrames(
+                    instruction.Arguments.FirstOrDefault()?.IntValue ?? 0));
+            if (instruction.Opcode == 55
+                && instruction.Name.Equals(
+                    "Entity_WaitMovement", StringComparison.Ordinal)
+                && ResolveInstructionEntityId(instruction, selfEntityId) is { } movingEntityId
+                && entities.TryGetValue(movingEntityId, out var movingEntity)
+                && movingEntity.Motion is { } motion)
+            {
+                elapsedFrames = Math.Max(elapsedFrames, motion.EndFrame);
+            }
+
+            if (instruction.Opcode == 47)
+            {
+                ExecuteAnimationFunction(instruction, callStack, selfEntityId);
+                return;
+            }
+            if (instruction.Opcode != 2) return;
+            var functionName = ReadCallFunctionName(instruction);
+            if (string.IsNullOrEmpty(functionName)) return;
+            var variant = instruction.Arguments.FirstOrDefault()?.IntValue ?? 0;
+            if (!TryResolveCallTarget(
+                    ownerScript, instruction, out var targetScript, out var target))
+            {
+                unresolvedCalls.Add(new UnresolvedScriptCall(
+                    function.Index, instruction.Index, variant, functionName));
+                return;
+            }
+            if (callStack.Count >= MaximumCallDepth || !callStack.Add(target))
+                return;
+            try
+            {
+                ExecuteFunction(targetScript, target, callStack, selfEntityId);
+            }
+            finally
+            {
+                callStack.Remove(target);
+            }
+        }
+
+        public bool TryResolveCallTarget(
+            DecompiledScript ownerScript,
+            DecompiledInstruction instruction,
+            out DecompiledScript targetScript,
+            out DecompiledFunction target)
+        {
+            targetScript = instruction.Arguments.FirstOrDefault()?.IntValue == 0x0A
+                ? systemScript!
+                : ownerScript;
+            target = null!;
+            if (targetScript is null) return false;
+            var functionName = ReadCallFunctionName(instruction);
+            if (string.IsNullOrEmpty(functionName)) return false;
+            target = targetScript.Functions.FirstOrDefault(candidate =>
+                candidate.IsCode
+                && candidate.Name.Equals(functionName, StringComparison.Ordinal))!;
+            return target is not null;
+        }
+
+        public void ExecuteFunction(
+            DecompiledScript ownerScript,
+            DecompiledFunction function,
+            HashSet<DecompiledFunction> callStack,
+            int? selfEntityId = null)
+        {
+            var visited = new HashSet<int>();
+            var index = 0;
+            while (index >= 0
+                   && index < function.Instructions.Count
+                   && visited.Add(index))
+            {
+                var instruction = function.Instructions[index];
+                ExecuteInstruction(ownerScript, function, instruction, callStack, selfEntityId);
+                if (instruction.Opcode == 1) return;
+                index = ScriptCameraStateResolver.Successors(function, index)
+                    .FirstOrDefault(-1);
+            }
+        }
+
+        public bool CanResolveAnimationCall(DecompiledInstruction instruction)
+        {
+            if (instruction.Opcode != 47
+                || instruction.Arguments.Count < 3
+                || animationLibrary is null)
+            {
+                return false;
+            }
+            var entityId = ResolveEntityId(instruction.Arguments[0].IntValue, null);
+            return entities.TryGetValue(entityId, out var entity)
+                && animationLibrary.TryGetFunction(
+                    entity,
+                    ReadArgumentString(instruction.Arguments[2]),
+                    out _,
+                    out _);
+        }
+
+        private void ExecuteAnimationFunction(
+            DecompiledInstruction instruction,
+            HashSet<DecompiledFunction> callStack,
+            int? selfEntityId)
+        {
+            if (instruction.Arguments.Count < 3 || animationLibrary is null) return;
+            var entityId = ResolveEntityId(instruction.Arguments[0].IntValue, selfEntityId);
+            ExecuteNamedAnimationFunction(
+                entityId,
+                ReadArgumentString(instruction.Arguments[2]),
+                callStack,
+                holdFinalFrame: timelinePoints is null);
+        }
+
+        private void ExecuteNamedAnimationFunction(
+            int entityId,
+            string functionName,
+            HashSet<DecompiledFunction> callStack,
+            bool holdFinalFrame)
+        {
+            if (animationLibrary is null) return;
+            if (!entities.TryGetValue(entityId, out var entity)
+                || !animationLibrary.TryGetFunction(
+                    entity,
+                    functionName,
+                    out var aniScript,
+                    out var function)
+                || callStack.Count >= MaximumCallDepth
+                || !callStack.Add(function))
+            {
+                return;
+            }
+            try
+            {
+                ExecuteFunction(aniScript, function, callStack, entityId);
+                if (holdFinalFrame && entities.TryGetValue(entityId, out var finalEntity)
+                    && finalEntity.AnimationSlots is { Count: > 0 })
+                {
+                    entities[entityId] = finalEntity with
+                    {
+                        AnimationSlots = finalEntity.AnimationSlots.ToDictionary(
+                            pair => pair.Key,
+                            pair => pair.Value with { HoldFinalFrame = true }),
+                    };
+                }
+            }
+            finally
+            {
+                callStack.Remove(function);
+            }
+        }
+
+        private static bool TryGetMovementAnimationFunction(
+            int animationState,
+            out string functionName)
+        {
+            functionName = animationState switch
+            {
+                1 => "AniWalk",
+                2 => "AniRun",
+                3 => "AniDash",
+                _ => string.Empty,
+            };
+            return functionName.Length != 0;
+        }
+
+        private void ApplyEntityInstruction(
+            DecompiledInstruction instruction,
+            int? selfEntityId)
+        {
+            if (instruction.Opcode == 19)
+            {
+                ApplySpawn(instruction);
+                return;
+            }
+            if (instruction.Opcode == 34)
+            {
+                ApplyAnimation(instruction, selfEntityId);
+                return;
+            }
+            if (instruction.Opcode == 36)
+            {
+                ApplyAnimationBankBinding(instruction, selfEntityId);
+                return;
+            }
+            if (instruction.Opcode == 46)
+            {
+                ApplySetPosition(instruction, selfEntityId);
+                return;
+            }
+            if (instruction.Opcode == 54)
+            {
+                ApplyModeMovement(instruction, selfEntityId);
+                return;
+            }
+            if (instruction.Opcode == 55)
+            {
+                ApplyMovementControl(instruction, selfEntityId);
+                return;
+            }
+            if (instruction.Opcode == 56)
+            {
+                ApplyWander(instruction, selfEntityId);
+                return;
+            }
+            if (instruction.Opcode == 95)
+                ApplyMovement(instruction, selfEntityId);
+        }
+
+        private void ApplyPropAnimation(DecompiledInstruction instruction)
+        {
+            if (instruction.Opcode != 69 || instruction.Arguments.Count < 2) return;
+            var propName = ReadArgumentString(instruction.Arguments[0]);
+            var animationName = ReadArgumentString(instruction.Arguments[1]);
+            if (string.IsNullOrWhiteSpace(propName)
+                || string.IsNullOrWhiteSpace(animationName))
+            {
+                return;
+            }
+            propAnimations[propName] = new ScriptPropAnimation(
+                propName,
+                animationName,
+                elapsedFrames,
+                HoldFinalFrame: timelinePoints is null);
+        }
+
+        private void EnsureReferencedEntities(
+            DecompiledInstruction instruction,
+            int? selfEntityId)
+        {
+            foreach (var argument in instruction.Arguments.Where(value =>
+                         string.Equals(value.Sem, "entity", StringComparison.OrdinalIgnoreCase)
+                         && value.Kind == "scalar"))
+            {
+                var entityId = ResolveEntityId(argument.IntValue, selfEntityId);
+                if (entities.ContainsKey(entityId)) continue;
+                entities.Add(entityId, CreateReferencedEntity(entityId));
+            }
+        }
+
+        private ScriptEntityState CreateReferencedEntity(int entityId)
+        {
+            var reference = ScriptEntityReferences.Resolve(entityId);
+            if (reference.Resolution == ScriptEntityResolution.Concrete
+                && reference.ConcreteEntityId is { } concreteId
+                && spawnCatalog.TryGetValue(concreteId, out var spawned))
+            {
+                return spawned with
+                {
+                    EntityId = entityId,
+                    Position = Vector3.Zero,
+                    YawDegrees = 0f,
+                    PendingWaypoints = Array.Empty<Vector3>(),
+                    Motion = null,
+                    AnimationSlots = null,
+                    HasSpawnDefinition = false,
+                    HasPosition = false,
+                    ReferenceSymbol = reference.Symbol,
+                };
+            }
+            if (reference.Resolution == ScriptEntityResolution.Concrete
+                && reference.ConcreteEntityId is { } characterId
+                && animationLibrary?.TryGetCharacter(characterId, out var character) == true
+                && !string.IsNullOrWhiteSpace(character.ModelAssetId))
+            {
+                return new ScriptEntityState(
+                    entityId,
+                    character.ModelAssetId,
+                    string.IsNullOrWhiteSpace(character.DisplayName)
+                        ? reference.Symbol
+                        : character.DisplayName,
+                    string.Empty,
+                    0,
+                    0,
+                    Vector3.Zero,
+                    0f,
+                    1f,
+                    0f,
+                    0f,
+                    character.AnimationScript,
+                    string.Empty,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    Array.Empty<Vector3>(),
+                    HasSpawnDefinition: false,
+                    HasPosition: false,
+                    ReferenceSymbol: reference.Symbol);
+            }
+            var placeholder = reference.Resolution is ScriptEntityResolution.Placeholder
+                or ScriptEntityResolution.Contextual
+                || reference.Resolution == ScriptEntityResolution.Concrete;
+            var executable = reference.Resolution != ScriptEntityResolution.NonExecutable;
+            return new ScriptEntityState(
+                entityId,
+                placeholder ? ScriptEntityReferences.PlaceholderAssetId : string.Empty,
+                reference.Symbol,
+                string.Empty,
+                0,
+                0,
+                Vector3.Zero,
+                0f,
+                1f,
+                0f,
+                0f,
+                string.Empty,
+                string.Empty,
+                0,
+                0,
+                0,
+                0,
+                0,
+                Array.Empty<Vector3>(),
+                HasSpawnDefinition: false,
+                HasPosition: false,
+                ReferenceSymbol: reference.Symbol,
+                IsPlaceholder: placeholder,
+                IsExecutable: executable);
+        }
+
+        private void ApplySpawn(DecompiledInstruction instruction)
+        {
+            var arguments = instruction.Arguments;
+            if (!HasSpawnLayout(arguments)) return;
+
+            if (!TryCreateSpawnState(instruction, elapsedFrames, out var entity))
+                return;
+            if (animationLibrary is not null)
+            {
+                entity = entity with
+                {
+                    DisplayName = animationLibrary.ResolveDisplayName(
+                        entity.AssetId, entity.DisplayName),
+                };
+            }
+            var entityId = entity.EntityId;
+            entities[entityId] = entity;
+        }
+
+        private static bool TryCreateSpawnState(
+            DecompiledInstruction instruction,
+            int startFrame,
+            out ScriptEntityState entity)
+        {
+            var arguments = instruction.Arguments;
+            if (!HasSpawnLayout(arguments))
+            {
+                entity = null!;
+                return false;
+            }
+            var entityId = arguments[0].IntValue;
+            var initialAnimation = ReadArgumentString(arguments[3]);
+            entity = new ScriptEntityState(
+                entityId,
+                ReadArgumentString(arguments[1]),
+                ReadArgumentString(arguments[2]),
+                initialAnimation,
+                arguments[4].IntValue,
+                arguments[5].IntValue,
+                new Vector3(
+                    (float)arguments[6].FloatValue,
+                    (float)arguments[7].FloatValue,
+                    (float)arguments[8].FloatValue),
+                (float)arguments[9].FloatValue,
+                (float)arguments[10].FloatValue,
+                (float)arguments[11].FloatValue,
+                (float)arguments[12].FloatValue,
+                ReadArgumentString(arguments[13]),
+                ReadArgumentString(arguments[14]),
+                arguments[15].IntValue,
+                arguments[16].IntValue,
+                arguments[17].IntValue,
+                arguments[18].IntValue,
+                arguments[19].IntValue,
+                Array.Empty<Vector3>(),
+                AnimationSlots: CreateInitialAnimations(initialAnimation, startFrame),
+                ReferenceSymbol: ScriptEntityReferences.DisplayName(entityId));
+            return true;
+        }
+
+        private static IReadOnlyDictionary<int, ScriptEntityAnimation>? CreateInitialAnimations(
+            string animationName,
+            int startFrame)
+        {
+            if (string.IsNullOrWhiteSpace(animationName)) return null;
+            return new Dictionary<int, ScriptEntityAnimation>
+            {
+                [0] = new(
+                    0, animationName, true,
+                    0, 0, 0, 0,
+                    0f, -1f, -1f, -1f,
+                    startFrame),
+            };
+        }
+
+        private void ApplyAnimation(
+            DecompiledInstruction instruction,
+            int? selfEntityId)
+        {
+            var arguments = instruction.Arguments;
+            if (arguments.Count < 11) return;
+            var entityId = ResolveEntityId(arguments[0].IntValue, selfEntityId);
+            if (!entities.TryGetValue(entityId, out var entity) || !entity.IsExecutable) return;
+            var name = ReadArgumentString(arguments[1]);
+            if (string.IsNullOrEmpty(name)) return;
+            var slots = CopyAnimationSlots(entity);
+            slots[0] = new ScriptEntityAnimation(
+                0,
+                name,
+                arguments[2].IntValue != 0,
+                arguments[3].IntValue,
+                arguments[4].IntValue,
+                arguments[5].IntValue,
+                arguments[6].IntValue,
+                (float)arguments[7].FloatValue,
+                (float)arguments[8].FloatValue,
+                (float)arguments[9].FloatValue,
+                (float)arguments[10].FloatValue,
+                elapsedFrames);
+            entities[entityId] = entity with { AnimationSlots = slots };
+        }
+
+        private void ApplyAnimationBankBinding(
+            DecompiledInstruction instruction,
+            int? selfEntityId)
+        {
+            var arguments = instruction.Arguments;
+            if (arguments.Count < 4) return;
+            var operation = arguments[0].IntValue;
+            if (operation is not (4 or 5)) return;
+            var entityId = ResolveEntityId(arguments[1].IntValue, selfEntityId);
+            if (!entities.TryGetValue(entityId, out var entity) || !entity.IsExecutable) return;
+            var bank = ReadArgumentString(arguments[2]);
+            if (string.IsNullOrWhiteSpace(bank)) return;
+            var banks = entity.AnimationBanks?.ToList() ?? new List<string>();
+            if (operation == 4)
+            {
+                if (!banks.Contains(bank, StringComparer.OrdinalIgnoreCase))
+                    banks.Add(bank);
+            }
+            else
+            {
+                banks.RemoveAll(value => value.Equals(bank, StringComparison.OrdinalIgnoreCase));
+            }
+            entities[entityId] = entity with { AnimationBanks = banks };
+        }
+
+        private static Dictionary<int, ScriptEntityAnimation> CopyAnimationSlots(
+            ScriptEntityState entity)
+            => entity.AnimationSlots is null
+                ? new Dictionary<int, ScriptEntityAnimation>()
+                : new Dictionary<int, ScriptEntityAnimation>(entity.AnimationSlots);
+
+        private static int ResolveEntityId(int entityId, int? selfEntityId)
+        {
+            // Dynamic IDs such as -2 (Self) stay explicit until an executing-entity
+            // binding is known. This preserves their script state without inventing
+            // a concrete spawned actor.
+            return entityId == -2 && selfEntityId is { } self ? self : entityId;
+        }
+
+        private static ScriptCameraState ResolveCameraEntityReferences(
+            ScriptCameraState state,
+            int? selfEntityId)
+            => state with
+            {
+                AlignEntityId = ResolveOptionalEntityId(state.AlignEntityId, selfEntityId),
+                TargetEntityId = ResolveOptionalEntityId(state.TargetEntityId, selfEntityId),
+                SecondaryTargetEntityId = ResolveOptionalEntityId(
+                    state.SecondaryTargetEntityId, selfEntityId),
+            };
+
+        private static int? ResolveOptionalEntityId(int? entityId, int? selfEntityId)
+            => entityId is { } value ? ResolveEntityId(value, selfEntityId) : null;
+
+        private void ApplySetPosition(
+            DecompiledInstruction instruction,
+            int? selfEntityId)
+        {
+            var arguments = instruction.Arguments;
+            if (arguments.Count < 5
+                || arguments.Skip(1).Take(4).Any(value => value.Type != "f32"))
+            {
+                return;
+            }
+
+            var entityId = ResolveEntityId(arguments[0].IntValue, selfEntityId);
+            if (!entities.TryGetValue(entityId, out var entity) || !entity.IsExecutable) return;
+            var position = new Vector3(
+                (float)arguments[1].FloatValue,
+                (float)arguments[2].FloatValue,
+                (float)arguments[3].FloatValue);
+            var yawDegrees = (float)arguments[4].FloatValue;
+            if (!IsFinite(position) || !float.IsFinite(yawDegrees)) return;
+
+            entities[entityId] = entity with
+            {
+                Position = position,
+                YawDegrees = yawDegrees,
+                PendingWaypoints = Array.Empty<Vector3>(),
+                Motion = null,
+                HasPosition = true,
+            };
+        }
+
+        private void ApplyModeMovement(
+            DecompiledInstruction instruction,
+            int? selfEntityId)
+        {
+            var arguments = instruction.Arguments;
+            var isJump = instruction.Name is "Entity_JumpAbsolute" or "Entity_JumpRelative";
+            if (arguments.Count < 8
+                || arguments.Skip(isJump ? 1 : 2).Take(isJump ? 5 : 4)
+                    .Any(value => value.Type != "f32"))
+            {
+                return;
+            }
+
+            var entityId = ResolveEntityId(arguments[0].IntValue, selfEntityId);
+            if (!entities.TryGetValue(entityId, out var entity) || !entity.IsExecutable)
+                return;
+            var mode = isJump
+                ? (short)(instruction.Name == "Entity_JumpAbsolute" ? -510 : -509)
+                : unchecked((short)arguments[1].IntValue);
+            var positionIndex = isJump ? 1 : 2;
+            var authored = new Vector3(
+                (float)arguments[positionIndex].FloatValue,
+                (float)arguments[positionIndex + 1].FloatValue,
+                (float)arguments[positionIndex + 2].FloatValue);
+            if (!IsFinite(authored)) return;
+
+            var jumpHeight = isJump ? (float)arguments[4].FloatValue : 0f;
+            var speedIndex = isJump ? 5 : 5;
+            var speed = (float)arguments[speedIndex].FloatValue;
+            var animationState = arguments[speedIndex + 1].IntValue;
+            var flags = arguments[speedIndex + 2].IntValue & ushort.MaxValue;
+            if (!float.IsFinite(speed) || !float.IsFinite(jumpHeight)) return;
+            if (!ScriptEntityMoveModeResolver.TryResolveTarget(
+                    mode, entity, authored, out var target))
+            {
+                return;
+            }
+
+            var path = entity.HasPosition
+                ? new[] { entity.Position, target }
+                : new[] { target };
+            var distance = CalculatePathLength(path);
+            var durationFrames = speed > 0f
+                ? Math.Max(0, (int)MathF.Ceiling(
+                    distance / (speed * ScriptWaitDuration.SecondsPerPreviewFrame)))
+                : 0;
+            entities[entityId] = entity with
+            {
+                Position = target,
+                PendingWaypoints = Array.Empty<Vector3>(),
+                Motion = new ScriptEntityMotion(
+                    mode,
+                    speed,
+                    animationState,
+                    isJump ? flags | 0x20 : flags,
+                    path,
+                    elapsedFrames,
+                    durationFrames,
+                    jumpHeight),
+                HasPosition = true,
+            };
+        }
+
+        private void ApplyMovement(
+            DecompiledInstruction instruction,
+            int? selfEntityId)
+        {
+            var arguments = instruction.Arguments;
+            if (arguments.Count < 1) return;
+            var entityId = ResolveEntityId(arguments[0].IntValue, selfEntityId);
+            if (!entities.TryGetValue(entityId, out var entity) || !entity.IsExecutable) return;
+            switch (instruction.Name)
+            {
+                case "Entity_InitPath":
+                    entities[entityId] = entity with
+                    {
+                        PendingWaypoints = new[] { entity.Position },
+                        Motion = null,
+                    };
+                    break;
+                case "Entity_AddWayPoint" when arguments.Count >= 4
+                    && arguments.Skip(1).Take(3).All(value => value.Type == "f32"):
+                {
+                    var waypoint = new Vector3(
+                        (float)arguments[1].FloatValue,
+                        (float)arguments[2].FloatValue,
+                        (float)arguments[3].FloatValue);
+                    if (!IsFinite(waypoint)) return;
+                    // The engine stores at most nine points. OP95_2 appends a path point;
+                    // it does not itself commit the actor position.
+                    var waypoints = entity.PendingWaypoints.Take(8).Append(waypoint).ToArray();
+                    entities[entityId] = entity with { PendingWaypoints = waypoints };
+                    break;
+                }
+                case "Entity_Move" or "Entity_Move2" when arguments.Count >= 4:
+                {
+                    var subtype = instruction.Name == "Entity_Move" ? 0 : 3;
+                    var speed = (float)arguments[1].FloatValue;
+                    var animationState = arguments[2].IntValue;
+                    var authoredFlags = arguments[3].IntValue & ushort.MaxValue;
+                    var effectiveFlags = authoredFlags | (subtype == 0 ? 0x08 : 0x18);
+                    var path = entity.PendingWaypoints.Count >= 2
+                        ? entity.PendingWaypoints.Take(9).ToArray()
+                        : new[] { entity.Position };
+                    var distance = CalculatePathLength(path);
+                    var durationFrames = speed > 0f && float.IsFinite(speed)
+                        ? Math.Max(0, (int)MathF.Ceiling(
+                            distance / (speed * ScriptWaitDuration.SecondsPerPreviewFrame)))
+                        : 0;
+                    var finalPosition = path[^1];
+                    entities[entityId] = entity with
+                    {
+                        Motion = new ScriptEntityMotion(
+                            subtype,
+                            speed,
+                            animationState,
+                            effectiveFlags,
+                            path,
+                            elapsedFrames,
+                            durationFrames),
+                        Position = finalPosition,
+                        HasPosition = true,
+                    };
+                    break;
+                }
+            }
+        }
+
+        private void ApplyMovementControl(
+            DecompiledInstruction instruction,
+            int? selfEntityId)
+        {
+            var arguments = instruction.Arguments;
+            if (arguments.Count < 1
+                || !instruction.Name.Equals(
+                    "Entity_StopMovement", StringComparison.Ordinal))
+            {
+                return;
+            }
+            var entityId = ResolveEntityId(arguments[0].IntValue, selfEntityId);
+            if (!entities.TryGetValue(entityId, out var entity)
+                || !entity.IsExecutable
+                || entity.Motion is not { } motion)
+            {
+                return;
+            }
+
+            entities[entityId] = entity with
+            {
+                Position = motion.PositionAt(elapsedFrames),
+                PendingWaypoints = Array.Empty<Vector3>(),
+                Motion = null,
+                HasPosition = true,
+            };
+        }
+
+        private void ApplyWander(
+            DecompiledInstruction instruction,
+            int? selfEntityId)
+        {
+            var arguments = instruction.Arguments;
+            if (arguments.Count < 6
+                || arguments.Skip(1).Any(value => value.Type != "f32"))
+            {
+                return;
+            }
+            var entityId = ResolveEntityId(arguments[0].IntValue, selfEntityId);
+            if (!entities.TryGetValue(entityId, out var entity) || !entity.IsExecutable) return;
+            var center = new Vector3(
+                (float)arguments[1].FloatValue,
+                (float)arguments[2].FloatValue,
+                (float)arguments[3].FloatValue);
+            var radius = (float)arguments[4].FloatValue;
+            var speed = (float)arguments[5].FloatValue;
+            if (!IsFinite(center)
+                || !float.IsFinite(radius)
+                || !float.IsFinite(speed)
+                || radius < 0f)
+            {
+                return;
+            }
+
+            var start = entity.HasPosition ? entity.Position : center;
+            var random = new ScriptPreviewRandom(
+                rootScript.SceneName, instruction.Offset, instruction.Index, entityId);
+            var destination = center;
+            for (var attempt = 0; attempt < 9; attempt++)
+            {
+                var sampledRadius = random.Next(radius);
+                var angle = random.Next(360f) * MathF.PI / 180f;
+                destination = center + new Vector3(
+                    MathF.Cos(angle) * sampledRadius,
+                    0f,
+                    MathF.Sin(angle) * sampledRadius);
+                if (Vector3.Distance(start, destination) >= 1f) break;
+            }
+
+            var path = new[] { start, destination };
+            var distance = Vector3.Distance(start, destination);
+            var durationFrames = speed > 0f
+                ? Math.Max(0, (int)MathF.Ceiling(
+                    distance / (speed * ScriptWaitDuration.SecondsPerPreviewFrame)))
+                : 0;
+            entities[entityId] = entity with
+            {
+                Position = destination,
+                PendingWaypoints = Array.Empty<Vector3>(),
+                Motion = new ScriptEntityMotion(
+                    56,
+                    speed,
+                    AnimationState: 1,
+                    Flags: 4,
+                    path,
+                    elapsedFrames,
+                    durationFrames),
+                HasPosition = true,
+            };
+        }
+
+        private static float CalculatePathLength(IReadOnlyList<Vector3> path)
+        {
+            var length = 0f;
+            for (var index = 1; index < path.Count; index++)
+                length += Vector3.Distance(path[index - 1], path[index]);
+            return length;
+        }
+
+        private static bool HasSpawnLayout(IReadOnlyList<InstructionArgument> arguments)
+            => arguments.Count >= 20
+               && arguments[0].Type == "s16"
+               && arguments[1].Kind == "string"
+               && arguments[2].Kind == "string"
+               && arguments[3].Kind == "string"
+               && arguments.Skip(6).Take(7).All(value => value.Type == "f32");
+
+        private static IReadOnlyDictionary<int, ScriptEntityState> BuildSpawnCatalog(
+            DecompiledScript script)
+        {
+            var catalog = new Dictionary<int, ScriptEntityState>();
+            foreach (var instruction in script.Functions
+                         .Where(value => value.IsCode)
+                         .SelectMany(value => value.Instructions)
+                         .Where(value => value.Opcode == 19))
+            {
+                if (TryCreateSpawnState(instruction, 0, out var entity))
+                    catalog.TryAdd(entity.EntityId, entity);
+            }
+            return catalog;
+        }
+
+        private sealed record SpawnCatalog(
+            IReadOnlyDictionary<int, ScriptEntityState> Entities);
+
+        private static bool RequiresNonExecutableEntity(
+            DecompiledInstruction instruction,
+            int? selfEntityId)
+            => instruction.Arguments.Any(argument =>
+                argument.Kind == "scalar"
+                && string.Equals(argument.Sem, "entity", StringComparison.OrdinalIgnoreCase)
+                && ScriptEntityReferences.Resolve(
+                    argument.IntValue, selfEntityId).Resolution
+                    == ScriptEntityResolution.NonExecutable);
+
+        internal static string ReadCallFunctionName(DecompiledInstruction instruction)
+            => instruction.Arguments.FirstOrDefault(argument => argument.Kind == "string") is { } value
+                ? ReadArgumentString(value)
+                : string.Empty;
+
+        internal static string ReadArgumentString(InstructionArgument argument)
+            => ScriptEncoding.GetString(argument.Raw).TrimEnd('\0');
+
+        private static int? ResolveInstructionEntityId(
+            DecompiledInstruction instruction,
+            int? selfEntityId)
+        {
+            var argument = instruction.Arguments.FirstOrDefault(value =>
+                string.Equals(value.Sem, "entity", StringComparison.OrdinalIgnoreCase));
+            return argument is null
+                ? null
+                : ResolveEntityId(argument.IntValue, selfEntityId);
+        }
+
+        private static bool IsTimelineInstruction(DecompiledInstruction instruction)
+            => instruction.Opcode is 2 or 16 or 19 or 34 or 35 or 36 or 45 or 46
+                or 47 or 54 or 55 or 56 or 69 or 95;
+
+        private static bool IsFinite(Vector3 value)
+            => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);
+    }
+
+    private static Encoding CreateScriptEncoding()
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        return Encoding.GetEncoding(932);
+    }
+
+    private struct ScriptPreviewRandom
+    {
+        private uint state;
+
+        public ScriptPreviewRandom(
+            string sceneName,
+            int instructionOffset,
+            int instructionIndex,
+            int entityId)
+        {
+            state = 2166136261;
+            foreach (var value in sceneName)
+                Mix(ref state, value);
+            Mix(ref state, instructionOffset);
+            Mix(ref state, instructionIndex);
+            Mix(ref state, entityId);
+            if (state == 0) state = 0x6D2B79F5;
+        }
+
+        public float Next(float maximum)
+        {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            return maximum * ((state >> 8) / 16777216f);
+        }
+
+        private static void Mix(ref uint hash, int value)
+        {
+            hash ^= unchecked((uint)value);
+            hash *= 16777619;
+        }
+    }
+}
