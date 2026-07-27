@@ -55,6 +55,39 @@ if (args.Length is 2 or 3 && args[0] == "--script-summary")
     return 0;
 }
 
+if (args is ["--object-animation-info", var objectGameDataPath, var objectAssetId])
+{
+    var actions = new EditorProjectLoader(new OpsReader())
+        .LoadObjectAnimationInfo(objectAssetId, objectGameDataPath);
+    foreach (var action in actions.Values)
+    {
+        Console.WriteLine(
+            $"{action.Name}: {action.StartFrame}..{action.EndFrame},"
+            + $" loop={action.Loop}, reverse={action.Reverse}");
+    }
+    return actions.Count > 0 ? 0 : 1;
+}
+
+if (args is ["--facial-textures", var facialGameDataPath, var facialAssetId])
+{
+    var textures = new EditorProjectLoader(
+        new OpsReader(),
+        new GameAssetResolverFactory(),
+        new PkgArchiveReader(),
+        new AssetManifestReader(),
+        new PhyreD3D11ModelReader(),
+        new PhyreD3D11TextureReader())
+        .LoadFacialTextures(facialAssetId, facialGameDataPath);
+    foreach (var pair in textures.Textures.OrderBy(value => value.Key.Channel)
+                 .ThenBy(value => value.Key.Frame))
+    {
+        Console.WriteLine(
+            $"{pair.Key.NormalizedChannel}{pair.Key.Frame:00}: "
+            + $"{pair.Value.Width}x{pair.Value.Height} {pair.Value.Format}");
+    }
+    return textures.Textures.Count > 0 ? 0 : 1;
+}
+
 if (args is ["--tbl-roundtrip", var tblDirectory])
 {
     var tblFailures = 0;
@@ -108,6 +141,29 @@ if (args is ["--tbl-schema-roundtrip", var schemaTblDirectory])
     }
     Console.WriteLine($"Typed entries validated: {decodedEntries}");
     return schemaFailures == 0 ? 0 : 1;
+}
+
+if (args is ["--tbl-entry", var tablePath, var tableCategory, var tableKey])
+{
+    Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+    var locale = Path.GetFileName(Path.GetDirectoryName(tablePath)) ?? string.Empty;
+    var textEncoding = locale.Equals("dat", StringComparison.OrdinalIgnoreCase)
+        ? Encoding.GetEncoding(932)
+        : new UTF8Encoding(false, true);
+    var codec = new Cs1TableRecordCodec(textEncoding: textEncoding);
+    var table = Cs1TableDocument.Read(tablePath);
+    var matches = 0;
+    foreach (var entry in table.Entries.Where(value =>
+                 value.Category.Equals(tableCategory, StringComparison.Ordinal)))
+    {
+        var values = codec.Decode(entry);
+        if (values is null || !values.Any(value =>
+                value.Value.Equals(tableKey, StringComparison.OrdinalIgnoreCase))) continue;
+        Console.WriteLine($"MATCH {++matches}: {entry.Category}");
+        foreach (var value in values)
+            Console.WriteLine($"  {value.Field.Name} ({value.Field.Type}) = {value.Value}");
+    }
+    return matches > 0 ? 0 : 1;
 }
 
 if (args is ["--shader-api"])
@@ -218,6 +274,64 @@ if (args is ["--pkg-entry", var entryPackagePath, var entryName])
     var archive = new PkgArchiveReader().Read(entryPackagePath);
     Console.Write(Encoding.UTF8.GetString(archive.ReadEntry(entryName)));
     return 0;
+}
+
+if (args is ["--pkg-text-context", var textPackagePath, var textEntryName, var textNeedle])
+{
+    var archive = new PkgArchiveReader().Read(textPackagePath);
+    var text = Encoding.UTF8.GetString(archive.ReadEntry(textEntryName));
+    var matchCount = 0;
+    for (var searchOffset = 0; searchOffset < text.Length;)
+    {
+        var matchOffset = text.IndexOf(textNeedle, searchOffset, StringComparison.Ordinal);
+        if (matchOffset < 0) break;
+        var contextStart = Math.Max(0, matchOffset - 800);
+        var contextEnd = Math.Min(text.Length, matchOffset + textNeedle.Length + 1200);
+        Console.WriteLine($"MATCH {++matchCount} at 0x{matchOffset:X}");
+        Console.WriteLine(text[contextStart..contextEnd]);
+        searchOffset = matchOffset + Math.Max(1, textNeedle.Length);
+    }
+    return matchCount > 0 ? 0 : 1;
+}
+
+if (args is ["--script-find-operand", var operandScriptPath, var operandText])
+{
+    var decompiled = ScriptDecompiler.Decompile(operandScriptPath);
+    var matches = 0;
+    foreach (var function in decompiled.Functions.Where(value => value.IsCode))
+    {
+        for (var index = 0; index < function.Instructions.Count; index++)
+        {
+            var instruction = function.Instructions[index];
+            var values = instruction.Arguments.Select(argument => argument.Kind switch
+            {
+                "string" => Encoding.UTF8.GetString(argument.Raw).TrimEnd('\0'),
+                "scalar" when argument.Type == "f32" => argument.FloatValue.ToString(
+                    "R", System.Globalization.CultureInfo.InvariantCulture),
+                "scalar" => argument.IntValue.ToString(
+                    System.Globalization.CultureInfo.InvariantCulture),
+                "expr" => string.Join(" ", argument.Expression?.Select(value => value.Label)
+                    ?? Array.Empty<string>()),
+                _ => Convert.ToHexString(argument.Raw),
+            }).ToArray();
+            if (!values.Any(value => value.Contains(
+                    operandText, StringComparison.OrdinalIgnoreCase))) continue;
+            Console.WriteLine($"MATCH {++matches}: {function.Name} #{instruction.Index}");
+            foreach (var nearby in function.Instructions.Skip(Math.Max(0, index - 5)).Take(11))
+            {
+                var arguments = string.Join(", ", nearby.Arguments.Select(argument =>
+                    argument.Kind == "string"
+                        ? $"\"{Encoding.UTF8.GetString(argument.Raw).TrimEnd('\0')}\""
+                        : argument.Type == "f32"
+                            ? argument.FloatValue.ToString(
+                                "R", System.Globalization.CultureInfo.InvariantCulture)
+                            : argument.IntValue.ToString(
+                                System.Globalization.CultureInfo.InvariantCulture)));
+                Console.WriteLine($"  #{nearby.Index,-4} {nearby.Name,-28} {arguments}");
+            }
+        }
+    }
+    return matches > 0 ? 0 : 1;
 }
 
 if (args is ["--pkg-find-string", var searchPackagePath, var searchText])
@@ -629,6 +743,15 @@ if (args is ["--load-animation", var loadAnimationGameData, var loadAnimationAss
         new AssetManifestReader(), new PhyreD3D11ModelReader(), new PhyreD3D11TextureReader());
     var result = loader.LoadAnimationAsset(loadAnimationAsset, loadAnimationClip, loadAnimationGameData);
     Console.WriteLine($"{result.Status}: {result.Clip?.Name ?? result.Error}");
+    if (result.Clip is { } loadedClip)
+    {
+        Console.WriteLine(
+            $"Time {loadedClip.StartTime:R}..{loadedClip.EndTime:R}; "
+            + $"channels {loadedClip.Channels.Count}");
+        foreach (var group in loadedClip.Channels.GroupBy(value => value.TargetName))
+            Console.WriteLine(
+                $"  {group.Key}: {string.Join(", ", group.Select(value => value.Path))}");
+    }
     return result.Status == AssetAnimationLoadStatus.Loaded ? 0 : 1;
 }
 
@@ -778,6 +901,8 @@ var tests = new (string Name, Action Run)[]
     ("edits typed TBL fields without changing adjacent values", EditsTypedTblFields),
     ("evaluates hierarchical Phyre skeleton animation", EvaluatesSkeletonAnimation),
     ("evaluates embedded scene-node animation", EvaluatesSceneNodeAnimation),
+    ("reads exact animation actions from object INF metadata", ReadsObjectAnimationInfo),
+    ("segments embedded animations by authored INF frames", SegmentsEmbeddedAnimation),
 };
 
 var failures = 0;
@@ -1586,6 +1711,42 @@ static void EvaluatesSceneNodeAnimation()
         });
     var pose = new CpuSceneAnimationEvaluator().Evaluate(nodes, clip, 1f);
     Near(7f, pose.WorldTransforms[1].M41);
+}
+
+static void ReadsObjectAnimationInfo()
+{
+    const string source = """
+        <dae_inf>
+          <anim_infomation>
+            <Animation animName="wait" start="0" end="0" />
+            <Animation animName="open1" start="0" end="10" soundid="13020" />
+            <Animation animName="close1" start="10" end="20" loop="1" reverse="1" />
+          </anim_infomation>
+        </dae_inf>
+        """;
+    var actions = new GameObjectAnimationInfoReader().Read(new StringReader(source));
+    Equal(3, actions.Count);
+    Equal(0, actions["open1"].StartFrame);
+    Equal(10, actions["open1"].EndFrame);
+    Equal("13020", actions["open1"].Attributes["soundId"]);
+    Equal(true, actions["close1"].Loop);
+    Equal(true, actions["close1"].Reverse);
+}
+
+static void SegmentsEmbeddedAnimation()
+{
+    var source = new CpuAnimationClip(
+        "O_DOOR", "embedded", 0f, 40f / 30f,
+        Array.Empty<CpuAnimationChannel>());
+    var open = CpuAnimationClipSegment.FromFrames(source, "open1", 0, 10);
+    var close = CpuAnimationClipSegment.FromFrames(source, "close2", 30, 40);
+    Equal("open1", open.Name);
+    Near(0f, open.StartTime);
+    Near(10f / 30f, open.EndTime);
+    Near(1f, close.StartTime);
+    Near(40f / 30f, close.EndTime);
+    Throws<InvalidDataException>(() =>
+        CpuAnimationClipSegment.FromFrames(source, "invalid", 40, 41));
 }
 
 static void CreatesCenterViewportRay()

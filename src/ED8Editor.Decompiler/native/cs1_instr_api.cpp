@@ -331,9 +331,20 @@ static long decodeExpr(const uint8_t*b,long p,long e,std::vector<ExprElem>&out){
   }
   return -1;
 }
-static bool decodeFunc(const uint8_t*b,long len,bool ui,long absBase,std::vector<Instr>&out){
-  long p=0;
-  while(p<len){ Instr chosen; long L=0;
+// Vrai si tout de p a len n'est que des 0x00 (padding d'alignement de fin de fonction).
+static bool isTrailingPad(const uint8_t*b,long p,long len){
+  if(p>=len) return false;
+  for(long q=p;q<len;q++) if(b[q]!=0) return false;
+  return true;
+}
+// Decode une fonction. Les 0x00 qui suivent le RET final sont du PADDING d'alignement,
+// pas des OP0 : on s'arrete avant, et on renvoie leur nombre via padOut pour pouvoir
+// les reinjecter tels quels a l'encodage (roundtrip octet-parfait preserve).
+static bool decodeFunc(const uint8_t*b,long len,bool ui,long absBase,std::vector<Instr>&out,long*padOut=nullptr){
+  long p=0; if(padOut)*padOut=0;
+  while(p<len){
+    if(b[p]==0 && isTrailingPad(b,p,len)){ if(padOut)*padOut=len-p; return true; }
+    Instr chosen; long L=0;
     if(!decodeOne(b,p,len,ui,chosen,L)) return false;
     chosen.origOff=absBase+p; out.push_back(std::move(chosen)); p+=L;
   }
@@ -550,6 +561,7 @@ struct IDoc{ cs1ed::Doc* base=nullptr; std::string scene; bool ui=false;
              std::vector<char> isTable; std::vector<cs1tbl::Table> tables;
              long nextId=0; std::vector<long> funcEndId;
              std::vector<long> origStart, origEnd;
+             std::vector<long> padLen;   // octets de padding (0x00) en fin de chaque fonction code
              std::vector<uint8_t> origHeader; long paOff=0; // header original (byte-perfect) + offset de la table de ptr
              int origNb=0; long origFnpos=0, origPa=0; }; // pour reconstruire fidelement si nb change (add/remove)
 // resout recursivement les ptr32 -> targetId via off2id ; sinon laisse brut (isRef=false)
@@ -586,7 +598,7 @@ CS1_API IDoc* cs1i_open(const uint8_t* data,int32_t len,const char* filename){
   d->scene=baseName(filename); d->ui=G.isUiFile(d->scene);
   int nf=cs1_doc_func_count(d->base); d->dec.resize(nf); d->isCode.resize(nf,0);
   d->isTable.resize(nf,0); d->tables.resize(nf);
-  d->funcEndId.resize(nf,-1); d->origStart.resize(nf,0); d->origEnd.resize(nf,0);
+  d->funcEndId.resize(nf,-1); d->origStart.resize(nf,0); d->origEnd.resize(nf,0); d->padLen.resize(nf,0);
   for(int i=0;i<nf;i++){ long ost=d->base->funcs[i].ostart; d->origStart[i]=ost; d->origEnd[i]=ost+(long)d->base->funcs[i].bytes.size();
     const char* nm=cs1_doc_func_name(d->base,i); std::string tk; int tid;
     // Routage PAR NOM (comme guess_type_by_name / le modele Python) : une fonction
@@ -600,7 +612,8 @@ CS1_API IDoc* cs1i_open(const uint8_t* data,int32_t len,const char* filename){
       const uint8_t* fb=cs1_doc_func_bytes(d->base,i); int fl=cs1_doc_func_size(d->base,i);
       cs1tbl::decodeAs(tk,tid,fb,fl,d->tables[i]); d->isTable[i]=1; continue; }
     if(ty==0){ const uint8_t* fb=cs1_doc_func_bytes(d->base,i); int fl=cs1_doc_func_size(d->base,i);
-      std::vector<Instr> v; if(decodeFunc(fb,fl,d->ui,ost,v)){ d->dec[i]=std::move(v); d->isCode[i]=1; } } }
+      std::vector<Instr> v; long pad=0;
+      if(decodeFunc(fb,fl,d->ui,ost,v,&pad)){ d->dec[i]=std::move(v); d->isCode[i]=1; d->padLen[i]=pad; } } }
   // header original conserve verbatim (byte-perfect) : tout ce qui precede la 1re fonction.
   // paOff = ptr_area (table des offsets de fonctions @0x08), repatchee a la serialisation.
   d->origNb=nf;
@@ -762,6 +775,7 @@ CS1_API int32_t cs1i_instr_remove(IDoc* d,int32_t f,int32_t k){ if(!d||f<0||f>=(
 // ---- Re-encode une fonction (octets) ----
 CS1_API int32_t cs1i_func_encode(IDoc* d,int32_t f,uint8_t* out,int32_t cap){ if(!d||f<0||f>=(int)d->dec.size())return -1;
   std::vector<uint8_t> buf; for(auto&in:d->dec[f]){ if(!encodeInstr(in,d->ui,buf))return -1; }
+  if(f<(int)d->padLen.size()) buf.insert(buf.end(),(size_t)d->padLen[f],0); // padding d'alignement conserve
   int n=(int)buf.size(); if(out&&cap>=n)memcpy(out,buf.data(),n); return n; }
 CS1_API const uint8_t* cs1i_func_orig_bytes(IDoc* d,int32_t f){ return d?cs1_doc_func_bytes(d->base,f):nullptr; }
 CS1_API int32_t cs1i_func_orig_size(IDoc* d,int32_t f){ return d?cs1_doc_func_size(d->base,f):-1; }
@@ -922,7 +936,9 @@ CS1_API const uint8_t* cs1i_serialize(IDoc* d,int32_t* outlen){
   std::vector<std::vector<uint8_t>> fb(nf); std::vector<std::vector<long>> ioff(nf);
   // pass1 : encode + offsets internes
   for(int f=0;f<nf;f++){
-    if(d->isCode[f]){ std::vector<uint8_t> buf; for(auto&in:d->dec[f]){ ioff[f].push_back((long)buf.size()); if(!encodeInstr(in,d->ui,buf)){ if(outlen)*outlen=0; return nullptr; } } fb[f]=std::move(buf); }
+    if(d->isCode[f]){ std::vector<uint8_t> buf; for(auto&in:d->dec[f]){ ioff[f].push_back((long)buf.size()); if(!encodeInstr(in,d->ui,buf)){ if(outlen)*outlen=0; return nullptr; } }
+      if(f<(int)d->padLen.size()) buf.insert(buf.end(),(size_t)d->padLen[f],0); // padding d'alignement
+      fb[f]=std::move(buf); }
     else if(f<(int)d->isTable.size() && d->isTable[f]){ // table : champs (edites) + queue d'origine (terminateur op1 + padding)
       std::vector<uint8_t> buf; for(auto&fld:d->tables[f].fields) buf.insert(buf.end(),fld.raw.begin(),fld.raw.end());
       long de=d->tables[f].dataEnd; if(de>=0 && de<=(long)F[f].bytes.size()) buf.insert(buf.end(),F[f].bytes.begin()+de,F[f].bytes.end());
@@ -960,7 +976,9 @@ CS1_API const uint8_t* cs1i_serialize(IDoc* d,int32_t* outlen){
   // pass2 : relocation de TOUS les ptr + re-encode fonctions code
   for(int f=0;f<nf;f++){ if(d->isCode[f]){
       for(auto&in:d->dec[f]) fixRefs(in.args,id2new,d,addrs);
-      std::vector<uint8_t> buf; for(auto&in:d->dec[f]) encodeInstr(in,d->ui,buf); fb[f]=std::move(buf);
+      std::vector<uint8_t> buf; for(auto&in:d->dec[f]) encodeInstr(in,d->ui,buf);
+      if(f<(int)d->padLen.size()) buf.insert(buf.end(),(size_t)d->padLen[f],0); // padding d'alignement
+      fb[f]=std::move(buf);
     } else if(d->origStart[f]>=0){ // fonctions non decodees d'origine : relocation uniforme pour type 0/-1
       long delta=(long)addrs[f]-d->origStart[f];
       if(delta!=0 && (F[f].type==0||F[f].type==-1)) cs1_reloc_jumps(fb[f],delta,d->origStart[f],d->origStart[f]+(long)fb[f].size());

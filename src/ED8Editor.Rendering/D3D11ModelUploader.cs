@@ -76,7 +76,7 @@ public sealed class D3D11ModelUploader : IModelGpuUploader<D3D11ModelResources>
         }
     }
 
-    private unsafe D3D11TextureResources UploadTexture(CpuTexture source)
+    public unsafe D3D11TextureResources UploadTexture(CpuTexture source)
     {
         var format = MapFormat(source.Format);
         var description = new Texture2DDescription

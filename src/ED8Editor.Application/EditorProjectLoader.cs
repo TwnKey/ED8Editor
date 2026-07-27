@@ -17,6 +17,8 @@ public sealed class EditorProjectLoader
     private readonly IPhyreTextureReader? textureReader;
     private readonly ConcurrentDictionary<string, Lazy<AssetManifestSymbolIndex>>
         manifestSymbolIndices = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, Lazy<IReadOnlyDictionary<string, GameObjectAnimationAction>>>
+        objectAnimationInfos = new(StringComparer.OrdinalIgnoreCase);
 
     public EditorProjectLoader(
         IMapSceneReader mapSceneReader,
@@ -124,6 +126,77 @@ public sealed class EditorProjectLoader
         }
         return new AssetAnimationLoad(assetId, clipName, AssetAnimationLoadStatus.Missing, null,
             $"No game manifest declares animation asset '{symbol}'.");
+    }
+
+    public CpuFacialTextureSet LoadFacialTextures(
+        string facialAssetId,
+        string gameDataPath,
+        AssetVariantPreference preference = AssetVariantPreference.English)
+    {
+        if (string.IsNullOrWhiteSpace(facialAssetId))
+            throw new ArgumentException("Facial asset ID is required.", nameof(facialAssetId));
+        if (assetResolverFactory is null || packageArchiveReader is null || textureReader is null)
+            throw new InvalidOperationException("The project loader has no facial-texture loading pipeline.");
+        var resolution = assetResolverFactory.Create(gameDataPath).Resolve(facialAssetId, preference);
+        if (resolution.SelectedPackage is null)
+            throw new FileNotFoundException($"No package was resolved for facial asset '{facialAssetId}'.");
+        var archive = packageArchiveReader.Read(resolution.SelectedPackage.Path);
+        var textures = new Dictionary<FacialTextureKey, CpuTexture>();
+        foreach (var entry in archive.Entries)
+        {
+            if (!TryParseFacialTextureName(entry.Name, out var key)) continue;
+            textures[key] = textureReader.Read(
+                Path.GetFileNameWithoutExtension(entry.Name),
+                archive.ReadEntry(entry));
+        }
+        if (textures.Count == 0)
+            throw new InvalidDataException(
+                $"Facial asset '{facialAssetId}' contains no facial texture resources.");
+        return new CpuFacialTextureSet(facialAssetId, textures);
+    }
+
+    private static bool TryParseFacialTextureName(
+        string entryName,
+        out FacialTextureKey key)
+    {
+        key = default;
+        const string suffix = ".dds.phyre";
+        if (!entryName.StartsWith("fc_", StringComparison.OrdinalIgnoreCase)
+            || !entryName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+        var stem = entryName[..^suffix.Length];
+        if (stem.Length < 3
+            || !int.TryParse(
+                stem.AsSpan(stem.Length - 2),
+                System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var frame))
+        {
+            return false;
+        }
+        var channel = char.ToLowerInvariant(stem[^3]);
+        if (channel is not ('e' or 'm' or 'c' or 'f' or 'h')) return false;
+        key = new FacialTextureKey(channel, frame);
+        return true;
+    }
+
+    public IReadOnlyDictionary<string, GameObjectAnimationAction> LoadObjectAnimationInfo(
+        string assetId,
+        string gameDataPath)
+    {
+        var path = new GameObjectAnimationInfoResolver().Resolve(gameDataPath, assetId);
+        if (path is null)
+        {
+            return new Dictionary<string, GameObjectAnimationAction>(
+                StringComparer.OrdinalIgnoreCase);
+        }
+        return objectAnimationInfos.GetOrAdd(
+            Path.GetFullPath(path),
+            value => new Lazy<IReadOnlyDictionary<string, GameObjectAnimationAction>>(
+                () => new GameObjectAnimationInfoReader().Read(value),
+                LazyThreadSafetyMode.ExecutionAndPublication)).Value;
     }
 
     public Task<IReadOnlyDictionary<string, CpuModel>> LoadEffectMetadataAsync(

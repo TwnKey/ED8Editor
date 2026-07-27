@@ -37,11 +37,15 @@ public sealed class ViewerForm : Form
     private readonly Dictionary<string, CpuModel> loadedModelsByAsset = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Dictionary<string, CpuAnimationClip>> loadedCharacterAnimations =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, D3D11FacialTextureResources> loadedFacialTextures =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> unavailableFacialTextures =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> unavailableCharacterAnimations =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly CpuSkeletonPoseEvaluator poseEvaluator = new();
     private readonly CpuSceneAnimationEvaluator sceneAnimationEvaluator = new();
-    private readonly Dictionary<string, CpuAnimationClip> loadedPropAnimations =
+    private readonly Dictionary<string, LoadedPropAnimation> loadedPropAnimations =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> unavailablePropAnimations =
         new(StringComparer.OrdinalIgnoreCase);
@@ -360,10 +364,16 @@ public sealed class ViewerForm : Form
         cameraPitch.TextChanged += onCameraEdit;
         rightPanelTabs.Selected += (_, eventArgs) =>
         {
+            ApplyScriptModeLayout(eventArgs.TabPage == scriptsTab);
             if (eventArgs.TabPage == scriptsTab) OpenScriptEditor();
             else if (eventArgs.TabPage == tblTab) OpenTblEditor();
         };
         viewportHost.Resize += (_, _) => ResizeViewport();
+        Resize += (_, _) =>
+        {
+            if (scriptModeLayoutActive)
+                assetPanel.Width = Math.Max(assetPanel.MinimumSize.Width, ClientSize.Width / 2);
+        };
         SetGizmoMode(GizmoMode.Translate);
         assetSearch.TextChanged += (_, _) => FilterAssetCatalog();
         showIndicatorsCheckBox.CheckedChanged += (_, _) =>
@@ -678,6 +688,7 @@ public sealed class ViewerForm : Form
             effectMetadataCancellation.Cancel();
             effectMetadataCancellation.Dispose();
             foreach (var model in uploadedModels) model.Dispose();
+            foreach (var facialTextures in loadedFacialTextures.Values) facialTextures.Dispose();
             graphics?.Dispose();
             viewportHost.Capture = false;
             ReleaseLookCursor();
@@ -779,18 +790,32 @@ public sealed class ViewerForm : Form
         instances = instances.Select(instance =>
         {
             if (!loadedModelsByAsset.TryGetValue(instance.Model.AssetId, out var model)) return instance;
-            var animatedInstance = instance;
+            // Animation fields are derived from the current script state every
+            // frame. Do not retain a pose from the previously selected block
+            // while a different clip is loading or no longer active.
+            var animatedInstance = instance with
+            {
+                SceneNodeTransforms = null,
+                SkinMatrices = null,
+                TexturesByGameMaterialId = null,
+            };
             if (TryGetActivePropAnimation(
-                    instance.SceneInstanceId, model.AssetId, out var propAnimation, out var propClip)
+                    instance.SceneInstanceId, model.AssetId, out var propAnimation, out var loadedPropAnimation)
                 && model.SceneNodes is { Count: > 0 } nodes)
             {
-                var propTime = propAnimation.HoldFinalFrame
-                    ? propClip.EndTime
-                    : Math.Min(
-                        propClip.EndTime,
-                        propClip.StartTime
-                            + Math.Max(0f, scriptTimelineFrame - propAnimation.StartFrame)
-                                / ScriptWaitDuration.PreviewFramesPerSecond);
+                var propClip = loadedPropAnimation.Clip;
+                var propAnimationElapsed = scriptTimeline is null
+                    ? elapsed
+                    : Math.Max(0f, scriptTimelineFrame - propAnimation.StartFrame)
+                        / ScriptWaitDuration.PreviewFramesPerSecond;
+                var progress = loadedPropAnimation.Loop && propClip.Duration > 0f
+                    ? propAnimationElapsed % propClip.Duration
+                    : propAnimation.HoldFinalFrame
+                        ? propClip.Duration
+                        : Math.Min(propClip.Duration, propAnimationElapsed);
+                var propTime = loadedPropAnimation.Reverse
+                    ? propClip.EndTime - progress
+                    : propClip.StartTime + progress;
                 var propPose = sceneAnimationEvaluator.Evaluate(nodes, propClip, propTime);
                 animatedInstance = animatedInstance with
                 {
@@ -807,6 +832,7 @@ public sealed class ViewerForm : Form
                 Transform = Matrix4x4.CreateScale(character.Scale)
                     * Matrix4x4.CreateRotationY(character.YawDegrees * MathF.PI / 180f)
                     * Matrix4x4.CreateTranslation(position),
+                TexturesByGameMaterialId = CreateFacialTextureOverrides(character),
             };
             if (model.Skeleton is null
                 || !TryGetBaseAnimation(character, out var activeAnimation)
@@ -847,10 +873,10 @@ public sealed class ViewerForm : Form
         int sceneInstanceId,
         string assetId,
         out ScriptPropAnimation animation,
-        out CpuAnimationClip clip)
+        out LoadedPropAnimation loadedAnimation)
     {
         animation = null!;
-        clip = null!;
+        loadedAnimation = null!;
         var prop = sceneInstances.FirstOrDefault(value => value.Id == sceneInstanceId);
         if (prop is null
             || !activeScriptPropAnimations.TryGetValue(
@@ -860,7 +886,7 @@ public sealed class ViewerForm : Form
         }
         animation = resolvedAnimation;
         return loadedPropAnimations.TryGetValue(
-            PropAnimationKey(assetId, animation.AnimationName), out clip!);
+            PropAnimationKey(assetId, animation.AnimationName), out loadedAnimation!);
     }
 
     private static Vector3 EvaluateEntityMotionPosition(
@@ -1110,6 +1136,31 @@ public sealed class ViewerForm : Form
         || key == Keys.Space
         || key == (keyboardLayout == EditorKeyboardLayout.Azerty ? Keys.Z : Keys.W)
         || key == (keyboardLayout == EditorKeyboardLayout.Azerty ? Keys.Q : Keys.A);
+
+    private int assetPanelWidthBeforeScriptMode;
+    private bool scriptModeLayoutActive;
+
+    /// <summary>
+    /// In script mode the left panel (entity list) is hidden and the editor takes the
+    /// right half of the window, leaving the left half to the viewport.
+    /// </summary>
+    private void ApplyScriptModeLayout(bool scriptMode)
+    {
+        if (scriptMode == scriptModeLayoutActive) return;
+        scriptModeLayoutActive = scriptMode;
+        if (scriptMode)
+        {
+            assetPanelWidthBeforeScriptMode = assetPanel.Width;
+            scenePanel.Visible = false;
+            assetPanel.Width = Math.Max(assetPanel.MinimumSize.Width, ClientSize.Width / 2);
+        }
+        else
+        {
+            scenePanel.Visible = true;
+            if (assetPanelWidthBeforeScriptMode > 0) assetPanel.Width = assetPanelWidthBeforeScriptMode;
+        }
+        ResizeViewport();
+    }
 
     private void OpenScriptEditor()
     {
@@ -1402,6 +1453,15 @@ public sealed class ViewerForm : Form
                 session.Script.GameDataPath);
         }
 
+        foreach (var facialAssetId in entities.Values
+                     .Select(value => value.FacialAssetId)
+                     .Where(value => !string.IsNullOrWhiteSpace(value))
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (generation != scriptEntityRefreshGeneration || IsDisposed) return;
+            await EnsureFacialTexturesAsync(facialAssetId, session.Script.GameDataPath);
+        }
+
         if (generation != scriptEntityRefreshGeneration || IsDisposed) return;
         scriptMonsterInstances = entities.Values
             .Where(value => value.HasPosition
@@ -1555,6 +1615,67 @@ public sealed class ViewerForm : Form
         return false;
     }
 
+    private async Task EnsureFacialTexturesAsync(
+        string facialAssetId,
+        string gameDataPath)
+    {
+        if (graphics is null
+            || loadedFacialTextures.ContainsKey(facialAssetId)
+            || unavailableFacialTextures.Contains(facialAssetId))
+        {
+            return;
+        }
+        try
+        {
+            var source = await Task.Run(() =>
+                projectLoader.LoadFacialTextures(facialAssetId, gameDataPath));
+            if (IsDisposed || graphics is null) return;
+            loadedFacialTextures.Add(
+                facialAssetId,
+                new D3D11FacialTextureResources(
+                    source, new D3D11ModelUploader(graphics.Device)));
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException or ArgumentException or InvalidOperationException)
+        {
+            unavailableFacialTextures.Add(facialAssetId);
+            Debug.WriteLine(
+                $"Could not load facial textures '{facialAssetId}': {exception}");
+        }
+    }
+
+    private IReadOnlyDictionary<int, D3D11MaterialTextureOverride>?
+        CreateFacialTextureOverrides(ScriptEntityState entity)
+    {
+        if (string.IsNullOrWhiteSpace(entity.FacialAssetId)
+            || !loadedFacialTextures.TryGetValue(
+                entity.FacialAssetId, out var textures))
+        {
+            return null;
+        }
+        var pose = (entity.FacialExpression ?? ScriptFacialExpression.Neutral).Evaluate();
+        var baseFace = textures.Find('h', 0);
+        var baseFeature = textures.Find('f', 0);
+        var overrides = new Dictionary<int, D3D11MaterialTextureOverride>();
+        Add(11, baseFace, textures.Find('e', pose.PrimaryEyes));
+        Add(12, baseFace, textures.Find('e', pose.SecondaryEyes));
+        Add(13, baseFace, textures.Find('m', pose.Mouth));
+        Add(14, baseFace, textures.Find('c', pose.Complexion));
+        Add(15, baseFeature, null);
+        Add(16, baseFace, null);
+        return overrides.Count == 0 ? null : overrides;
+
+        void Add(
+            int materialId,
+            Vortice.Direct3D11.ID3D11ShaderResourceView? diffuse,
+            Vortice.Direct3D11.ID3D11ShaderResourceView? diffuse2)
+        {
+            if (diffuse is not null || diffuse2 is not null)
+                overrides.Add(
+                    materialId, new D3D11MaterialTextureOverride(diffuse, diffuse2));
+        }
+    }
+
     private async Task EnsureCharacterAnimationAsync(
         string modelAssetId,
         string animationName,
@@ -1649,7 +1770,35 @@ public sealed class ViewerForm : Form
                     assetId, animation.AnimationName, gameDataPath));
             if (load.Status == AssetAnimationLoadStatus.Loaded && load.Clip is not null)
             {
-                loadedPropAnimations.Add(key, load.Clip);
+                loadedPropAnimations.Add(
+                    key,
+                    new LoadedPropAnimation(load.Clip, Loop: false, Reverse: false));
+            }
+            else if (loadedModelsByAsset.TryGetValue(assetId, out var model)
+                && model.EmbeddedAnimation is { } embeddedClip)
+            {
+                var actions = await Task.Run(
+                    () => projectLoader.LoadObjectAnimationInfo(assetId, gameDataPath));
+                if (actions.TryGetValue(animation.AnimationName, out var action))
+                {
+                    loadedPropAnimations.Add(
+                        key,
+                        new LoadedPropAnimation(
+                            CpuAnimationClipSegment.FromFrames(
+                                embeddedClip,
+                                action.Name,
+                                action.StartFrame,
+                                action.EndFrame),
+                            action.Loop,
+                            action.Reverse));
+                }
+                else
+                {
+                    unavailablePropAnimations.Add(key);
+                    Debug.WriteLine(
+                        $"Object animation action '{animation.AnimationName}' is not declared"
+                        + $" in the .inf metadata for '{assetId}'.");
+                }
             }
             else
             {
@@ -2004,6 +2153,13 @@ public sealed class ViewerForm : Form
                 return sceneInstances.Any(instance =>
                     instance.Name.Equals(propName, StringComparison.Ordinal));
             })
+            .OrderByDescending(value =>
+                ScriptSceneStateResolver.ReadInstructionString(
+                    value.Instruction.Arguments[0]).Equals(
+                        "door07", StringComparison.Ordinal)
+                && ScriptSceneStateResolver.ReadInstructionString(
+                    value.Instruction.Arguments[1]).Equals(
+                        "open1", StringComparison.Ordinal))
             .ToArray();
         foreach (var call in calls)
         {
@@ -2017,12 +2173,13 @@ public sealed class ViewerForm : Form
                 new ScriptPropAnimation(propName, animationName, 0, false),
                 session.Script.GameDataPath);
             if (!loadedPropAnimations.TryGetValue(
-                    PropAnimationKey(prop.AssetId, animationName), out var clip)
+                    PropAnimationKey(prop.AssetId, animationName), out var loadedAnimation)
                 || !loadedModelsByAsset.TryGetValue(prop.AssetId, out var model)
                 || model.SceneNodes is not { Count: > 0 } nodes)
             {
                 continue;
             }
+            var clip = loadedAnimation.Clip;
             var start = sceneAnimationEvaluator.Evaluate(nodes, clip, clip.StartTime);
             var middle = sceneAnimationEvaluator.Evaluate(
                 nodes, clip, (clip.StartTime + clip.EndTime) * 0.5f);
@@ -2032,6 +2189,29 @@ public sealed class ViewerForm : Form
                 .Any(static changed => changed))
             {
                 continue;
+            }
+            var affectedMeshes = model.Meshes.Where(mesh =>
+                    mesh.Purpose == CpuMeshPurpose.Render
+                    && (uint)mesh.SceneNodeIndex < middle.WorldTransforms.Count
+                    && !MatrixNearlyEqual(
+                        start.WorldTransforms[mesh.SceneNodeIndex],
+                        middle.WorldTransforms[mesh.SceneNodeIndex]))
+                .ToArray();
+            if (affectedMeshes.Length == 0)
+            {
+                var changedNodes = nodes.Select((node, index) => (node, index))
+                    .Where(value => !MatrixNearlyEqual(
+                        start.WorldTransforms[value.index],
+                        middle.WorldTransforms[value.index]))
+                    .Select(value => $"{value.index}:{value.node.Name}")
+                    .ToArray();
+                var meshBindings = model.Meshes
+                    .Select(mesh => $"{mesh.Name}->{mesh.SceneNodeIndex}")
+                    .ToArray();
+                throw new InvalidOperationException(
+                    $"OP69 '{propName}:{animationName}' changes scene nodes but no rendered mesh."
+                    + $"{Environment.NewLine}Changed nodes: {string.Join(", ", changedNodes)}"
+                    + $"{Environment.NewLine}Mesh bindings: {string.Join(", ", meshBindings)}");
             }
 
             StopScriptTimeline();
@@ -2048,6 +2228,9 @@ public sealed class ViewerForm : Form
             if (scriptTimeline is null)
                 throw new InvalidOperationException(
                     $"Selecting OP69 for '{propName}:{animationName}' did not start playback.");
+            if (scriptTimeline.LoopPlayback)
+                throw new InvalidOperationException(
+                    $"OP69 '{propName}:{animationName}' incorrectly started as a looping timeline.");
             scriptTimelineFrame = clip.Duration
                 * ScriptWaitDuration.PreviewFramesPerSecond * 0.5f;
             scriptTimelinePointIndex = 0;
@@ -2059,6 +2242,29 @@ public sealed class ViewerForm : Form
             if (rendered?.SceneNodeTransforms is not { Count: > 0 })
                 throw new InvalidOperationException(
                     $"OP69 '{propName}:{animationName}' did not reach the rendered prop.");
+            if (viewport is null)
+                throw new InvalidOperationException("Prop animation smoke has no D3D11 viewport.");
+            var propBounds = new SceneBoundsCalculator().Calculate(new[] { prop });
+            cameraNavigation.Focus(
+                propBounds.HasGeometry ? propBounds.Center : prop.Transform.Translation,
+                Math.Max(propBounds.Radius * 2.5f, 1f));
+            var animatedInstances = instances;
+            viewport.Render(animatedInstances, CreateCamera(), verticalSync: false);
+            var animatedPixels = viewport.CaptureBackBufferBgra();
+            var startInstances = animatedInstances.Select(value =>
+                value.SceneInstanceId == prop.Id
+                    ? value with { SceneNodeTransforms = start.WorldTransforms }
+                    : value).ToArray();
+            viewport.Render(startInstances, CreateCamera(), verticalSync: false);
+            var startPixels = viewport.CaptureBackBufferBgra();
+            instances = animatedInstances;
+            if (!animatedPixels.Zip(startPixels, static (animated, initial) =>
+                    animated != initial).Any(static changed => changed))
+            {
+                throw new InvalidOperationException(
+                    $"OP69 '{propName}:{animationName}' changes CPU scene nodes but"
+                    + " produces the same D3D11 frame.");
+            }
             StopScriptTimeline();
             var following = call.Function.Instructions.FirstOrDefault(value =>
                 value.Index > call.Instruction.Index);
@@ -2259,12 +2465,19 @@ public sealed class ViewerForm : Form
         var duration = GetScriptTimelineDurationFrames(scriptTimeline);
         if (scriptTimelineFrame >= duration)
         {
-            scriptTimelineFrame %= duration;
-            scriptTimelinePointIndex = 0;
-            isCameraAnimating = false;
-            ApplyTimelineSceneState(
-                scriptTimeline.InitialState,
-                applyCamera: ShouldApplyScriptCamera);
+            if (scriptTimeline.LoopPlayback)
+            {
+                scriptTimelineFrame %= duration;
+                scriptTimelinePointIndex = 0;
+                isCameraAnimating = false;
+                ApplyTimelineSceneState(
+                    scriptTimeline.InitialState,
+                    applyCamera: ShouldApplyScriptCamera);
+            }
+            else
+            {
+                scriptTimelineFrame = duration;
+            }
         }
         ApplyTimelinePointsAtCurrentFrame();
     }
@@ -2339,10 +2552,11 @@ public sealed class ViewerForm : Form
                          value.Name.Equals(animation.PropName, StringComparison.Ordinal)))
             {
                 if (!loadedPropAnimations.TryGetValue(
-                        PropAnimationKey(prop.AssetId, animation.AnimationName), out var clip))
+                        PropAnimationKey(prop.AssetId, animation.AnimationName), out var loadedAnimation))
                 {
                     continue;
                 }
+                var clip = loadedAnimation.Clip;
                 duration = Math.Max(
                     duration,
                     animation.StartFrame
@@ -3418,5 +3632,10 @@ public sealed class ViewerForm : Form
         IReadOnlyDictionary<string, string> Inputs,
         Vector3? Position,
         Vector3 SurfaceNormal);
+
+    private sealed record LoadedPropAnimation(
+        CpuAnimationClip Clip,
+        bool Loop,
+        bool Reverse);
 
 }

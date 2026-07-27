@@ -53,6 +53,25 @@ public sealed class ScriptEditorForm : Form
         Font = new Font("Segoe UI", 10f, FontStyle.Bold),
         Padding = new Padding(8, 0, 0, 0),
     };
+    /// <summary>
+    /// Conditions met along the active path: each line shows the condition read by the
+    /// function and the branch taken. Double-click flips to the other branch (the path
+    /// and the dimming are recomputed downstream).
+    /// </summary>
+    private readonly ListBox flagContextList = new()
+    {
+        Dock = DockStyle.Fill,
+        IntegralHeight = false,
+        BackColor = Color.FromArgb(38, 38, 42),
+        ForeColor = Color.Gainsboro,
+        Font = new Font("Consolas", 8.5f),
+    };
+    private readonly GroupBox flagContextGroup = new()
+    {
+        Dock = DockStyle.Bottom,
+        Height = 104,
+        Text = "Active path conditions (double-click = other branch)",
+    };
     private readonly ToolStrip editorTools = new() { GripStyle = ToolStripGripStyle.Hidden };
     private readonly ToolStripComboBox instructionTypes = new()
     {
@@ -298,8 +317,10 @@ public sealed class ScriptEditorForm : Form
         leftSplit.Panel2.Controls.Add(lowerNavigator);
         navigationSplit.Panel1.Controls.Add(leftSplit);
 
+        flagContextGroup.Controls.Add(flagContextList);
         var rightPanel = new Panel { Dock = DockStyle.Fill };
         rightPanel.Controls.Add(blocks);
+        rightPanel.Controls.Add(flagContextGroup);
         rightPanel.Controls.Add(navigatorButton);
         rightPanel.Controls.Add(rightHeader);
         navigationSplit.Panel2.Controls.Add(rightPanel);
@@ -324,6 +345,11 @@ public sealed class ScriptEditorForm : Form
                     lowerNavigator.Panel1MinSize, lowerNavigator.Height / 2);
             }
             catch (InvalidOperationException) { }
+        };
+        blocks.ActivePathChanged += RefreshFlagContext;
+        flagContextList.DoubleClick += (_, _) =>
+        {
+            if (flagContextList.SelectedItem is FlagContextEntry entry) blocks.ToggleBranch(entry.ForkInstruction);
         };
         scenesList.SelectedIndexChanged += (_, _) => ShowSelectedScene();
         tablesTree.AfterSelect += (_, eventArgs) =>
@@ -577,13 +603,44 @@ public sealed class ScriptEditorForm : Form
         rightHeader.Text = $"Scene: {function.Name} — {function.Instructions.Count} instructions";
         foreach (var instruction in function.Instructions)
         {
+            // OP5 = branch point (pivot node drawn by the canvas).
+            // OP3 = unconditional jump: the arrow stands for it, so no block.
             if (instruction.Opcode == 5) continue;
+            if (instruction.Opcode == 3 && instruction.Jumps.Any(value =>
+                value.TargetFunctionIndex == function.Index && value.TargetInstructionIndex >= 0)) continue;
             var block = BuildCompactInstructionBlock(function, instruction);
             blockByIndex[instruction.Index] = block;
             blocks.Controls.Add(block);
         }
         blocks.SetGraph(blockByIndex, function);
         blocks.ResumeLayout();
+    }
+
+    /// <summary>One condition of the active path and the branch taken.</summary>
+    private sealed record FlagContextEntry(int ForkInstruction, bool TakenTrue, string Condition)
+    {
+        public override string ToString() =>
+            $"#{ForkInstruction,-4} {(TakenTrue ? "TRUE " : "FALSE")} {Condition}";
+    }
+
+    private void RefreshFlagContext(IReadOnlyList<ScriptFlowPanel.BranchDecision> decisions)
+    {
+        flagContextList.BeginUpdate();
+        flagContextList.Items.Clear();
+        foreach (var decision in decisions)
+        {
+            // the label already reads "TRUE · <condition>": keep only the condition
+            var condition = decision.Label;
+            var separator = condition.IndexOf('·');
+            if (separator >= 0) condition = condition[(separator + 1)..].Trim();
+            flagContextList.Items.Add(new FlagContextEntry(
+                decision.ForkInstruction, decision.TakenTrue,
+                condition.Length == 0 ? "condition" : condition));
+        }
+        flagContextList.EndUpdate();
+        flagContextGroup.Text = decisions.Count == 0
+            ? "Active path conditions — none (linear flow)"
+            : $"Active path conditions — {decisions.Count} (double-click = other branch)";
     }
 
     private void FindNextBlock()

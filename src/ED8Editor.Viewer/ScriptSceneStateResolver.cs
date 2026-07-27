@@ -32,7 +32,9 @@ internal sealed record ScriptEntityState(
     string ReferenceSymbol = "",
     bool IsPlaceholder = false,
     bool IsExecutable = true,
-    IReadOnlyList<string>? AnimationBanks = null);
+    IReadOnlyList<string>? AnimationBanks = null,
+    string FacialAssetId = "",
+    ScriptFacialExpression? FacialExpression = null);
 
 internal sealed record ScriptEntityMotion(
     int Subtype,
@@ -124,7 +126,8 @@ internal sealed record ScriptSceneTimeline(
     string FunctionName,
     ScriptSceneState InitialState,
     IReadOnlyList<ScriptSceneTimelinePoint> Points,
-    int DurationFrames);
+    int DurationFrames,
+    bool LoopPlayback = true);
 
 /// <summary>
 /// Replays the deterministic first control-flow path used by the editor. Local calls
@@ -271,7 +274,13 @@ internal static class ScriptSceneStateResolver
             script, caller, instruction, CreateCallStack(caller));
         return execution.CreateTimeline(
             Execution.ReadArgumentString(instruction.Arguments[1]),
-            initialState);
+            initialState) with
+        {
+            // A prop animation command is a one-shot state transition. Once the
+            // clip ends, the engine keeps the resulting node transforms until a
+            // later prop-animation command replaces them.
+            LoopPlayback = false,
+        };
     }
 
     public static ScriptSceneTimeline? BuildMovementTimeline(
@@ -502,11 +511,22 @@ internal static class ScriptSceneStateResolver
         modeExecution.ExecuteFunction(
             modeScript, modeFunction, CreateCallStack(modeFunction));
         var moved = modeExecution.Snapshot().Entities[entityId];
+        var movementPoint = modeExecution.CreateTimeline(
+                modeFunction.Name, modeExecution.Snapshot())
+            .Points.Single(value => value.Instruction.Opcode == 54);
         if (Vector3.Distance(moved.Position, new Vector3(11f, 2f, 3f)) > 0.0001f
-            || moved.Motion is not { AnimationState: 2, Speed: 1.5f })
+            || moved.Motion is not { AnimationState: 2, Speed: 1.5f }
+            || moved.AnimationSlots is null
+            || !moved.AnimationSlots.TryGetValue(0, out var locomotion)
+            || !locomotion.Name.Equals("RUN", StringComparison.Ordinal)
+            || !movementPoint.After.Entities.TryGetValue(entityId, out var timelineEntity)
+            || timelineEntity.AnimationSlots is null
+            || !timelineEntity.AnimationSlots.TryGetValue(0, out var timelineLocomotion)
+            || !timelineLocomotion.Name.Equals("RUN", StringComparison.Ordinal))
         {
             throw new InvalidOperationException(
-                "OP54 relative movement did not preserve its target, speed, and Run state.");
+                "OP54 relative movement did not preserve its target, speed, and"
+                + " ordinary RUN locomotion clip.");
         }
     }
 
@@ -683,7 +703,17 @@ internal static class ScriptSceneStateResolver
             var before = timelinePoints is null ? null : Snapshot();
             EnsureReferencedEntities(instruction, selfEntityId);
             ApplyEntityInstruction(instruction, selfEntityId);
+            ApplyFacialExpression(instruction, selfEntityId);
             ApplyPropAnimation(instruction);
+            if (instruction.Opcode is 54 or 56 or 95
+                && ResolveInstructionEntityId(instruction, selfEntityId) is { } animatedEntityId
+                && entities.TryGetValue(animatedEntityId, out var animatedEntity)
+                && animatedEntity.Motion is { } entityMotion
+                && ScriptLocomotionAnimationCatalog.TryResolveBaseClip(
+                    entityMotion.AnimationState, out var movementClip))
+            {
+                ApplyLocomotionAnimation(animatedEntityId, movementClip);
+            }
             if (!RequiresNonExecutableEntity(instruction, selfEntityId))
             {
                 camera = ResolveCameraEntityReferences(
@@ -701,23 +731,6 @@ internal static class ScriptSceneStateResolver
                     Snapshot(),
                     ResolveInstructionEntityId(instruction, selfEntityId),
                     !ReferenceEquals(ownerScript, rootScript)));
-            }
-            if (instruction.Opcode is 54 or 56 or 95
-                && ResolveInstructionEntityId(instruction, selfEntityId) is { } animatedEntityId
-                && entities.TryGetValue(animatedEntityId, out var animatedEntity)
-                && animatedEntity.Motion is { } entityMotion
-                && TryGetMovementAnimationFunction(
-                    entityMotion.AnimationState, out var movementAnimationFunction))
-            {
-                var movementStartFrame = elapsedFrames;
-                ExecuteNamedAnimationFunction(
-                    animatedEntityId,
-                    movementAnimationFunction,
-                    callStack,
-                    holdFinalFrame: false);
-                // Movement animation selection configures the actor's locomotion
-                // channel; waits inside the ANI helper do not delay the scenario VM.
-                elapsedFrames = movementStartFrame;
             }
             if (instruction.Opcode == 16)
                 elapsedFrames = checked(elapsedFrames + ScriptWaitDuration.DecodePreviewFrames(
@@ -868,18 +881,28 @@ internal static class ScriptSceneStateResolver
             }
         }
 
-        private static bool TryGetMovementAnimationFunction(
-            int animationState,
-            out string functionName)
+        private void ApplyLocomotionAnimation(int entityId, string clipName)
         {
-            functionName = animationState switch
+            if (!entities.TryGetValue(entityId, out var entity)
+                || !entity.IsExecutable)
             {
-                1 => "AniWalk",
-                2 => "AniRun",
-                3 => "AniDash",
-                _ => string.Empty,
-            };
-            return functionName.Length != 0;
+                return;
+            }
+            var slots = CopyAnimationSlots(entity);
+            slots[0] = new ScriptEntityAnimation(
+                0,
+                clipName,
+                Loop: true,
+                Flag2: 0,
+                Flag3: 0,
+                Flag4: 0,
+                Flag5: 0,
+                BlendTime: 0.2f,
+                TimeParameter1: -1f,
+                TimeParameter2: -1f,
+                TimeParameter3: -1f,
+                StartFrame: elapsedFrames);
+            entities[entityId] = entity with { AnimationSlots = slots };
         }
 
         private void ApplyEntityInstruction(
@@ -974,6 +997,8 @@ internal static class ScriptSceneStateResolver
                     HasSpawnDefinition = false,
                     HasPosition = false,
                     ReferenceSymbol = reference.Symbol,
+                    FacialAssetId = animationLibrary?.ResolveFacialAsset(
+                        entityId, spawned.AssetId) ?? spawned.FacialAssetId,
                 };
             }
             if (reference.Resolution == ScriptEntityResolution.Concrete
@@ -1005,7 +1030,8 @@ internal static class ScriptSceneStateResolver
                     Array.Empty<Vector3>(),
                     HasSpawnDefinition: false,
                     HasPosition: false,
-                    ReferenceSymbol: reference.Symbol);
+                    ReferenceSymbol: reference.Symbol,
+                    FacialAssetId: character.FacialAssetId);
             }
             var placeholder = reference.Resolution is ScriptEntityResolution.Placeholder
                 or ScriptEntityResolution.Contextual
@@ -1051,6 +1077,8 @@ internal static class ScriptSceneStateResolver
                 {
                     DisplayName = animationLibrary.ResolveDisplayName(
                         entity.AssetId, entity.DisplayName),
+                    FacialAssetId = animationLibrary.ResolveFacialAsset(
+                        entity.EntityId, entity.AssetId),
                 };
             }
             var entityId = entity.EntityId;
@@ -1111,6 +1139,69 @@ internal static class ScriptSceneStateResolver
                     0f, -1f, -1f, -1f,
                     startFrame),
             };
+        }
+
+        private void ApplyFacialExpression(
+            DecompiledInstruction instruction,
+            int? selfEntityId)
+        {
+            if (instruction.Opcode != 50) return;
+            var entityArgumentIndex = instruction.Name.Equals(
+                "OP50_other", StringComparison.Ordinal) ? 1 : 0;
+            if (instruction.Arguments.Count <= entityArgumentIndex) return;
+            var entityId = ResolveEntityId(
+                instruction.Arguments[entityArgumentIndex].IntValue, selfEntityId);
+            if (!entities.TryGetValue(entityId, out var entity)) return;
+            var current = entity.FacialExpression ?? ScriptFacialExpression.Neutral;
+            ScriptFacialExpression updated;
+            if (instruction.Name.Equals("OP50_2", StringComparison.Ordinal)
+                && instruction.Arguments.Count >= 5)
+            {
+                updated = new ScriptFacialExpression(
+                    Frame(instruction.Arguments[1].IntValue),
+                    Frame(instruction.Arguments[2].IntValue),
+                    Frame(instruction.Arguments[3].IntValue),
+                    Frame(instruction.Arguments[4].IntValue),
+                    elapsedFrames);
+            }
+            else if (instruction.Name.Equals("OP50_3", StringComparison.Ordinal)
+                     && instruction.Arguments.Count >= 5)
+            {
+                updated = new ScriptFacialExpression(
+                    Expand(ReadArgumentString(instruction.Arguments[1])),
+                    Expand(ReadArgumentString(instruction.Arguments[2])),
+                    Expand(ReadArgumentString(instruction.Arguments[3])),
+                    Expand(ReadArgumentString(instruction.Arguments[4])),
+                    elapsedFrames);
+            }
+            else if (instruction.Name.Equals("OP50_4", StringComparison.Ordinal)
+                     && instruction.Arguments.Count >= 2)
+            {
+                updated = ScriptFacialCommandParser.ApplyComposite(
+                    current,
+                    ReadArgumentString(instruction.Arguments[1]),
+                    Expand,
+                    elapsedFrames);
+            }
+            else if (instruction.Name.Equals("OP50_other", StringComparison.Ordinal)
+                     && instruction.Arguments[0].IntValue is 10 or 11)
+            {
+                updated = ScriptFacialExpression.Neutral with { StartFrame = elapsedFrames };
+            }
+            else
+            {
+                return;
+            }
+            entities[entityId] = entity with { FacialExpression = updated };
+
+            string Expand(string value)
+                => animationLibrary?.ExpandFacialPattern(value) ?? value;
+            static string Frame(int value)
+                => value is >= 0 and <= 9
+                    ? ((char)('0' + value)).ToString()
+                    : value is >= 10 and <= 19
+                        ? ((char)('A' + value - 10)).ToString()
+                        : "0";
         }
 
         private void ApplyAnimation(

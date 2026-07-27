@@ -592,7 +592,8 @@ public sealed class D3D11Viewport : IDisposable
                         instance.Model, primitive, world, matrix,
                         instance.IsSelected, instance.IsPreview,
                         instance.MaterialDiffuse, instance.MaterialEmission,
-                        instance.SkinMatrices);
+                        instance.SkinMatrices,
+                        instance.TexturesByGameMaterialId);
                 }
             }
         }
@@ -763,7 +764,8 @@ public sealed class D3D11Viewport : IDisposable
         bool preview,
         Vector4 materialDiffuse,
         Vector3 materialEmission,
-        IReadOnlyList<Matrix4x4>? skinMatrices)
+        IReadOnlyList<Matrix4x4>? skinMatrices,
+        IReadOnlyDictionary<int, D3D11MaterialTextureOverride>? texturesByGameMaterialId)
     {
         var positionBuffer = FindBuffer(primitive, VertexSemantic.Position);
         if (positionBuffer is null || !TryMapTopology(primitive.Topology, out var topology)) return;
@@ -788,16 +790,26 @@ public sealed class D3D11Viewport : IDisposable
         var material = primitive.MaterialIndex >= 0 && primitive.MaterialIndex < model.Materials.Count
             ? model.Materials[primitive.MaterialIndex]
             : null;
+        D3D11MaterialTextureOverride? textureOverride = null;
+        if (material is not null
+            && TryReadGameMaterialId(material.Source, out var gameMaterialId))
+        {
+            texturesByGameMaterialId?.TryGetValue(gameMaterialId, out textureOverride);
+        }
+        textureView = textureOverride?.DiffuseTexture ?? textureView;
         var materialSettings = ViewportMaterialSettings.FromMaterial(material?.Source);
         var multiUvTextureView = material is not null
             && material.TextureBindings.TryGetValue("DiffuseMap2Sampler", out var boundMultiUvTexture)
                 ? boundMultiUvTexture
                 : null;
+        multiUvTextureView = textureOverride?.DiffuseTexture2 ?? multiUvTextureView;
         var multiUvBuffer = FindBuffer(primitive, VertexSemantic.TextureCoordinate, 1);
         var multiUvAttribute = multiUvBuffer?.Attributes.First(value =>
             value.Semantic == VertexSemantic.TextureCoordinate && value.SemanticIndex == 1);
         var multiUvFormat = Format.Unknown;
-        var hasMultiUv = materialSettings.MultiUvBlendMode != ViewportMultiUvBlendMode.Disabled
+        var facialMultiUvOverride = textureOverride?.DiffuseTexture2 is not null;
+        var hasMultiUv = (materialSettings.MultiUvBlendMode != ViewportMultiUvBlendMode.Disabled
+                || facialMultiUvOverride)
             && multiUvTextureView is not null
             && multiUvBuffer is not null
             && multiUvAttribute is not null
@@ -827,7 +839,7 @@ public sealed class D3D11Viewport : IDisposable
         }
         UpdateConstants(
             worldViewProjection, normalMatrix, material, hasNormal, selected, preview,
-            materialDiffuse, materialEmission);
+            materialDiffuse, materialEmission, facialMultiUvOverride);
 
         var context = graphics.Context;
         context.OMSetBlendState(
@@ -966,6 +978,21 @@ public sealed class D3D11Viewport : IDisposable
         context.DrawIndexed(primitive.IndexCount, 0, 0);
     }
 
+    private static bool TryReadGameMaterialId(CpuMaterial material, out int id)
+    {
+        id = 0;
+        if (!material.SourceParameters.TryGetValue("GameMaterialID", out var values)
+            || values.Length == 0
+            || !float.IsFinite(values[0]))
+        {
+            return false;
+        }
+        var rounded = MathF.Round(values[0]);
+        if (MathF.Abs(values[0] - rounded) > 0.001f) return false;
+        id = checked((int)rounded);
+        return true;
+    }
+
     private static void AddSkinnedInput(
         string semanticName,
         int semanticIndex,
@@ -1072,7 +1099,8 @@ public sealed class D3D11Viewport : IDisposable
         bool selected,
         bool preview,
         Vector4 materialDiffuse,
-        Vector3 materialEmission)
+        Vector3 materialEmission,
+        bool facialMultiUvOverride)
     {
         var materialSettings = ViewportMaterialSettings.FromMaterial(material?.Source);
         var mapped = graphics.Context.Map(perDrawBuffer, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
@@ -1099,7 +1127,11 @@ public sealed class D3D11Viewport : IDisposable
                 materialSettings.GlareIntensity,
                 material?.Source.RenderPassState?.BlendEnabled == true ? 1f : 0f,
                 materialSettings.AlphaBlendingEnabled ? 1f : 0f),
-            MultiUvSettings = new Vector4((float)materialSettings.MultiUvBlendMode, 0f, 0f, 0f),
+            MultiUvSettings = new Vector4(
+                (float)(facialMultiUvOverride
+                    ? ViewportMultiUvBlendMode.Alpha
+                    : materialSettings.MultiUvBlendMode),
+                0f, 0f, 0f),
             MultiUvColor = materialSettings.MultiUvColor,
             MultiUvTransform = materialSettings.MultiUvTransform,
             ViewportSize = new Vector4(width, height, 1f / width, 1f / height),

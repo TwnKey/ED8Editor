@@ -4857,19 +4857,25 @@
           "role": "selector"
         },
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "primary_eye_frame"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "mouth_frame"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "secondary_eye_frame"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "complexion_frame"
         }
       ],
       "verified": true
@@ -4890,19 +4896,25 @@
           "role": "selector"
         },
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "primary_eye_pattern"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "mouth_pattern"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "secondary_eye_pattern"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "complexion_pattern"
         }
       ],
       "verified": true
@@ -4923,10 +4935,13 @@
           "role": "selector"
         },
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "facial_expression"
         }
       ],
       "verified": true

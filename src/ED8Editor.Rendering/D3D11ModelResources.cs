@@ -34,7 +34,8 @@ public sealed record D3D11SceneInstance(
     Vector4 MaterialDiffuse = default,
     Vector3 MaterialEmission = default,
     IReadOnlyList<Matrix4x4>? SkinMatrices = null,
-    IReadOnlyList<Matrix4x4>? SceneNodeTransforms = null);
+    IReadOnlyList<Matrix4x4>? SceneNodeTransforms = null,
+    IReadOnlyDictionary<int, D3D11MaterialTextureOverride>? TexturesByGameMaterialId = null);
 
 public sealed record D3D11TextureResources(
     CpuTexture Source,

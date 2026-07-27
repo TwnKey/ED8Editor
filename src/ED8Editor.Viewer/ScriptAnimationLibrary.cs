@@ -10,7 +10,8 @@ internal sealed record ScriptCharacterDefinition(
     string DisplayName,
     string ModelAssetId,
     string FieldAnimationAssetId,
-    string AnimationScript);
+    string AnimationScript,
+    string FacialAssetId);
 
 /// <summary>
 /// Resolves an entity's external ANI script from its OP19 Script File or the
@@ -27,6 +28,10 @@ internal sealed class ScriptAnimationLibrary
     private readonly Dictionary<int, string> scriptsByCharacter = new();
     private readonly Dictionary<int, ScriptCharacterDefinition> characters = new();
     private readonly Dictionary<string, string> scriptsByModelAsset =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> facialAssetsByModel =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> facialPatterns =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> ambiguousModelAssets =
         new(StringComparer.OrdinalIgnoreCase);
@@ -54,6 +59,7 @@ internal sealed class ScriptAnimationLibrary
         fallbackAniDirectory = Path.Combine(gameDataPath, "scripts", "ani", fallbackLocale);
         LoadNameTable(gameDataPath, preferredLocale, fallbackLocale);
         LoadLocalizedNames(gameDataPath);
+        LoadFacialPatterns();
     }
 
     public IReadOnlyList<string> GetFunctionNames(ScriptEntityState entity)
@@ -77,6 +83,41 @@ internal sealed class ScriptAnimationLibrary
         int characterId,
         out ScriptCharacterDefinition definition)
         => characters.TryGetValue(characterId, out definition!);
+
+    public string ResolveFacialAsset(int characterId, string? modelAssetId)
+        => characters.TryGetValue(characterId, out var character)
+            && !string.IsNullOrWhiteSpace(character.FacialAssetId)
+                ? character.FacialAssetId
+                : string.IsNullOrWhiteSpace(modelAssetId)
+                    ? string.Empty
+                    : facialAssetsByModel.GetValueOrDefault(modelAssetId) ?? string.Empty;
+
+    public string ExpandFacialPattern(string pattern)
+    {
+        if (string.IsNullOrEmpty(pattern)) return pattern;
+        var result = new StringBuilder(pattern.Length);
+        for (var index = 0; index < pattern.Length;)
+        {
+            if (pattern[index] != '[')
+            {
+                result.Append(pattern[index++]);
+                continue;
+            }
+            var end = pattern.IndexOf(']', index + 1);
+            if (end < 0)
+            {
+                result.Append(pattern.AsSpan(index));
+                break;
+            }
+            var name = pattern[(index + 1)..end];
+            if (facialPatterns.TryGetValue(name, out var expansion))
+                result.Append(expansion);
+            else
+                result.Append(pattern.AsSpan(index, end - index + 1));
+            index = end + 1;
+        }
+        return result.ToString();
+    }
 
     public string ResolveDisplayName(string? modelAssetId, string fallback)
         => string.IsNullOrWhiteSpace(modelAssetId)
@@ -206,13 +247,17 @@ internal sealed class ScriptAnimationLibrary
                 fields.TryGetValue("unknown_string_1", out var modelAsset);
                 fields.TryGetValue("unknown_string_2", out var fieldAnimationAsset);
                 fields.TryGetValue(AnimationScriptField, out var scriptName);
+                fields.TryGetValue("unknown_string_4", out var facialAsset);
                 var definition = new ScriptCharacterDefinition(
                     character,
                     displayName ?? string.Empty,
                     NormalizeNullableName(modelAsset),
                     NormalizeNullableName(fieldAnimationAsset),
-                    NormalizeNullableName(scriptName));
+                    NormalizeNullableName(scriptName),
+                    NormalizeNullableName(facialAsset));
                 characters.TryAdd(character, definition);
+                AddFacialAsset(definition.ModelAssetId, definition.FacialAssetId);
+                AddFacialAsset(definition.FieldAnimationAssetId, definition.FacialAssetId);
                 if (!string.IsNullOrWhiteSpace(definition.AnimationScript))
                 {
                     scriptsByCharacter.TryAdd(character, definition.AnimationScript);
@@ -249,6 +294,46 @@ internal sealed class ScriptAnimationLibrary
         if (existing.Equals(scriptName, StringComparison.OrdinalIgnoreCase)) return;
         scriptsByModelAsset.Remove(modelAssetId);
         ambiguousModelAssets.Add(modelAssetId);
+    }
+
+    private void AddFacialAsset(string modelAssetId, string facialAssetId)
+    {
+        if (string.IsNullOrWhiteSpace(modelAssetId)
+            || string.IsNullOrWhiteSpace(facialAssetId))
+        {
+            return;
+        }
+        facialAssetsByModel.TryAdd(modelAssetId, facialAssetId);
+    }
+
+    private void LoadFacialPatterns()
+    {
+        var path = new[]
+            {
+                Path.Combine(primaryAniDirectory, "face.dat"),
+                Path.Combine(fallbackAniDirectory, "face.dat"),
+            }
+            .FirstOrDefault(File.Exists);
+        if (path is null) return;
+        try
+        {
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+            var encoding = Encoding.GetEncoding(932);
+            var script = ScriptDecompiler.Decompile(path, instructionDefinitionsPath);
+            foreach (var function in script.Functions.Where(value =>
+                         value.Name.StartsWith("FC_", StringComparison.OrdinalIgnoreCase)
+                         && value.RawData is { Length: > 0 }))
+            {
+                var value = encoding.GetString(function.RawData!).TrimEnd('\0');
+                facialPatterns.TryAdd(function.Name[3..], value);
+            }
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException or InvalidOperationException or ArgumentException)
+        {
+            System.Diagnostics.Debug.WriteLine(
+                $"Could not read facial patterns from '{path}': {exception}");
+        }
     }
 
     private void LoadLocalizedNames(string gameDataPath)
