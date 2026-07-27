@@ -74,6 +74,25 @@ public sealed class ScriptEditorDocument : IDisposable
         IsDirty = true;
     }
 
+    /// <summary>
+    /// Appends a new code function holding only its RETURN. A scenario event is
+    /// bound to it by name: an OPS EntryBox (or LookPoint) carrying the same
+    /// name runs it when the player enters, so the name must match exactly.
+    /// </summary>
+    public int AddCodeFunction(string name, int position = -1)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException("A function name is required.", nameof(name));
+        var index = NativeMethods.cs1i_code_func_add(Handle, position, name);
+        if (index < 0)
+            throw new InvalidOperationException($"The native engine could not create function '{name}'.");
+        IsDirty = true;
+        return index;
+    }
+
+    public void RemoveFunction(int function) =>
+        Mutate(NativeMethods.cs1i_func_remove(Handle, function), "delete the function");
+
     public void RemoveInstruction(int function, int instruction) =>
         Mutate(NativeMethods.cs1i_instr_remove(Handle, function, instruction), "delete the instruction");
 

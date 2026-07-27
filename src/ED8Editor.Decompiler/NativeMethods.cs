@@ -252,6 +252,19 @@ internal static class NativeMethods
     [DllImport(Dll, CallingConvention = Cc)]
     public static extern IntPtr cs1i_expr_nested_name(IntPtr doc, int f, int k, int a, int i);
 
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_code_func_add(
+        IntPtr doc, int position, [MarshalAs(UnmanagedType.LPStr)] string name);
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_expr_nested_op(IntPtr doc, int f, int k, int a, int i);
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_expr_nested_argc(IntPtr doc, int f, int k, int a, int i);
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_expr_nested_argi(IntPtr doc, int f, int k, int a, int i, int n);
+
     // ---- registre : introspection (facultatif) ----
     [DllImport(Dll, CallingConvention = Cc)]
     public static extern int cs1i_reg_count();

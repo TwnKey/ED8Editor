@@ -762,6 +762,12 @@ CS1_API long cs1i_expr_value(IDoc*d,int32_t f,int32_t k,int32_t a,int32_t i){ cs
 CS1_API const char* cs1i_expr_elem_label(IDoc*d,int32_t f,int32_t k,int32_t a,int32_t i){ static std::string s; cs1i::Arg*x=exprArg(d,f,k,a); if(!x||i<0||i>=(int)x->expr.size())return nullptr; s=exprElemLabel(x->expr[i]); return s.c_str(); }
 CS1_API int32_t cs1i_expr_nested_reg(IDoc*d,int32_t f,int32_t k,int32_t a,int32_t i){ cs1i::Arg*x=exprArg(d,f,k,a); if(!x||i<0||i>=(int)x->expr.size())return -1; auto&el=x->expr[i]; return (el.subop==0x1c&&el.nested)?el.nested->reg:-1; }
 CS1_API const char* cs1i_expr_nested_name(IDoc*d,int32_t f,int32_t k,int32_t a,int32_t i){ cs1i::Arg*x=exprArg(d,f,k,a); if(!x||i<0||i>=(int)x->expr.size())return nullptr; auto&el=x->expr[i]; if(el.subop!=0x1c||!el.nested||el.nested->reg<0)return nullptr; return G.regs[el.nested->reg].name.c_str(); }
+// Instruction imbriquee (redispatch 0x1c) : opcode brut + operandes scalaires.
+// Necessaire pour evaluer une condition du type "OP42(entite) & masque".
+static cs1i::Instr* exprNested(IDoc*d,int f,int k,int a,int i){ cs1i::Arg*x=exprArg(d,f,k,a); if(!x||i<0||i>=(int)x->expr.size())return nullptr; auto&el=x->expr[i]; return el.subop==0x1c?el.nested.get():nullptr; }
+CS1_API int32_t cs1i_expr_nested_op(IDoc*d,int32_t f,int32_t k,int32_t a,int32_t i){ cs1i::Instr*in=exprNested(d,f,k,a,i); return in?in->op:-1; }
+CS1_API int32_t cs1i_expr_nested_argc(IDoc*d,int32_t f,int32_t k,int32_t a,int32_t i){ cs1i::Instr*in=exprNested(d,f,k,a,i); return in?visibleCount(in->args):-1; }
+CS1_API long cs1i_expr_nested_argi(IDoc*d,int32_t f,int32_t k,int32_t a,int32_t i,int32_t n){ cs1i::Instr*in=exprNested(d,f,k,a,i); if(!in)return 0; int r=visibleToReal(in->args,n); return r<0?0:in->args[r].ival; }
 CS1_API const char* cs1i_expr_text(IDoc*d,int32_t f,int32_t k,int32_t a){ static std::string s; cs1i::Arg*x=exprArg(d,f,k,a); if(!x)return nullptr; s.clear();
   for(size_t i=0;i<x->expr.size();i++){ if(i)s+=" "; auto&el=x->expr[i]; if(el.subop==0x1c&&el.nested&&el.nested->reg>=0){ s+="call "; s+=G.regs[el.nested->reg].name; } else s+=exprElemLabel(el); } return s.c_str(); }
 
@@ -769,7 +775,8 @@ CS1_API const char* cs1i_expr_text(IDoc*d,int32_t f,int32_t k,int32_t a){ static
 CS1_API int32_t cs1i_instr_set_i(IDoc* d,int32_t f,int32_t k,int32_t a,long v){ Instr*in=pick(d,f,k); if(!in)return 0; int r=visibleToReal(in->args,a); if(r<0||in->args[r].kind!=0)return 0; in->args[r].ival=v; return 1; }
 CS1_API int32_t cs1i_instr_set_f(IDoc* d,int32_t f,int32_t k,int32_t a,double v){ Instr*in=pick(d,f,k); if(!in)return 0; int r=visibleToReal(in->args,a); if(r<0||in->args[r].kind!=0)return 0; in->args[r].fval=v; return 1; }
 CS1_API int32_t cs1i_instr_set_s(IDoc* d,int32_t f,int32_t k,int32_t a,const char* s){ Instr*in=pick(d,f,k); if(!in||!s)return 0; int r=visibleToReal(in->args,a); if(r<0||in->args[r].kind!=1)return 0; in->args[r].raw.assign((const uint8_t*)s,(const uint8_t*)s+strlen(s)); return 1; }
-CS1_API int32_t cs1i_instr_set_bytes(IDoc* d,int32_t f,int32_t k,int32_t a,const uint8_t* b,int32_t n){ Instr*in=pick(d,f,k); if(!in||!b||n<0)return 0; int r=visibleToReal(in->args,a); if(r<0||in->args[r].kind!=4)return 0; in->args[r].raw.assign(b,b+n); return 1; }
+// kind 3 = dialogue, kind 4 = octets bruts : les deux sont reserialises verbatim.
+CS1_API int32_t cs1i_instr_set_bytes(IDoc* d,int32_t f,int32_t k,int32_t a,const uint8_t* b,int32_t n){ Instr*in=pick(d,f,k); if(!in||!b||n<0)return 0; int r=visibleToReal(in->args,a); if(r<0||(in->args[r].kind!=4&&in->args[r].kind!=3))return 0; in->args[r].raw.assign(b,b+n); return 1; }
 CS1_API int32_t cs1i_instr_remove(IDoc* d,int32_t f,int32_t k){ if(!d||f<0||f>=(int)d->dec.size())return 0; auto&v=d->dec[f]; if(k<0||k>=(int)v.size())return 0; v.erase(v.begin()+k); return 1; }
 
 // ---- Re-encode une fonction (octets) ----
@@ -844,7 +851,27 @@ CS1_API int32_t cs1i_func_remove(IDoc* d,int32_t f){
   d->isTable.erase(d->isTable.begin()+f); d->tables.erase(d->tables.begin()+f);
   d->origStart.erase(d->origStart.begin()+f); d->origEnd.erase(d->origEnd.begin()+f);
   d->funcEndId.erase(d->funcEndId.begin()+f);
+  if(f<(int)d->padLen.size()) d->padLen.erase(d->padLen.begin()+f);  // padding indexe par fonction
   return 1;
+}
+// Insere une FONCTION DE CODE vide nommee 'name' a l'index pos (fin si pos<0).
+// La fonction ne contient que son RETURN : c'est le minimum executable, l'editeur
+// y insere ensuite les instructions. Renvoie l'index cree, ou -1.
+CS1_API int32_t cs1i_instr_insert(IDoc* d,int32_t f,int32_t pos,const char* name);
+CS1_API int32_t cs1i_code_func_add(IDoc* d,int32_t pos,const char* name){
+  if(!d||!name||!*name)return -1;
+  int nf=(int)d->dec.size(); if(pos<0||pos>nf)pos=nf;
+  cs1ed::Func nfn; nfn.name=name; nfn.named=true; nfn.type=-1; nfn.hasRawPtrs=false; nfn.ostart=0; nfn.decoded=true;
+  d->base->funcs.insert(d->base->funcs.begin()+pos,std::move(nfn));
+  d->dec.insert(d->dec.begin()+pos,std::vector<cs1i::Instr>());
+  d->isCode.insert(d->isCode.begin()+pos,1);
+  d->isTable.insert(d->isTable.begin()+pos,0);
+  d->tables.insert(d->tables.begin()+pos,cs1tbl::Table());
+  d->origStart.insert(d->origStart.begin()+pos,-1); d->origEnd.insert(d->origEnd.begin()+pos,-1);
+  d->padLen.insert(d->padLen.begin()+pos,0);
+  d->funcEndId.insert(d->funcEndId.begin()+pos,d->nextId++);
+  if(cs1i_instr_insert(d,pos,0,"Return")<0){ cs1i_func_remove(d,pos); return -1; }
+  return pos;
 }
 // Insere une nouvelle table nommee 'name' a l'index pos, avec 'bytes' comme contenu
 // initial (le contenu de la table, hors terminateur -- un op1 + padding sont ajoutes).
@@ -944,6 +971,9 @@ CS1_API const uint8_t* cs1i_serialize(IDoc* d,int32_t* outlen){
       long de=d->tables[f].dataEnd; if(de>=0 && de<=(long)F[f].bytes.size()) buf.insert(buf.end(),F[f].bytes.begin()+de,F[f].bytes.end());
       fb[f]=std::move(buf); }
     else fb[f]=F[f].bytes;
+    // Fonction creee dans la session : aucun padding d'origine a preserver, on
+    // aligne sur 4 comme le fait le jeu pour toutes ses fonctions.
+    if(f<(int)d->origStart.size() && d->origStart[f]<0) while(fb[f].size()%4) fb[f].push_back(0x00);
   }
   // Deux cas :
   //  - nb inchange : header ORIGINAL conserve verbatim (byte-perfect), on ne repatchera

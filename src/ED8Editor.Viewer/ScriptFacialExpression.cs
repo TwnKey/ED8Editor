@@ -12,35 +12,34 @@ internal sealed record ScriptFacialExpression(
     public static ScriptFacialExpression Neutral { get; } =
         new("0", "0", "#b", "0", 0);
 
-    public ScriptFacialPose Evaluate()
+    /// <summary>
+    /// Resolves the four facial channels <paramref name="seconds"/> after the
+    /// command that set them. Every channel is an independent pattern: eye and
+    /// mouth sequences advance on their own, so blinking keeps running while a
+    /// mouth pattern loops through a line of dialogue.
+    /// </summary>
+    public ScriptFacialPose Evaluate(float seconds = 0f)
     {
-        var primary = ReadFirstFrame(PrimaryEyes, 0);
+        var primary = FrameAt(PrimaryEyes, seconds, EyesSeed, 0);
+        // "#b" mirrors the eye channel onto its symmetric counterpart, so both
+        // eye materials blink together instead of drifting apart.
         var secondary = SecondaryEyes.Equals("#b", StringComparison.Ordinal)
             ? primary
-            : ReadFirstFrame(SecondaryEyes, primary);
+            : FrameAt(SecondaryEyes, seconds, EyesSeed, primary);
         return new ScriptFacialPose(
             primary,
             secondary,
-            ReadFirstFrame(Mouth, 0),
-            ReadFirstFrame(Complexion, 0));
+            FrameAt(Mouth, seconds, MouthSeed, 0),
+            FrameAt(Complexion, seconds, ComplexionSeed, 0));
     }
 
-    private static int ReadFirstFrame(string pattern, int fallback)
-    {
-        for (var index = 0; index < pattern.Length; index++)
-        {
-            var value = pattern[index];
-            if (value == '#')
-            {
-                index++;
-                while (index < pattern.Length && !char.IsLower(pattern[index])) index++;
-                continue;
-            }
-            if (value is >= '0' and <= '9') return value - '0';
-            if (value is >= 'A' and <= 'J') return value - 'A' + 10;
-        }
-        return fallback;
-    }
+    private const int EyesSeed = 1;
+    private const int MouthSeed = 2;
+    private const int ComplexionSeed = 3;
+
+    private static int FrameAt(string pattern, float seconds, int seed, int fallback)
+        => ScriptFacialPattern.Parse(pattern, HashCode.Combine(pattern, seed))
+            .FrameAt(seconds, fallback);
 }
 
 internal readonly record struct ScriptFacialPose(

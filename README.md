@@ -241,6 +241,59 @@ Run the complete script-to-GPU validation with:
 dotnet run --project tests/ED8Editor.Tests -- --gpu-upload "path\to\scripts\scena\dat\a0000.dat"
 ```
 
+A mod project (`.ed8mod`) tracks every game file the editor writes: it keeps a
+pristine copy of each file taken before the first save, so the installation can
+be put back exactly as it was, and exports the whole set as a zip whose entries
+use the game-relative paths — a player extracts it over their game folder. The
+"Mod project" tab of the left panel owns that workflow.
+
+A scenario event is bound to a function by name: an OPS entry box with no
+destination map (or a look point) runs the script function that carries the same
+name when the player walks into it. Create the function with "New scene…" under
+the scene list, then place an "Event trigger" from the OPS creation panel with
+that same name.
+
+## Turning a raw operand into an entity selector
+
+Operand meaning comes from `cs1_instructions.json` only — never from the opcode
+name or the operand position. When an `s16` is identified as an entity
+reference, declare it and the editor stops showing a number:
+
+1. read the instruction name on the block header (for example `OP58`);
+2. open the definitions file — the one next to the executable, or your own copy
+   selected with *Settings → Instruction definitions…*;
+3. find the entry whose `name` matches, and locate the operand in `read`: the
+   entries are listed in the same order as the arguments shown on the block;
+4. add the semantic (and a name, which becomes the field label):
+
+```json
+{ "name": "OP58", "op": 58, "read": [
+    { "t": "s16", "name": "entity_id", "sem": "entity" },
+    { "t": "u8" }, { "t": "f32" }, { "t": "s16" } ] }
+```
+
+5. restart the editor (the native registry is loaded once).
+
+The operand is then edited through the drop-down of the entities alive at that
+point of the scene, the scene replay registers the entity as referenced, and the
+camera capture can use it as a target.
+
+Check the reversed engine conventions (camera orbit, facial patterns, dialogue
+encoding) and the byte-perfect function editing without a window:
+
+```powershell
+dotnet run --project src/ED8Editor.Viewer -- --verify-conventions
+dotnet run --project src/ED8Editor.DecompilerProbe -- --function-smoke "path\to\scripts\scena\dat_us\t1000.dat"
+```
+
+Replay one scenario block without a window and write the entity state it
+resolves — model, animation slots and the facial expression each channel plays —
+to diagnose an actor that holds the wrong pose or the wrong face:
+
+```powershell
+dotnet run --project src/ED8Editor.Viewer -- --dump-entity-state "path\to\scripts\scena\dat_us\t1000.dat" EV_C05E14S02 47 state.txt
+```
+
 ## Test distribution
 
 Create a self-contained Windows x64 test build with:

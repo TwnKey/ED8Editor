@@ -79,6 +79,7 @@ public static class OpsSpatialCreationCatalog
     public static IReadOnlyList<OpsSpatialCreationProfile> Profiles { get; } = new[]
     {
         EntryTransitionType2(),
+        EventTriggerEntryBox(),
         GroupBox(),
         EventLookPoint(),
         MapCamera(),
@@ -120,6 +121,44 @@ public static class OpsSpatialCreationCatalog
                 var selection = new SceneElementSelection(SceneElementKind.EntryVolume, id, name);
                 return new OpsSpatialElementDraft(
                     selection, SceneTransformCapabilities.All, SceneTransform.FromMapTransform(transform), Volume: volume);
+            });
+
+    /// <summary>
+    /// An entry box with no destination map is the game's walk-in event trigger:
+    /// entering it runs the scenario function that carries the same name. The
+    /// authored examples all use flag 0x3 and entry type 0.
+    /// </summary>
+    private static OpsSpatialCreationProfile EventTriggerEntryBox()
+        => new(
+            "observed.t1000.entry_event_trigger",
+            "Event trigger (runs a script function on entry)",
+            SceneElementKind.EntryVolume,
+            "Observed in t1000.ops: EV_C08E30S00, EV_C00E06S00, EV_Fishing_Tuto (no destination map, flag 0x3)",
+            new[] { new OpsCreationInput("function", "Script function to run") },
+            values => values["function"].Trim(),
+            (id, name, position, values) =>
+            {
+                var transform = VolumeTransform(position, new Vector3(3f, 2.5f, 3f));
+                var attributes = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["name"] = values["function"].Trim(),
+                    ["next"] = string.Empty,
+                    ["entry"] = string.Empty,
+                    ["placeid"] = "0",
+                    ["flag"] = "0x3",
+                    ["pos"] = VolumePosition(transform),
+                    ["distance"] = "2",
+                    ["cameraDir"] = "-1",
+                    ["entryType"] = "0",
+                    ["markPos"] = "0, 0, 0",
+                };
+                var volume = new MapVolume(
+                    id, MapVolumeKind.Entry, attributes["name"], transform, null, null, attributes);
+                var selection = new SceneElementSelection(
+                    SceneElementKind.EntryVolume, id, attributes["name"]);
+                return new OpsSpatialElementDraft(
+                    selection, SceneTransformCapabilities.All,
+                    SceneTransform.FromMapTransform(transform), Volume: volume);
             });
 
     private static OpsSpatialCreationProfile GroupBox()

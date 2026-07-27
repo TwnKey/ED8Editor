@@ -321,11 +321,17 @@ internal sealed class ScriptAnimationLibrary
             var encoding = Encoding.GetEncoding(932);
             var script = ScriptDecompiler.Decompile(path, instructionDefinitionsPath);
             foreach (var function in script.Functions.Where(value =>
-                         value.Name.StartsWith("FC_", StringComparison.OrdinalIgnoreCase)
-                         && value.RawData is { Length: > 0 }))
+                         value.Name.StartsWith("FC_", StringComparison.OrdinalIgnoreCase)))
             {
-                var value = encoding.GetString(function.RawData!).TrimEnd('\0');
-                facialPatterns.TryAdd(function.Name[3..], value);
+                // A macro is a one-string data block. It is decoded as a typed
+                // table when the schema is known and kept as raw bytes otherwise.
+                var value = function.Table?.Fields
+                        .FirstOrDefault(field => field.Type == "string")?.Text
+                    ?? (function.RawData is { Length: > 0 }
+                        ? encoding.GetString(function.RawData)
+                        : null);
+                if (value is null) continue;
+                facialPatterns.TryAdd(function.Name[3..], value.TrimEnd('\0'));
             }
         }
         catch (Exception exception) when (exception is IOException

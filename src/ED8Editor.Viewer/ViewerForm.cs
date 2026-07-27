@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Numerics;
 using ED8Editor.Core;
 using ED8Editor.Decompiler;
@@ -89,6 +89,25 @@ public sealed class ViewerForm : Form
     };
     private bool suppressCameraTextUpdate;
     private readonly Panel scenePanel = new() { Dock = DockStyle.Left, Width = 340, Padding = new Padding(8) };
+    private readonly TabControl leftPanelTabs = new() { Dock = DockStyle.Fill };
+    private readonly TabPage mapTab = new("Map");
+    private readonly TabPage modTab = new("Mod project");
+    private readonly Panel mapPanel = new() { Dock = DockStyle.Fill };
+    private readonly Panel modPanel = new() { Dock = DockStyle.Fill, Padding = new Padding(6) };
+    private readonly TreeView modFileTree = new()
+    {
+        Dock = DockStyle.Fill,
+        HideSelection = false,
+        FullRowSelect = true,
+    };
+    private readonly Label modProjectLabel = new()
+    {
+        Dock = DockStyle.Top,
+        AutoSize = false,
+        Height = 34,
+        Text = "No mod project open.",
+    };
+    private ModProject? modProject;
     private readonly GroupBox sceneOutlinerGroup = new()
     {
         Dock = DockStyle.Fill,
@@ -213,7 +232,10 @@ public sealed class ViewerForm : Form
     private readonly ScriptAnimationLibrary? scriptAnimationLibrary;
     private readonly DecompiledScript? systemScript;
     private bool manualScriptCameraOverride;
-    private float CameraVerticalFieldOfView => cameraFovSlider.Value * MathF.PI / 180f;
+    // The slider only moves in whole degrees; the authored value keeps its
+    // decimals so applying a shot back into a script does not round 43.2 to 43.
+    private float cameraFieldOfViewDegrees = 45f;
+    private float CameraVerticalFieldOfView => cameraFieldOfViewDegrees * MathF.PI / 180f;
 
     public ViewerForm(
         EditorSession session,
@@ -262,8 +284,15 @@ public sealed class ViewerForm : Form
         propertyGroup.Controls.Add(propertyGrid);
         propertyGroup.Controls.Add(applyPropertiesButton);
         sceneOutlinerGroup.Controls.Add(sceneOutliner);
-        scenePanel.Controls.Add(sceneOutlinerGroup);
-        scenePanel.Controls.Add(propertyGroup);
+        mapPanel.Controls.Add(sceneOutlinerGroup);
+        mapPanel.Controls.Add(propertyGroup);
+        mapTab.Controls.Add(mapPanel);
+        BuildModProjectTab();
+        RefreshModProjectTab();
+        modTab.Controls.Add(modPanel);
+        leftPanelTabs.TabPages.Add(modTab);
+        leftPanelTabs.TabPages.Add(mapTab);
+        scenePanel.Controls.Add(leftPanelTabs);
         opsCreationGroup.Controls.Add(opsInputPanel);
         opsCreationGroup.Controls.Add(opsProfileEvidence);
         opsCreationGroup.Controls.Add(opsProfileList);
@@ -312,7 +341,11 @@ public sealed class ViewerForm : Form
         translateToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Translate);
         rotateToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Rotate);
         scaleToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Scale);
-        cameraFovSlider.ValueChanged += (_, _) => cameraFovLabel.Text = $"FOV: {cameraFovSlider.Value}°";
+        cameraFovSlider.ValueChanged += (_, _) =>
+        {
+            cameraFieldOfViewDegrees = cameraFovSlider.Value;
+            cameraFovLabel.Text = $"FOV: {cameraFovSlider.Value}°";
+        };
 
         cameraPlayButton.Click += (_, _) =>
         {
@@ -616,6 +649,9 @@ public sealed class ViewerForm : Form
                 OpenScriptEditor();
                 PerformLayout();
                 scriptEditor?.VerifyEmbeddedInteractionSmoke();
+                ScriptCameraOrbit.VerifySmoke();
+                ScriptFacialPattern.VerifySmoke();
+                ScriptDialogText.VerifySmoke();
                 await VerifyScriptPropAnimationSmokeAsync();
                 await VerifyScriptAnimationReplaySmokeAsync();
                 RenderFrame();
@@ -827,12 +863,22 @@ public sealed class ViewerForm : Form
             var position = scriptTimeline is not null
                 ? EvaluateEntityMotionPosition(character, scriptTimelineFrame)
                 : character.Position;
+            // Facial patterns run on their own clock, started by the command
+            // that set the expression, exactly like a character animation.
+            var facialElapsed = scriptTimeline is not null
+                ? Math.Max(
+                    0f,
+                    scriptTimelineFrame
+                        - (character.FacialExpression?.StartFrame ?? 0))
+                    / ScriptWaitDuration.PreviewFramesPerSecond
+                : elapsed;
             animatedInstance = animatedInstance with
             {
                 Transform = Matrix4x4.CreateScale(character.Scale)
                     * Matrix4x4.CreateRotationY(character.YawDegrees * MathF.PI / 180f)
                     * Matrix4x4.CreateTranslation(position),
-                TexturesByGameMaterialId = CreateFacialTextureOverrides(character),
+                TexturesByGameMaterialId =
+                    CreateFacialTextureOverrides(character, facialElapsed),
             };
             if (model.Skeleton is null
                 || !TryGetBaseAnimation(character, out var activeAnimation)
@@ -1118,6 +1164,7 @@ public sealed class ViewerForm : Form
     // Camera animation interpolation
     private ScriptCameraState? animationBefore;
     private ScriptCameraState? animationAfter;
+    private ScriptCameraSnapshot? animationStart;
     private int animationDurationMs;
     private int animationEasingType;
     private float animationElapsed;
@@ -1169,15 +1216,7 @@ public sealed class ViewerForm : Form
         {
             editor = new ScriptEditorForm(
                 GetTableChoices,
-                new ScriptEditorSemanticContext(() => new ScriptCameraSnapshot(
-                    cameraNavigation.Position,
-                    cameraNavigation.Target,
-                    cameraNavigation.Forward,
-                    cameraNavigation.Distance,
-                    cameraNavigation.Yaw * 180f / MathF.PI,
-                    cameraNavigation.Pitch * 180f / MathF.PI,
-                    cameraNavigation.Roll * 180f / MathF.PI,
-                    cameraFovSlider.Value),
+                new ScriptEditorSemanticContext(() => CaptureCameraSnapshot(),
                     () => activeScriptEntities.Values
                         .OrderBy(value => value.EntityId)
                         .Select(value => new ScriptEntityChoice(
@@ -1202,6 +1241,8 @@ public sealed class ViewerForm : Form
             editor.FunctionSelected += _ => ClearScriptEntityPreview();
             editor.EntityActivated += FocusScriptEntity;
             editor.StopPreview += () => { isCameraAnimating = false; cameraPlayButton.Enabled = true; };
+            editor.FileSaving += path => TrackModSave(path, beforeWrite: true);
+            editor.FileSaved += path => TrackModSave(path, beforeWrite: false);
             scriptsTab.Controls.Add(editor);
             editor.Show();
             editor.SetRuntimeEntities(CreateScriptEntityChoices(activeScriptEntities));
@@ -1262,8 +1303,12 @@ public sealed class ViewerForm : Form
         var state = sceneState.Camera;
         if (!state.HasViewValue) return;
 
-        // Si l'instruction a interpolation + duration, démarrer l'animation en boucle
-        if (ScriptCameraStateResolver.HasInterpolation(instruction))
+        // Une commande caméra n'est interpolée que si elle porte une durée : le
+        // moteur applique une durée nulle immédiatement (aucun mouvement).
+        // Boucler une durée nulle « repassée » à 1 s faisait tourner la caméra
+        // en continu au lieu de poser le plan.
+        if (ScriptCameraStateResolver.HasInterpolation(instruction)
+            && ScriptCameraStateResolver.ReadDurationMs(instruction) > 0)
         {
             animationBefore = ScriptSceneStateResolver.ResolveBefore(
                 script, function, instruction.Index, scriptAnimationLibrary, systemScript).Camera;
@@ -1274,7 +1319,7 @@ public sealed class ViewerForm : Form
             isCameraAnimating = true;
             cameraAnimationLoops = true;
             cameraPlayButton.Enabled = true;
-            if (animationDurationMs <= 0) animationDurationMs = 1000; // fallback 1s
+            CaptureCameraAnimationStart();
             return;
         }
 
@@ -1294,27 +1339,16 @@ public sealed class ViewerForm : Form
         var forward = state.Forward ?? cameraNavigation.Forward;
         var roll = (state.RollDegrees ?? cameraNavigation.Roll * 180f / MathF.PI) * MathF.PI / 180f;
 
-        // OP45_4 : angles en degrés → conversion en radians, avec shortest-path
+        // OP45_4 : les angles autorisés placent l'OEIL autour du point visé.
+        // La normalisation shortest-path ne concerne que le trajet d'une
+        // interpolation, pas l'état final : elle est appliquée au démarrage de
+        // l'animation, pas ici.
         if (state.YawDegrees is not null || state.PitchDegrees is not null)
         {
-            var targetYaw = (state.YawDegrees ?? cameraNavigation.Yaw * 180f / MathF.PI) * MathF.PI / 180f;
-            var targetPitch = (state.PitchDegrees ?? cameraNavigation.Pitch * 180f / MathF.PI) * MathF.PI / 180f;
-
-            if (state.UseShortestPath)
-            {
-                var deltaYaw = targetYaw - cameraNavigation.Yaw;
-                var deltaPitch = targetPitch - cameraNavigation.Pitch;
-                deltaYaw = (deltaYaw + MathF.PI) % (2f * MathF.PI) - MathF.PI;
-                deltaPitch = (deltaPitch + MathF.PI) % (2f * MathF.PI) - MathF.PI;
-                targetYaw = cameraNavigation.Yaw + deltaYaw;
-                targetPitch = cameraNavigation.Pitch + deltaPitch;
-            }
-
-            var cosPitch = MathF.Cos(targetPitch);
-            forward = Vector3.Normalize(new Vector3(
-                MathF.Sin(targetYaw) * cosPitch,
-                MathF.Sin(targetPitch),
-                MathF.Cos(targetYaw) * cosPitch));
+            var current = ScriptCameraOrbit.FromViewDirection(cameraNavigation.Forward);
+            forward = ScriptCameraOrbit.ViewDirection(
+                state.PitchDegrees ?? current.PitchDegrees,
+                state.YawDegrees ?? current.YawDegrees);
 
             if (state.RollDegrees is { } rollDeg)
                 roll = rollDeg * MathF.PI / 180f;
@@ -1349,28 +1383,22 @@ public sealed class ViewerForm : Form
             var entYaw = entities is not null && entities.TryGetValue(entId, out var entity)
                 ? entity.YawDegrees
                 : 0f;
-            var tYaw = (entYaw + yawOffDeg) * MathF.PI / 180f;
-            var tPitch = (state.PitchDegrees ?? cameraNavigation.Pitch * 180f / MathF.PI) * MathF.PI / 180f;
-            if (state.UseShortestPath)
-            {
-                var dY = tYaw - cameraNavigation.Yaw;
-                dY = (dY + MathF.PI) % (2f * MathF.PI) - MathF.PI;
-                tYaw = cameraNavigation.Yaw + dY;
-            }
-            var cosP = MathF.Cos(tPitch);
-            forward = Vector3.Normalize(new Vector3(
-                MathF.Sin(tYaw) * cosP, MathF.Sin(tPitch), MathF.Cos(tYaw) * cosP));
+            var current = ScriptCameraOrbit.FromViewDirection(cameraNavigation.Forward);
+            forward = ScriptCameraOrbit.ViewDirection(
+                state.PitchDegrees ?? current.PitchDegrees,
+                entYaw + yawOffDeg);
             if (state.RollDegrees is { } rollDeg) roll = rollDeg * MathF.PI / 180f;
         }
 
         if (state.AngleDeltaDegrees is { } deltaDeg)
         {
-            var tPitch = cameraNavigation.Pitch + deltaDeg.X * MathF.PI / 180f;
-            var tYaw = cameraNavigation.Yaw + deltaDeg.Y * MathF.PI / 180f;
+            // The deltas are authored in the script's own angle convention, so
+            // they are added to the current angles expressed the same way.
+            var current = ScriptCameraOrbit.FromViewDirection(cameraNavigation.Forward);
+            forward = ScriptCameraOrbit.ViewDirection(
+                current.PitchDegrees + deltaDeg.X,
+                current.YawDegrees + deltaDeg.Y);
             roll += deltaDeg.Z * MathF.PI / 180f;
-            var cosP = MathF.Cos(tPitch);
-            forward = Vector3.Normalize(new Vector3(
-                MathF.Sin(tYaw) * cosP, MathF.Sin(tPitch), MathF.Cos(tYaw) * cosP));
             position = cameraNavigation.Target - forward * distance;
         }
 
@@ -1383,7 +1411,11 @@ public sealed class ViewerForm : Form
         cameraNavigation.SetRoll(roll);
         cameraNavigation.SetView(position, forward, distance);
         if (state.VerticalFieldOfViewDegrees is { } fov && float.IsFinite(fov))
-            cameraFovSlider.Value = Math.Clamp((int)MathF.Round(fov), cameraFovSlider.Minimum, cameraFovSlider.Maximum);
+        {
+            cameraFieldOfViewDegrees = fov;
+            cameraFovSlider.Value = Math.Clamp(
+                (int)MathF.Round(fov), cameraFovSlider.Minimum, cameraFovSlider.Maximum);
+        }
         UpdateCameraTextFields();
     }
 
@@ -1644,8 +1676,18 @@ public sealed class ViewerForm : Form
         }
     }
 
+    /// <summary>
+    /// Selects the facial overlay each face material samples for the entity's
+    /// current expression. A character model already binds its face texture on
+    /// <c>DiffuseMapSampler</c> and its frame-0 overlay on
+    /// <c>DiffuseMap2Sampler</c>; playing an expression only swaps that second
+    /// map, per game material ID: 11 and 12 are the two eyes (mirrored by the
+    /// "#b" tag), 13 is the mouth and 14 the complexion. The base face and hair
+    /// maps are never replaced — the FC package only ships copies of them for
+    /// the engine's costume swap.
+    /// </summary>
     private IReadOnlyDictionary<int, D3D11MaterialTextureOverride>?
-        CreateFacialTextureOverrides(ScriptEntityState entity)
+        CreateFacialTextureOverrides(ScriptEntityState entity, float seconds)
     {
         if (string.IsNullOrWhiteSpace(entity.FacialAssetId)
             || !loadedFacialTextures.TryGetValue(
@@ -1653,26 +1695,20 @@ public sealed class ViewerForm : Form
         {
             return null;
         }
-        var pose = (entity.FacialExpression ?? ScriptFacialExpression.Neutral).Evaluate();
-        var baseFace = textures.Find('h', 0);
-        var baseFeature = textures.Find('f', 0);
+        var pose = (entity.FacialExpression ?? ScriptFacialExpression.Neutral)
+            .Evaluate(seconds);
         var overrides = new Dictionary<int, D3D11MaterialTextureOverride>();
-        Add(11, baseFace, textures.Find('e', pose.PrimaryEyes));
-        Add(12, baseFace, textures.Find('e', pose.SecondaryEyes));
-        Add(13, baseFace, textures.Find('m', pose.Mouth));
-        Add(14, baseFace, textures.Find('c', pose.Complexion));
-        Add(15, baseFeature, null);
-        Add(16, baseFace, null);
+        Add(11, textures.Find('e', pose.PrimaryEyes));
+        Add(12, textures.Find('e', pose.SecondaryEyes));
+        Add(13, textures.Find('m', pose.Mouth));
+        Add(14, textures.Find('c', pose.Complexion));
         return overrides.Count == 0 ? null : overrides;
 
-        void Add(
-            int materialId,
-            Vortice.Direct3D11.ID3D11ShaderResourceView? diffuse,
-            Vortice.Direct3D11.ID3D11ShaderResourceView? diffuse2)
+        void Add(int materialId, Vortice.Direct3D11.ID3D11ShaderResourceView? overlay)
         {
-            if (diffuse is not null || diffuse2 is not null)
+            if (overlay is not null)
                 overrides.Add(
-                    materialId, new D3D11MaterialTextureOverride(diffuse, diffuse2));
+                    materialId, new D3D11MaterialTextureOverride(null, overlay));
         }
     }
 
@@ -2504,6 +2540,7 @@ public sealed class ViewerForm : Form
                     animationElapsed = 0f;
                     isCameraAnimating = true;
                     cameraAnimationLoops = false;
+                    CaptureCameraAnimationStart();
                 }
                 else
                 {
@@ -2575,12 +2612,62 @@ public sealed class ViewerForm : Form
         cameraAnimationLoops = false;
     }
 
+    /// <summary>
+    /// The live editor camera expressed the way the scenario scripts author it:
+    /// the angles say where the eye sits around the point it looks at, not where
+    /// it looks. Capturing a shot into a camera command goes through here, so a
+    /// saved plan frames in game exactly what the viewport shows.
+    /// </summary>
+    private ScriptCameraSnapshot CaptureCameraSnapshot()
+    {
+        var angles = ScriptCameraOrbit.FromViewDirection(cameraNavigation.Forward);
+        return new ScriptCameraSnapshot(
+            cameraNavigation.Position,
+            cameraNavigation.Target,
+            cameraNavigation.Forward,
+            cameraNavigation.Distance,
+            angles.YawDegrees,
+            angles.PitchDegrees,
+            cameraNavigation.Roll * 180f / MathF.PI,
+            cameraFieldOfViewDegrees);
+    }
+
+    /// <summary>
+    /// Freezes the camera an interpolation starts from. The engine snapshots the
+    /// live angles and position once, when the command runs, then drives the
+    /// interpolation from that fixed pair. Reading the live camera on every
+    /// frame instead fed the interpolation back into itself.
+    /// </summary>
+    private void CaptureCameraAnimationStart()
+    {
+        var start = CaptureCameraSnapshot();
+        var yaw = start.YawDegrees;
+        var pitch = start.PitchDegrees;
+        // The shortest-arc flag rewrites the destination angle once, here, so the
+        // move never travels more than half a turn. Without the flag the script
+        // deliberately asks for the long way round.
+        if (animationAfter is { UseShortestPath: true } target)
+        {
+            animationAfter = target with
+            {
+                YawDegrees = target.YawDegrees is { } targetYaw
+                    ? ScriptCameraOrbit.NormalizeTowards(yaw, targetYaw)
+                    : null,
+                PitchDegrees = target.PitchDegrees is { } targetPitch
+                    ? ScriptCameraOrbit.NormalizeTowards(pitch, targetPitch)
+                    : null,
+            };
+        }
+        animationStart = start;
+    }
+
     private void UpdateCameraAnimation(float deltaSeconds)
     {
         if (!ShouldApplyScriptCamera
             || !isCameraAnimating
             || animationBefore is null
-            || animationAfter is null)
+            || animationAfter is null
+            || animationStart is null)
         {
             return;
         }
@@ -2617,7 +2704,7 @@ public sealed class ViewerForm : Form
         var state = new ScriptCameraState();
 
         // Distance
-        var distBefore = animationBefore.Distance ?? cameraNavigation.Distance;
+        var distBefore = animationBefore.Distance ?? animationStart.Distance;
         var distAfter = animationAfter.Distance ?? distBefore;
         state = state with { Distance = distBefore + (distAfter - distBefore) * lerpDistance };
 
@@ -2626,21 +2713,22 @@ public sealed class ViewerForm : Form
             state = state with { DistanceDelta = dd * lerpDistance };
 
         // FOV
-        var fovBefore = animationBefore.VerticalFieldOfViewDegrees ?? cameraFovSlider.Value;
+        var fovBefore = animationBefore.VerticalFieldOfViewDegrees
+            ?? animationStart.VerticalFieldOfViewDegrees;
         var fovAfter = animationAfter.VerticalFieldOfViewDegrees ?? fovBefore;
         state = state with { VerticalFieldOfViewDegrees = fovBefore + (fovAfter - fovBefore) * lerpFov };
 
         // Position
         if (animationAfter.Position is { } posAfter)
         {
-            var posBefore = animationBefore.Position ?? cameraNavigation.Position;
+            var posBefore = animationBefore.Position ?? animationStart.Position;
             state = state with { Position = posBefore + (posAfter - posBefore) * lerpPosition };
         }
 
         // Target
         if (animationAfter.Target is { } tgtAfter)
         {
-            var tgtBefore = animationBefore.Target ?? cameraNavigation.Target;
+            var tgtBefore = animationBefore.Target ?? animationStart.Target;
             state = state with { Target = tgtBefore + (tgtAfter - tgtBefore) * lerpPosition };
         }
         if (animationAfter.TargetEntityId is not null)
@@ -2657,9 +2745,9 @@ public sealed class ViewerForm : Form
         // Angles (en degrés)
         if (animationAfter.YawDegrees is { } yawAfter || animationAfter.PitchDegrees is { } pitchAfter)
         {
-            var yawB = animationBefore.YawDegrees ?? cameraNavigation.Yaw * 180f / MathF.PI;
-            var pitchB = animationBefore.PitchDegrees ?? cameraNavigation.Pitch * 180f / MathF.PI;
-            var rollB = animationBefore.RollDegrees ?? 0f;
+            var yawB = animationBefore.YawDegrees ?? animationStart.YawDegrees;
+            var pitchB = animationBefore.PitchDegrees ?? animationStart.PitchDegrees;
+            var rollB = animationBefore.RollDegrees ?? animationStart.RollDegrees;
             var yawA = animationAfter.YawDegrees ?? yawB;
             var pitchA = animationAfter.PitchDegrees ?? pitchB;
             var rollA = animationAfter.RollDegrees ?? rollB;
@@ -2680,9 +2768,9 @@ public sealed class ViewerForm : Form
                 deltaDeg.Y * lerpAngles,
                 deltaDeg.Z * lerpAngles);
             // Appliquer le delta partiel aux angles courants de l'état before
-            var yawBDeg = animationBefore.YawDegrees ?? cameraNavigation.Yaw * 180f / MathF.PI;
-            var pitchBDeg = animationBefore.PitchDegrees ?? cameraNavigation.Pitch * 180f / MathF.PI;
-            var rollBDeg = animationBefore.RollDegrees ?? 0f;
+            var yawBDeg = animationBefore.YawDegrees ?? animationStart.YawDegrees;
+            var pitchBDeg = animationBefore.PitchDegrees ?? animationStart.PitchDegrees;
+            var rollBDeg = animationBefore.RollDegrees ?? animationStart.RollDegrees;
             state = state with
             {
                 YawDegrees = yawBDeg + effectiveDelta.Y,
@@ -3264,6 +3352,270 @@ public sealed class ViewerForm : Form
         }
     }
 
+    /// <summary>
+    /// The mod tab lists every game file this project has written, keeps the
+    /// pristine copies that make the install restorable, and ships the whole set
+    /// as an archive that extracts straight over a game folder.
+    /// </summary>
+    private void BuildModProjectTab()
+    {
+        var tools = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            WrapContents = true,
+            Padding = new Padding(0, 0, 0, 4),
+        };
+        var newProject = new Button { AutoSize = true, Text = "New…" };
+        var openProject = new Button { AutoSize = true, Text = "Open…" };
+        var exportArchive = new Button { AutoSize = true, Text = "Export .zip…" };
+        var applyMod = new Button { AutoSize = true, Text = "Re-apply mod" };
+        var restoreAll = new Button { AutoSize = true, Text = "Restore originals" };
+        newProject.Click += (_, _) => CreateModProject();
+        openProject.Click += (_, _) => OpenModProject();
+        exportArchive.Click += (_, _) => ExportModArchive();
+        applyMod.Click += (_, _) => ApplyModFiles(selectedOnly: false);
+        restoreAll.Click += (_, _) => RestoreModOriginals(selectedOnly: false);
+        tools.Controls.AddRange(new Control[]
+        {
+            newProject, openProject, exportArchive, applyMod, restoreAll,
+        });
+
+        var fileMenu = new ContextMenuStrip();
+        fileMenu.Items.Add("Restore this file", null, (_, _) => RestoreModOriginals(selectedOnly: true));
+        fileMenu.Items.Add("Re-apply this file", null, (_, _) => ApplyModFiles(selectedOnly: true));
+        fileMenu.Items.Add(
+            "Add an existing file to the mod… (no original is kept)",
+            null,
+            (_, _) => IncludeModFile());
+        fileMenu.Items.Add("Remove from the mod", null, (_, _) => RemoveModFile());
+        modFileTree.ContextMenuStrip = fileMenu;
+
+        var treeGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Mod files (game-relative paths)" };
+        treeGroup.Controls.Add(modFileTree);
+        modPanel.Controls.Add(treeGroup);
+        modPanel.Controls.Add(tools);
+        modPanel.Controls.Add(modProjectLabel);
+    }
+
+    private void CreateModProject()
+    {
+        if (session.Script.GameDataPath is null) return;
+        var gameRoot = Path.GetDirectoryName(Path.GetFullPath(session.Script.GameDataPath));
+        if (gameRoot is null) return;
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Create a mod project",
+            Filter = "ED8 mod project (*.ed8mod)|*.ed8mod",
+            FileName = "my-mod.ed8mod",
+            AddExtension = true,
+            DefaultExt = "ed8mod",
+            OverwritePrompt = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        RunModProjectAction(() =>
+        {
+            modProject = ModProject.Create(dialog.FileName, gameRoot);
+            RefreshModProjectTab();
+        });
+    }
+
+    private void OpenModProject()
+    {
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Open a mod project",
+            Filter = "ED8 mod project (*.ed8mod)|*.ed8mod|All files (*.*)|*.*",
+            CheckFileExists = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        RunModProjectAction(() =>
+        {
+            modProject = ModProject.Open(dialog.FileName);
+            RefreshModProjectTab();
+        });
+    }
+
+    private void ExportModArchive()
+    {
+        if (modProject is null) return;
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Export the mod for distribution",
+            Filter = "Zip archive (*.zip)|*.zip",
+            FileName = $"{modProject.Name}.zip",
+            AddExtension = true,
+            DefaultExt = "zip",
+            OverwritePrompt = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        RunModProjectAction(() =>
+        {
+            var count = modProject.ExportArchive(dialog.FileName);
+            MessageBox.Show(
+                this,
+                $"{count} file(s) written to {dialog.FileName}.\n\n"
+                + "The archive keeps the game-relative paths, so it extracts straight"
+                + " over a Trails of Cold Steel folder.",
+                "Mod exported", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        });
+    }
+
+    private void ApplyModFiles(bool selectedOnly)
+    {
+        if (modProject is null) return;
+        var selection = selectedOnly ? SelectedModFiles() : null;
+        if (selectedOnly && selection is { Count: 0 }) return;
+        RunModProjectAction(() =>
+        {
+            var count = modProject.ApplyMod(selection);
+            RefreshModProjectTab();
+            MessageBox.Show(
+                this, $"{count} file(s) copied into the game folder.",
+                "Mod applied", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        });
+    }
+
+    private void RestoreModOriginals(bool selectedOnly)
+    {
+        if (modProject is null) return;
+        var selection = selectedOnly ? SelectedModFiles() : null;
+        if (selectedOnly && selection is { Count: 0 }) return;
+        var scope = selectedOnly ? "the selected file(s)" : "every file of this mod";
+        var confirmation = MessageBox.Show(
+            this,
+            $"Put the game's original version of {scope} back?\n\n"
+            + "Files the mod added and the game never had are deleted.",
+            "Restore originals", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+        if (confirmation != DialogResult.Yes) return;
+        RunModProjectAction(() =>
+        {
+            var count = modProject.RestoreOriginals(selection);
+            RefreshModProjectTab();
+            MessageBox.Show(
+                this, $"{count} file(s) restored.",
+                "Originals restored", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        });
+    }
+
+    private void IncludeModFile()
+    {
+        if (modProject is null) return;
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Add a game file to the mod",
+            InitialDirectory = modProject.GameDirectory,
+            CheckFileExists = true,
+            Multiselect = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        RunModProjectAction(() =>
+        {
+            foreach (var file in dialog.FileNames) modProject.Include(file);
+            RefreshModProjectTab();
+        });
+    }
+
+    private void RemoveModFile()
+    {
+        if (modProject is null || SelectedModFiles() is not { Count: > 0 } selection) return;
+        RunModProjectAction(() =>
+        {
+            foreach (var relative in selection) modProject.Remove(relative);
+            RefreshModProjectTab();
+        });
+    }
+
+    private IReadOnlyList<string> SelectedModFiles()
+    {
+        if (modFileTree.SelectedNode is null) return Array.Empty<string>();
+        var selected = new List<string>();
+        Collect(modFileTree.SelectedNode);
+        return selected;
+
+        void Collect(TreeNode node)
+        {
+            if (node.Tag is string relative) selected.Add(relative);
+            foreach (TreeNode child in node.Nodes) Collect(child);
+        }
+    }
+
+    private void RunModProjectAction(Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+            or ArgumentException or InvalidDataException or DirectoryNotFoundException)
+        {
+            MessageBox.Show(
+                this, exception.Message, "Mod project", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void RefreshModProjectTab()
+    {
+        modFileTree.BeginUpdate();
+        try
+        {
+            modFileTree.Nodes.Clear();
+            if (modProject is null)
+            {
+                modProjectLabel.Text = "No mod project open. Create one to track and ship your edits.";
+                return;
+            }
+            modProjectLabel.Text = $"{modProject.Name} — {modProject.Files.Count} file(s)"
+                + $"\n{modProject.ProjectPath}";
+            foreach (var file in modProject.Files)
+            {
+                var nodes = modFileTree.Nodes;
+                TreeNode? current = null;
+                for (var index = 0; index < file.Segments.Count; index++)
+                {
+                    var segment = file.Segments[index];
+                    var existing = nodes.Cast<TreeNode>()
+                        .FirstOrDefault(value => value.Text.Equals(segment, StringComparison.OrdinalIgnoreCase));
+                    current = existing ?? nodes.Add(segment);
+                    nodes = current.Nodes;
+                }
+                if (current is null) continue;
+                current.Tag = file.RelativePath;
+                if (!file.HasOriginal) current.Text += "  (new file)";
+            }
+            modFileTree.ExpandAll();
+        }
+        finally
+        {
+            modFileTree.EndUpdate();
+        }
+    }
+
+    /// <summary>
+    /// Keeps the mod project in step with a save into the game folder: the
+    /// pristine copy is taken before the write, the mod's own copy after it.
+    /// </summary>
+    private void TrackModSave(string path, bool beforeWrite)
+    {
+        if (modProject is null) return;
+        try
+        {
+            if (beforeWrite) modProject.CaptureOriginal(path);
+            else
+            {
+                modProject.TrackSave(path);
+                RefreshModProjectTab();
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+            or ArgumentException or FileNotFoundException)
+        {
+            // A save outside the game folder is not part of the mod; never let
+            // bookkeeping fail the save itself.
+            Debug.WriteLine($"Mod project could not track '{path}': {exception.Message}");
+        }
+    }
+
     private bool SaveOps(bool saveAs)
     {
         if (session.Map is null || currentMap is null) return false;
@@ -3285,7 +3637,9 @@ public sealed class ViewerForm : Form
         }
         try
         {
+            TrackModSave(targetPath!, beforeWrite: true);
             opsWriter.Write(targetPath!, session.Map, currentMap);
+            TrackModSave(targetPath!, beforeWrite: false);
             savedOpsPath = targetPath;
             document.MarkSaved();
             Text = $"{baseTitle} — saved: {targetPath}";

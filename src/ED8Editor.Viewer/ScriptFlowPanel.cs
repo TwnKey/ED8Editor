@@ -1,4 +1,4 @@
-using System.Drawing.Drawing2D;
+﻿using System.Drawing.Drawing2D;
 using ED8Editor.Decompiler;
 
 namespace ED8Editor.Viewer;
@@ -26,6 +26,8 @@ internal sealed class ScriptFlowPanel : Panel
     private const int RowGap = 14;
     private const int CanvasPadding = 24;
     private const int StartKey = -1;
+    private const int HeaderHeight = 29;
+    private const int BlockPadding = 7;
 
     private static readonly Color EdgeSequential = Color.FromArgb(120, 138, 158);
     private static readonly Color EdgeTrue = Color.FromArgb(96, 190, 120);
@@ -35,12 +37,21 @@ internal sealed class ScriptFlowPanel : Panel
     private static readonly Color NodeNormal = Color.FromArgb(45, 46, 52);
     private static readonly Color NodeSelected = Color.FromArgb(72, 82, 101);
     private static readonly Color NodeDimmed = Color.FromArgb(38, 38, 42);
+    private static readonly Color FlashBackground = Color.FromArgb(96, 84, 40);
 
-    private readonly Dictionary<int, Control> nodes = new();
-    private readonly Dictionary<Control, Color> originalForeground = new();
+    private readonly Dictionary<int, FlowNode> nodes = new();
     private readonly Dictionary<int, int> branchChoice = new();
     private readonly HashSet<int> activePath = new();
     private readonly HashSet<int> hiddenInstructions = new();
+
+    private static readonly Font HeaderFont = new("Consolas", 9.5f, FontStyle.Bold);
+    private static readonly Font SummaryFont = new("Consolas", 8.5f);
+    private static readonly Font AnchorFont = new("Segoe UI", 9f, FontStyle.Bold);
+
+    private readonly System.Windows.Forms.Timer flashClock = new() { Interval = 700 };
+    private int? flashedInstruction;
+    private Point? blockDragOrigin;
+    private int? blockDragInstruction;
 
     private DecompiledFunction? currentFunction;
     private IReadOnlyList<GraphEdge> edges = Array.Empty<GraphEdge>();
@@ -59,7 +70,25 @@ internal sealed class ScriptFlowPanel : Panel
         DragOver += HandleDragOver;
         DragLeave += (_, _) => ClearDropTarget();
         DragDrop += HandleDragDrop;
+        flashClock.Tick += (_, _) =>
+        {
+            flashClock.Stop();
+            flashedInstruction = null;
+            Invalidate();
+        };
     }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) flashClock.Dispose();
+        base.Dispose(disposing);
+    }
+
+    /// <summary>A block was clicked.</summary>
+    public event Action<int>? InstructionSelected;
+
+    /// <summary>A block was double-clicked: open its editor.</summary>
+    public event Action<int>? InstructionActivated;
 
     public event Action<int, int>? MoveRequested;
 
@@ -73,11 +102,17 @@ internal sealed class ScriptFlowPanel : Panel
     /// <summary>Instructions actually walked to reach the current point.</summary>
     public IReadOnlyCollection<int> ActivePath => activePath;
 
-    public void SetGraph(IReadOnlyDictionary<int, Control> instructionNodes, DecompiledFunction function)
+    /// <summary>
+    /// Replaces the scene. Blocks are drawn, not instantiated: a scene of a
+    /// thousand instructions is a thousand rectangles to paint instead of three
+    /// thousand windows to create, which is what made every edit stall.
+    /// </summary>
+    public void SetGraph(IReadOnlyList<ScriptFlowBlock> blocks, DecompiledFunction function)
     {
+        ArgumentNullException.ThrowIfNull(blocks);
+        ArgumentNullException.ThrowIfNull(function);
         currentFunction = function;
         nodes.Clear();
-        originalForeground.Clear();
         branchChoice.Clear();
         hiddenInstructions.Clear();
 
@@ -88,28 +123,41 @@ internal sealed class ScriptFlowPanel : Panel
                 hiddenInstructions.Add(instruction.Index);
         }
 
-        foreach (var pair in instructionNodes)
+        foreach (var block in blocks)
         {
-            if (hiddenInstructions.Contains(pair.Key)) continue;
-            nodes[pair.Key] = pair.Value;
+            if (hiddenInstructions.Contains(block.Instruction)) continue;
+            nodes[block.Instruction] = new FlowNode(block.Instruction)
+            {
+                Header = block.Header,
+                Summary = block.Summary,
+                HeaderColor = block.HeaderColor,
+            };
         }
         foreach (var instruction in function.Instructions.Where(value => value.Opcode == 5))
-        {
-            var anchor = new FlowAnchorNode(isStart: false);
-            nodes[instruction.Index] = anchor;
-            Controls.Add(anchor);
-        }
+            nodes[instruction.Index] = new FlowNode(instruction.Index) { Anchor = FlowAnchor.Fork };
         if (function.Instructions.Count > 0 && function.Instructions[0].Opcode != 5)
-        {
-            var start = new FlowAnchorNode(isStart: true);
-            nodes[StartKey] = start;
-            Controls.Add(start);
-        }
+            nodes[StartKey] = new FlowNode(StartKey) { Anchor = FlowAnchor.Start };
 
         edges = BuildEdges(function).ToArray();
         selectedEdge = null;
         LayoutGraph(function);
         RecomputeActivePath();
+        Invalidate();
+    }
+
+    /// <summary>Brings a block into view and flashes it.</summary>
+    public void ScrollInstructionIntoView(int instruction)
+    {
+        if (!nodes.TryGetValue(instruction, out var node)) return;
+        var view = new Rectangle(
+            -AutoScrollPosition.X, -AutoScrollPosition.Y, ClientSize.Width, ClientSize.Height);
+        var target = new Point(
+            Math.Max(0, node.Left - Math.Max(0, (view.Width - node.Width) / 2)),
+            Math.Max(0, node.Top - Math.Max(0, (view.Height - node.Height) / 2)));
+        AutoScrollPosition = target;
+        flashedInstruction = instruction;
+        flashClock.Stop();
+        flashClock.Start();
         Invalidate();
     }
 
@@ -119,7 +167,7 @@ internal sealed class ScriptFlowPanel : Panel
         if (selectedInstruction != instruction)
         {
             selectedInstruction = instruction;
-            RefreshNodeVisuals();
+            Invalidate();
         }
         Invalidate();
     }
@@ -128,14 +176,14 @@ internal sealed class ScriptFlowPanel : Panel
     {
         selectedInstruction = null;
         selectedEdge = null;
-        RefreshNodeVisuals();
+        Invalidate();
         Invalidate();
     }
 
-    public void BeginInstructionDrag(Control source, int instruction)
+    public void BeginInstructionDrag(int instruction)
     {
         SelectInstruction(instruction);
-        source.DoDragDrop(new InstructionDrag(instruction), DragDropEffects.Move);
+        DoDragDrop(new InstructionDrag(instruction), DragDropEffects.Move);
     }
 
     // ---------------------------------------------------------------- active path
@@ -210,7 +258,7 @@ internal sealed class ScriptFlowPanel : Panel
         var decisions = new List<BranchDecision>();
         if (currentFunction is null)
         {
-            RefreshNodeVisuals();
+            Invalidate();
             return;
         }
 
@@ -236,7 +284,7 @@ internal sealed class ScriptFlowPanel : Panel
             node = chosen.To;
         }
 
-        RefreshNodeVisuals();
+        Invalidate();
         ActivePathChanged?.Invoke(decisions);
     }
 
@@ -266,36 +314,6 @@ internal sealed class ScriptFlowPanel : Panel
     private bool IsActive(GraphEdge edge) =>
         activePath.Count == 0 || (activePath.Contains(edge.From) && activePath.Contains(edge.To));
 
-    private void RefreshNodeVisuals()
-    {
-        foreach (var pair in nodes)
-        {
-            var dimmed = !IsActive(pair.Key);
-            var selected = selectedInstruction == pair.Key;
-            if (pair.Value is FlowAnchorNode anchor)
-            {
-                anchor.Dimmed = dimmed;
-                anchor.Invalidate();
-                continue;
-            }
-            pair.Value.Padding = new Padding(2);
-            pair.Value.BackColor = selected ? NodeSelected : dimmed ? NodeDimmed : NodeNormal;
-            ApplyForegroundDim(pair.Value, dimmed);
-        }
-    }
-
-    /// <summary>Dims a block's text without making it unreadable (analysis stays possible).</summary>
-    private void ApplyForegroundDim(Control root, bool dimmed)
-    {
-        foreach (Control child in root.Controls)
-        {
-            if (!originalForeground.TryGetValue(child, out var original))
-                originalForeground[child] = original = child.ForeColor;
-            child.ForeColor = dimmed ? Blend(original, NodeDimmed, 0.55f) : original;
-            if (child.Controls.Count > 0) ApplyForegroundDim(child, dimmed);
-        }
-    }
-
     private static Color Blend(Color from, Color to, float amount) => Color.FromArgb(
         (int)(from.R + (to.R - from.R) * amount),
         (int)(from.G + (to.G - from.G) * amount),
@@ -305,20 +323,129 @@ internal sealed class ScriptFlowPanel : Panel
     protected override void OnPaint(PaintEventArgs eventArgs)
     {
         base.OnPaint(eventArgs);
-        eventArgs.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        foreach (var edge in edges.Where(value => !IsActive(value))) DrawEdge(eventArgs.Graphics, edge);
-        foreach (var edge in edges.Where(IsActive)) DrawEdge(eventArgs.Graphics, edge);
+        var graphics = eventArgs.Graphics;
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        // Drawing happens in view coordinates, not graph ones: GDI+ flattens
+        // paths through a 16.16 fixed-point pipeline and throws past ±32768, and
+        // a scene of a thousand blocks is far taller than that.
+        var view = new Rectangle(
+            -AutoScrollPosition.X + eventArgs.ClipRectangle.X,
+            -AutoScrollPosition.Y + eventArgs.ClipRectangle.Y,
+            eventArgs.ClipRectangle.Width,
+            eventArgs.ClipRectangle.Height);
+        view.Inflate(Grid * 4, Grid * 4);
+
+        foreach (var edge in edges.Where(value => !IsActive(value))) DrawEdge(graphics, edge, view);
+        foreach (var edge in edges.Where(IsActive)) DrawEdge(graphics, edge, view);
+        foreach (var node in nodes.Values)
+        {
+            if (view.IntersectsWith(node.Bounds)) DrawNode(graphics, node);
+        }
         if (dropTarget is { } target && nodes.TryGetValue(target.AnchorInstruction, out var anchor))
         {
-            var y = target.Before ? anchor.Top - 4 : anchor.Bottom + 4;
+            var marked = ToView(anchor.Bounds);
+            var y = target.Before ? marked.Top - 4 : marked.Bottom + 4;
             using var marker = new Pen(Color.DeepSkyBlue, 4f);
-            eventArgs.Graphics.DrawLine(marker, anchor.Left, y, anchor.Right, y);
+            graphics.DrawLine(marker, marked.Left, y, marked.Right, y);
         }
     }
 
-    private void DrawEdge(Graphics graphics, GraphEdge edge)
+    /// <summary>Graph coordinates to the coordinates GDI+ is handed.</summary>
+    private Rectangle ToView(Rectangle bounds)
+        => new(
+            bounds.X + AutoScrollPosition.X,
+            bounds.Y + AutoScrollPosition.Y,
+            bounds.Width,
+            bounds.Height);
+
+    /// <summary>
+    /// A point of an edge, moved into view coordinates and kept inside a window
+    /// GDI+ can handle. Every routed segment is axis aligned, so clamping a point
+    /// that lies far outside the viewport never moves the part that is visible.
+    /// </summary>
+    private Point ToView(Point point)
+    {
+        const int limit = 20000;
+        var x = point.X + AutoScrollPosition.X;
+        var y = point.Y + AutoScrollPosition.Y;
+        return new Point(Math.Clamp(x, -limit, limit), Math.Clamp(y, -limit, limit));
+    }
+
+    private static int MeasureBlockHeight(FlowNode node)
+        => Math.Max(
+            64,
+            HeaderHeight + BlockPadding * 2 + TextRenderer.MeasureText(
+                node.Summary,
+                SummaryFont,
+                new Size(NodeWidth - BlockPadding * 2, int.MaxValue),
+                TextFormatFlags.WordBreak | TextFormatFlags.NoPadding).Height);
+
+    private void DrawNode(Graphics graphics, FlowNode node)
+    {
+        var bounds = ToView(node.Bounds);
+        var dimmed = !IsActive(node.Instruction);
+        if (node.IsAnchor)
+        {
+            var circle = new Rectangle(
+                bounds.Left + 1, bounds.Top + 1, bounds.Width - 3, bounds.Height - 3);
+            var isStart = node.Anchor == FlowAnchor.Start;
+            var fillColor = isStart ? Color.FromArgb(50, 125, 92) : Color.FromArgb(240, 157, 55);
+            var borderColor = isStart ? Color.FromArgb(125, 225, 170) : Color.Gold;
+            if (dimmed)
+            {
+                fillColor = Blend(fillColor, NodeDimmed, 0.62f);
+                borderColor = Blend(borderColor, NodeDimmed, 0.62f);
+            }
+            using var fill = new SolidBrush(fillColor);
+            using var border = new Pen(borderColor, 2f);
+            graphics.FillEllipse(fill, circle);
+            graphics.DrawEllipse(border, circle);
+            if (isStart)
+            {
+                TextRenderer.DrawText(graphics, "Init", AnchorFont, circle, Color.White,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            }
+            return;
+        }
+
+        var selected = selectedInstruction == node.Instruction;
+        var flashing = flashedInstruction == node.Instruction;
+        var background = flashing ? FlashBackground
+            : selected ? NodeSelected
+            : dimmed ? NodeDimmed
+            : NodeNormal;
+        using (var fill = new SolidBrush(background))
+            graphics.FillRectangle(fill, bounds);
+        var headerColor = dimmed ? Blend(node.HeaderColor, NodeDimmed, 0.55f) : node.HeaderColor;
+        using (var fill = new SolidBrush(headerColor))
+            graphics.FillRectangle(fill, bounds.Left, bounds.Top, bounds.Width, HeaderHeight);
+        using (var border = new Pen(
+            selected ? EdgeSelected : Color.FromArgb(70, 74, 84), selected ? 2f : 1f))
+        {
+            graphics.DrawRectangle(border, bounds.Left, bounds.Top, bounds.Width - 1, bounds.Height - 1);
+        }
+        var textColor = dimmed ? Blend(Color.White, NodeDimmed, 0.55f) : Color.White;
+        TextRenderer.DrawText(
+            graphics, node.Header, HeaderFont,
+            new Rectangle(bounds.Left + BlockPadding, bounds.Top, bounds.Width - BlockPadding * 2, HeaderHeight),
+            textColor,
+            TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+        var summaryColor = dimmed ? Blend(Color.Gainsboro, NodeDimmed, 0.55f) : Color.Gainsboro;
+        TextRenderer.DrawText(
+            graphics, node.Summary, SummaryFont,
+            new Rectangle(
+                bounds.Left + BlockPadding,
+                bounds.Top + HeaderHeight + 2,
+                bounds.Width - BlockPadding * 2,
+                bounds.Height - HeaderHeight - BlockPadding),
+            summaryColor,
+            TextFormatFlags.WordBreak | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
+    }
+
+    private void DrawEdge(Graphics graphics, GraphEdge edge, Rectangle view)
     {
         if (!nodes.TryGetValue(edge.From, out var source) || !nodes.TryGetValue(edge.To, out var target)) return;
+        if (!view.IntersectsWith(Rectangle.Union(source.Bounds, target.Bounds))) return;
         var isSelected = edge == selectedEdge;
         var dimmed = !IsActive(edge);
         var baseColor = edge.Kind switch
@@ -332,13 +459,13 @@ internal sealed class ScriptFlowPanel : Panel
         var width = isSelected ? 5f : edge.Kind == EdgeKind.Sequential ? 2.6f : 3.6f;
         using var pen = new Pen(color, width) { StartCap = LineCap.Round, EndCap = LineCap.Round };
         if (edge.Kind == EdgeKind.Unconditional) pen.DashStyle = DashStyle.Dash;
-        var path = GetEdgePath(source, target);
+        var path = Array.ConvertAll(GetEdgePath(source, target), ToView);
         graphics.DrawLines(pen, path);
         DrawArrowHead(graphics, color, path[^2], path[^1], width);
         if (!dimmed && edge.Label.Length > 0) DrawEdgeLabel(graphics, edge, path, color);
     }
 
-    private static Point[] GetEdgePath(Control source, Control target)
+    private static Point[] GetEdgePath(FlowNode source, FlowNode target)
     {
         var sourceCenter = source.Left + source.Width / 2;
         var targetCenter = target.Left + target.Width / 2;
@@ -411,7 +538,20 @@ internal sealed class ScriptFlowPanel : Panel
         base.OnMouseDown(eventArgs);
         if (eventArgs.Button != MouseButtons.Left || GetChildAtPoint(eventArgs.Location) is not null) return;
         Focus();
-        if (HitTestEdge(eventArgs.Location) is { } edge)
+        if (HitTestNode(eventArgs.Location) is { } node)
+        {
+            selectedEdge = null;
+            SelectInstruction(node.Instruction);
+            if (!node.IsAnchor)
+            {
+                InstructionSelected?.Invoke(node.Instruction);
+                // A press on a block may become a drag to reorder it.
+                blockDragOrigin = eventArgs.Location;
+                blockDragInstruction = node.Instruction;
+            }
+            return;
+        }
+        if (HitTestEdge(GraphPoint(eventArgs.Location)) is { } edge)
         {
             selectedEdge = edge;
             RouteThrough(edge);   // any thread of a branch selects that branch
@@ -428,6 +568,19 @@ internal sealed class ScriptFlowPanel : Panel
     protected override void OnMouseMove(MouseEventArgs eventArgs)
     {
         base.OnMouseMove(eventArgs);
+        if (blockDragOrigin is { } dragStart && blockDragInstruction is { } dragged
+            && eventArgs.Button == MouseButtons.Left)
+        {
+            var slack = SystemInformation.DragSize;
+            if (Math.Abs(eventArgs.X - dragStart.X) >= Math.Max(2, slack.Width / 2)
+                || Math.Abs(eventArgs.Y - dragStart.Y) >= Math.Max(2, slack.Height / 2))
+            {
+                blockDragOrigin = null;
+                blockDragInstruction = null;
+                BeginInstructionDrag(dragged);
+            }
+            return;
+        }
         if (panOrigin is not { } origin || eventArgs.Button != MouseButtons.Left) return;
         AutoScrollPosition = new Point(
             Math.Max(0, panScrollOrigin.X - (eventArgs.X - origin.X)),
@@ -438,6 +591,8 @@ internal sealed class ScriptFlowPanel : Panel
     protected override void OnMouseUp(MouseEventArgs eventArgs)
     {
         base.OnMouseUp(eventArgs);
+        blockDragOrigin = null;
+        blockDragInstruction = null;
         if (eventArgs.Button != MouseButtons.Left || panOrigin is null) return;
         panOrigin = null;
         Capture = false;
@@ -447,11 +602,29 @@ internal sealed class ScriptFlowPanel : Panel
     protected override void OnMouseDoubleClick(MouseEventArgs eventArgs)
     {
         base.OnMouseDoubleClick(eventArgs);
-        if (eventArgs.Button != MouseButtons.Left || HitTestEdge(eventArgs.Location) is not { } edge) return;
+        if (eventArgs.Button != MouseButtons.Left) return;
+        if (HitTestNode(eventArgs.Location) is { IsAnchor: false } node)
+        {
+            InstructionActivated?.Invoke(node.Instruction);
+            return;
+        }
+        if (HitTestEdge(GraphPoint(eventArgs.Location)) is not { } edge) return;
         if (edge.ArgumentIndex < 0 || edge.Owner < 0) return;
         selectedEdge = edge;
         Invalidate();
         JumpEditRequested?.Invoke(edge.Owner, edge.ArgumentIndex);
+    }
+
+    /// <summary>Mouse position in the graph's own coordinates.</summary>
+    private Point GraphPoint(Point client)
+        => new(client.X - AutoScrollPosition.X, client.Y - AutoScrollPosition.Y);
+
+    private FlowNode? HitTestNode(Point client)
+    {
+        var point = GraphPoint(client);
+        foreach (var node in nodes.Values)
+            if (node.Bounds.Contains(point)) return node;
+        return null;
     }
 
     private GraphEdge? HitTestEdge(Point point)
@@ -564,17 +737,24 @@ internal sealed class ScriptFlowPanel : Panel
             return;
         }
 
-        foreach (var pair in nodes)
+        foreach (var node in nodes.Values)
         {
-            if (pair.Value is FlowAnchorNode) continue;
-            pair.Value.AutoSize = false;
-            var preferred = pair.Value.GetPreferredSize(new Size(NodeWidth, 0));
-            pair.Value.Size = new Size(NodeWidth, Math.Max(44, preferred.Height));
+            node.Bounds = node.Anchor switch
+            {
+                FlowAnchor.Start => new Rectangle(Point.Empty, new Size(86, 54)),
+                FlowAnchor.Fork => new Rectangle(Point.Empty, new Size(26, 26)),
+                _ => new Rectangle(Point.Empty, new Size(NodeWidth, MeasureBlockHeight(node))),
+            };
         }
 
         var successors = BuildSuccessorMap();
         var columns = AssignColumns(successors);
         var rows = AssignRows(successors);
+
+        // Node bounds are the graph's own coordinates and painting applies the
+        // scroll offset, so the bounds computed below describe exactly what was
+        // placed whatever the view is scrolled to.
+        var scroll = new Point(-AutoScrollPosition.X, -AutoScrollPosition.Y);
 
         var rowCount = rows.Count == 0 ? 1 : rows.Values.Max() + 1;
         var rowHeights = new int[rowCount];
@@ -588,24 +768,153 @@ internal sealed class ScriptFlowPanel : Panel
         for (var row = 0; row < rowCount; row++)
         {
             rowTops[row] = Snap(currentY);
+            // A row nothing landed on takes no space: an empty band would read as
+            // a gap in the scene.
+            if (rowHeights[row] == 0) continue;
             currentY = rowTops[row] + rowHeights[row] + RowGap;
         }
 
         var minColumn = columns.Count == 0 ? 0d : columns.Values.Min();
         var step = NodeWidth + ColumnGap;
+        var right = 0;
+        var bottom = 0;
         foreach (var pair in nodes)
         {
             var column = columns.TryGetValue(pair.Key, out var value) ? value : 0d;
             var row = rows.TryGetValue(pair.Key, out var r) ? r : 0;
             var centerX = (int)Math.Round(CanvasPadding + (column - minColumn) * step + NodeWidth / 2.0);
-            pair.Value.Location = new Point(centerX - pair.Value.Width / 2, rowTops[row]);
+            var location = new Point(centerX - pair.Value.Width / 2, rowTops[row]);
+            pair.Value.Bounds = new Rectangle(location, pair.Value.Bounds.Size);
+            right = Math.Max(right, location.X + pair.Value.Width);
+            bottom = Math.Max(bottom, location.Y + pair.Value.Height);
         }
 
-        // scroll bounds follow the real extent of the blocks: no empty area below
-        var right = nodes.Values.Max(value => value.Right);
-        var bottom = nodes.Values.Max(value => value.Bottom);
+        // A loop arrow is routed around the right-hand side of the blocks it
+        // joins, so the canvas has to reach past the widest block for it.
+        if (edges.Any(edge => IsUpward(edge))) right += Grid * 2 + Grid;
         AutoScrollMinSize = new Size(right + CanvasPadding, bottom + CanvasPadding);
+        AutoScrollPosition = scroll;
     }
+
+    /// <summary>
+    /// Lays out a scene shaped like a real one (a straight run, a branch and a
+    /// backward jump) and checks the canvas describes exactly what it holds: no
+    /// band of emptiness under the last block, nothing reachable only past the
+    /// end of a scrollbar, and the closing RETURN at the bottom of the flow.
+    /// </summary>
+    internal static void VerifySmoke()
+    {
+        const int count = 40;
+        var instructions = new List<DecompiledInstruction>();
+        for (var index = 0; index < count; index++)
+        {
+            instructions.Add(new DecompiledInstruction(
+                index, index * 4, $"OP{20 + index % 5}", 20 + index % 5,
+                Array.Empty<InstructionArgument>(), Array.Empty<JumpTarget>()));
+        }
+        // A branch forward and a jump back, the two shapes that route edges aside.
+        instructions[10] = new DecompiledInstruction(
+            10, 40, "Jump_if_false", 5,
+            Array.Empty<InstructionArgument>(),
+            new[] { new JumpTarget(1, 20, 80, 0) });
+        instructions[19] = new DecompiledInstruction(
+            19, 76, "Jump", 3,
+            Array.Empty<InstructionArgument>(),
+            new[] { new JumpTarget(0, 5, 20, 0) });
+        instructions.Add(new DecompiledInstruction(
+            count, count * 4, "Return", 1,
+            Array.Empty<InstructionArgument>(), Array.Empty<JumpTarget>()));
+        var function = new DecompiledFunction(0, "EV_SMOKE", true, instructions);
+        VerifyLayout(function, expectLoopArrow: true, expectClosingReturnDeepest: true);
+    }
+
+    /// <summary>
+    /// Lays a real (or synthetic) scene out and checks the canvas matches it.
+    /// </summary>
+    internal static void VerifyLayout(
+        DecompiledFunction function,
+        bool expectLoopArrow,
+        bool expectClosingReturnDeepest = false)
+    {
+        ArgumentNullException.ThrowIfNull(function);
+        using var panel = new ScriptFlowPanel { Size = new Size(900, 600) };
+        var blocks = new List<ScriptFlowBlock>();
+        foreach (var instruction in function.Instructions)
+        {
+            if (instruction.Opcode == 5) continue;
+            if (instruction.Opcode == 3 && instruction.Jumps.Any(value =>
+                value.TargetFunctionIndex == function.Index && value.TargetInstructionIndex >= 0)) continue;
+            blocks.Add(new ScriptFlowBlock(
+                instruction.Index, $"#{instruction.Index} {instruction.Name}", "operands", Color.Gray));
+        }
+        panel.SetGraph(blocks, function);
+
+        var placed = panel.nodes.Values.ToArray();
+        if (placed.Length == 0) return;
+        var lowest = placed.Max(value => value.Bottom);
+        var widest = placed.Max(value => value.Right);
+        if (panel.AutoScrollMinSize.Height < lowest || panel.AutoScrollMinSize.Width < widest)
+            throw new InvalidOperationException(
+                $"{function.Name}: the graph canvas does not reach its own blocks.");
+        if (panel.AutoScrollMinSize.Height > lowest + CanvasPadding + RowGap)
+        {
+            throw new InvalidOperationException(
+                $"{function.Name}: the graph canvas keeps"
+                + $" {panel.AutoScrollMinSize.Height - lowest} px of empty space under its last block.");
+        }
+        // The loop arrow is routed past the blocks: the canvas must include it.
+        if (expectLoopArrow && panel.AutoScrollMinSize.Width <= widest + Grid)
+            throw new InvalidOperationException(
+                $"{function.Name}: the graph canvas cuts off the loop arrow drawn on its right.");
+        // Only a scene that ends in sequence closes at the bottom: one that ends
+        // on a loop exits through a branch taken higher up, and its RETURN
+        // legitimately sits above the body it escapes from.
+        var last = expectClosingReturnDeepest
+            ? function.Instructions.LastOrDefault(value => value.Opcode == 1)
+            : null;
+        if (last is not null && panel.nodes.TryGetValue(last.Index, out var closing)
+            && closing.Top < placed.Where(value => value != closing).Max(value => value.Top))
+        {
+            throw new InvalidOperationException(
+                $"{function.Name}: the closing RETURN is not the deepest block of the flow.");
+        }
+        panel.VerifyPainting(function);
+    }
+
+    /// <summary>
+    /// Paints the scene at several scroll positions. A tall scene reaches
+    /// coordinates GDI+ refuses, and only actually painting catches it.
+    /// </summary>
+    private void VerifyPainting(DecompiledFunction function)
+    {
+        using var surface = new Bitmap(Math.Max(1, ClientSize.Width), Math.Max(1, ClientSize.Height));
+        using var graphics = Graphics.FromImage(surface);
+        var height = AutoScrollMinSize.Height;
+        var steps = new[] { 0, height / 3, height / 2, Math.Max(0, height - ClientSize.Height) };
+        foreach (var offset in steps.Distinct())
+        {
+            AutoScrollPosition = new Point(0, offset);
+            var clip = new Rectangle(Point.Empty, surface.Size);
+            try
+            {
+                OnPaint(new PaintEventArgs(graphics, clip));
+            }
+            catch (Exception exception)
+            {
+                throw new InvalidOperationException(
+                    $"{function.Name}: painting the scene at scroll {offset} failed"
+                    + $" ({exception.GetType().Name}: {exception.Message}).",
+                    exception);
+            }
+        }
+        AutoScrollPosition = Point.Empty;
+    }
+
+    /// <summary>An edge drawn around the side rather than straight down.</summary>
+    private bool IsUpward(GraphEdge edge)
+        => nodes.TryGetValue(edge.From, out var source)
+            && nodes.TryGetValue(edge.To, out var target)
+            && target.Top < source.Bottom;
 
     /// <summary>Row = longest path from the entry (back edges are ignored).</summary>
     private Dictionary<int, int> AssignRows(Dictionary<int, List<GraphEdge>> successors)
@@ -613,7 +922,10 @@ internal sealed class ScriptFlowPanel : Panel
         var rows = new Dictionary<int, int>();
         foreach (var key in nodes.Keys) rows[key] = 0;
         var order = nodes.Keys.OrderBy(value => value == StartKey ? int.MinValue : value).ToArray();
-        for (var pass = 0; pass < 8; pass++)
+        // Eight passes stopped short on long scenes: rows then under-estimated the
+        // depth and the closing RETURN did not end up at the bottom of the graph.
+        var passLimit = Math.Min(Math.Max(8, nodes.Count), 256);
+        for (var pass = 0; pass < passLimit; pass++)
         {
             var changed = false;
             foreach (var node in order)
@@ -642,9 +954,13 @@ internal sealed class ScriptFlowPanel : Panel
     {
         var columns = new Dictionary<int, double>();
         var widthCache = new Dictionary<(int Start, int Stop), double>();
+        // A region is laid out once. Without this a backward jump whose branch
+        // reaches its own fork again made the placement recurse until the stack
+        // gave out, because every call started a fresh walk.
+        var placedRegions = new HashSet<(int Start, int Stop)>();
         var walkLimit = nodes.Count + 8;
         var entry = nodes.ContainsKey(StartKey) ? StartKey : 0;
-        PlaceRegion(entry, int.MinValue, 0d);
+        PlaceRegion(entry, int.MinValue, 0d, 0);
 
         // unreached nodes (dead code): stacked to the right
         var free = columns.Count == 0 ? 0d : columns.Values.Max() + 1d;
@@ -683,8 +999,9 @@ internal sealed class ScriptFlowPanel : Panel
         }
 
         // places a region centred on the given column
-        void PlaceRegion(int start, int stop, double center)
+        void PlaceRegion(int start, int stop, double center, int depth)
         {
+            if (depth > walkLimit || !placedRegions.Add((start, stop))) return;
             var node = start;
             var seen = new HashSet<int>();
             var guard = 0;
@@ -700,8 +1017,8 @@ internal sealed class ScriptFlowPanel : Panel
                     var second = Width(outgoing[1].To, join);
                     // symmetric: one branch to the left, the other to the right of the fork
                     var offset = Math.Max(first, second) / 2d + 0.5d;
-                    PlaceRegion(outgoing[0].To, join, center - offset);
-                    PlaceRegion(outgoing[1].To, join, center + offset);
+                    PlaceRegion(outgoing[0].To, join, center - offset, depth + 1);
+                    PlaceRegion(outgoing[1].To, join, center + offset, depth + 1);
                     if (join == int.MinValue) break;
                     node = join;              // the join comes back onto the trunk
                     continue;
@@ -794,39 +1111,29 @@ internal sealed class ScriptFlowPanel : Panel
     private sealed record InstructionDrag(int Instruction);
     private sealed record DropTarget(int AnchorInstruction, bool Before);
 
-    private sealed class FlowAnchorNode : Control
+    private enum FlowAnchor { None, Fork, Start }
+
+    /// <summary>
+    /// A drawn node: an instruction block, a branch pivot or the entry marker.
+    /// It carries only what painting and hit testing need.
+    /// </summary>
+    private sealed class FlowNode
     {
-        private readonly bool isStart;
+        public FlowNode(int instruction) => Instruction = instruction;
 
-        public FlowAnchorNode(bool isStart)
-        {
-            this.isStart = isStart;
-            Size = isStart ? new Size(86, 54) : new Size(26, 26);
-            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
-                | ControlStyles.ResizeRedraw | ControlStyles.UserPaint | ControlStyles.SupportsTransparentBackColor, true);
-            BackColor = Color.Transparent;
-        }
+        public int Instruction { get; }
+        public FlowAnchor Anchor { get; init; } = FlowAnchor.None;
+        public string Header { get; init; } = string.Empty;
+        public string Summary { get; init; } = string.Empty;
+        public Color HeaderColor { get; init; } = Color.FromArgb(70, 78, 92);
+        public Rectangle Bounds { get; set; }
 
-        public bool Dimmed { get; set; }
-
-        protected override void OnPaint(PaintEventArgs eventArgs)
-        {
-            eventArgs.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            var bounds = new Rectangle(1, 1, Width - 3, Height - 3);
-            var fillColor = isStart ? Color.FromArgb(50, 125, 92) : Color.FromArgb(240, 157, 55);
-            var borderColor = isStart ? Color.FromArgb(125, 225, 170) : Color.Gold;
-            if (Dimmed)
-            {
-                fillColor = Blend(fillColor, Color.FromArgb(38, 38, 42), 0.62f);
-                borderColor = Blend(borderColor, Color.FromArgb(38, 38, 42), 0.62f);
-            }
-            using var fill = new SolidBrush(fillColor);
-            using var border = new Pen(borderColor, 2f);
-            eventArgs.Graphics.FillEllipse(fill, bounds);
-            eventArgs.Graphics.DrawEllipse(border, bounds);
-            if (isStart)
-                TextRenderer.DrawText(eventArgs.Graphics, "Init", new Font("Segoe UI", 9f, FontStyle.Bold), bounds,
-                    Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
-        }
+        public bool IsAnchor => Anchor != FlowAnchor.None;
+        public int Left => Bounds.Left;
+        public int Top => Bounds.Top;
+        public int Right => Bounds.Right;
+        public int Bottom => Bounds.Bottom;
+        public int Width => Bounds.Width;
+        public int Height => Bounds.Height;
     }
 }

@@ -83,13 +83,20 @@ public sealed record InstructionArgument(
     string? SemArg = null,
     int SemSpan = 1);
 
-/// <summary>Un element d'expression : operateur ou operande type.</summary>
+/// <summary>
+/// Un element d'expression : operateur ou operande type. Pour un redispatch
+/// (<see cref="SubOp"/> 0x1c), <see cref="NestedOpcode"/> et
+/// <see cref="NestedArguments"/> exposent l'instruction imbriquee dont le
+/// resultat est empile (ex. OP42(entite) = masque d'etat de l'entite).
+/// </summary>
 public sealed record ExprElement(
     int SubOp,
     string Kind,
     string Label,
     int Value,
-    string? NestedInstruction);
+    string? NestedInstruction,
+    int NestedOpcode = -1,
+    IReadOnlyList<int>? NestedArguments = null);
 
 /// <summary>
 /// Un saut : l'argument (ptr32) qui le porte, la fonction cible et l'index de

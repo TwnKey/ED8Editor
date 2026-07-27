@@ -99,9 +99,9 @@ internal static class CameraPropertyWriter
         var roll = state.RollDegrees;
         if (forward is { } initialDirection && initialDirection.LengthSquared() > 1e-8f)
         {
-            initialDirection = Vector3.Normalize(initialDirection);
-            yaw ??= MathF.Atan2(initialDirection.X, initialDirection.Z) * 180f / MathF.PI;
-            pitch ??= MathF.Asin(Math.Clamp(initialDirection.Y, -1f, 1f)) * 180f / MathF.PI;
+            var authored = ScriptCameraOrbit.FromViewDirection(initialDirection);
+            yaw ??= authored.YawDegrees;
+            pitch ??= authored.PitchDegrees;
         }
         if (state.AlignEntityId is { } alignEntityId
             && state.AlignYawOffsetDegrees is { } alignYawOffset
@@ -116,15 +116,7 @@ internal static class CameraPropertyWriter
             if (roll is not null) roll += angleDelta.Z;
         }
         if (yaw is { } yawDegrees && pitch is { } pitchDegrees)
-        {
-            var yawRadians = yawDegrees * MathF.PI / 180f;
-            var pitchRadians = pitchDegrees * MathF.PI / 180f;
-            var cosPitch = MathF.Cos(pitchRadians);
-            forward = Vector3.Normalize(new Vector3(
-                MathF.Sin(yawRadians) * cosPitch,
-                MathF.Sin(pitchRadians),
-                MathF.Cos(yawRadians) * cosPitch));
-        }
+            forward = ScriptCameraOrbit.ViewDirection(pitchDegrees, yawDegrees);
 
         var distance = state.Distance;
         if (distance is not null && state.DistanceDelta is { } distanceDelta)

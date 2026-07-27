@@ -19,9 +19,225 @@ PLUS TARD:
 - Implémenter les lumières et ombres (comme dans le jeu ?)
 - Implémenter la météo ? (sera nécessaire si settée par le script)
 
-Claude : 
+Claude :
 - Rendre encore plus intuitif l'éditeur de scripts (atm y a des branches dans tous les sens)
 - Virer les op0 de l'éditeur de script quand ils sont après un op1 (c'est du padding, pas des instructions)
 - Trouver une solution pour les cas où on a plusieurs branches, si on veut récupérer l'état de la camera (quel branche on prend ?)
 une solution qui soit simple pour l'utilisateur.
 - Gestion des flags (pour les jump conditionnels) : traquer la valeur des flags, que ça soit aussi simple pour l'utilisateur
+
+
+================================================================================
+LIMITES CONNUES A CLARIFIER AVANT DE SHIP (juillet 2026)
+================================================================================
+Etat : ce qui est marqué [OK] est reversé depuis le binaire et vérifié ; [?] est
+une hypothèse de travail qui n'a PAS été confirmée en jeu ; [MANQUE] n'est pas
+implémenté du tout.
+
+--- BRANCHEMENT / REJEU DE SCRIPT ---
+[OK]     Les sauts conditionnels sont maintenant résolus exactement quand
+         l'expression est connue : registres (SET_REG op10/18), flags posés par
+         le script rejoué (op12/13), masque d'état d'entité (OP42 lit ce que
+         OP43 set / OP44 clear). Sinon on garde la politique "branche
+         séquentielle d'abord".
+[?]      Valeur par défaut 0 pour un registre / bit d'état jamais écrit pendant
+         le rejeu. Vrai à la création d'une entité, faux si une scène
+         antérieure a laissé un mode actif (ex. reg[3]=1 = mode parapluie).
+[MANQUE] Flags de sauvegarde (flag[262] pluie, flag[265] costume, work[]/sys[]) :
+         inconnus, donc toute branche qui en dépend retombe sur le
+         fall-through. C'est ce qui empêche d'exécuter l'Init du script ANI au
+         spawn (sinon Rean se retrouve en mode parapluie + visage costume C05).
+         => besoin d'une UI de choix de flags (cf. item "Gestion des flags").
+[MANQUE] Une entité dont le script ne fixe aucune animation reste en bind pose
+         (ex. PNJ spawné avant ses appels ANI). Débloqué par le point ci-dessus.
+[MANQUE] SWITCH (op6) non évalué : retombe aussi sur le fall-through.
+
+--- ANIMATION ---
+[OK]     Idle correct pour les persos (dispatch AniWait résolu : WAIT / WAIT1 /
+         BTL_WAIT selon reg[3] et le masque d'état).
+[?]      Bancs d'animation (OP36) : la liste est construite mais on ne vérifie
+         pas que le jeu résout un clip dans le même ordre de priorité.
+[MANQUE] Pas de blend entre deux clips (le BlendTime d'OP34 est lu, pas appliqué)
+         ni de superposition de slots (seul le slot 0 est rendu).
+[MANQUE] Vitesse de lecture d'OP34 (TimeParameter1..3) non appliquée.
+
+--- ANIMATION FACIALE ---
+[OK]     Overlays par GameMaterialID : 11/12 = les deux yeux, 13 = bouche,
+         14 = teint. Ne JAMAIS remplacer 15 (cheveux) ni 16 (peau) : dans le
+         pkg FC_*, f00/h00 sont des copies visage/cheveux pour le changement de
+         costume du moteur, pas des frames d'expression.
+[?]      Tag "#0x" interprété comme "boucle". C'est le seul choix qui rend le
+         clignement correct, mais du coup la bouche auto (autoM0 = "13030")
+         boucle aussi hors dialogue. A VALIDER EN JEU : si la bouche ne bouge
+         pas quand le perso se tait, c'est que le motif de bouche est piloté par
+         la lecture du dialogue (OP26) et pas par une simple boucle.
+[?]      Durée d'un pas de motif = 0,1 s. Seule constante non lue des données
+         (les scripts ne donnent que le délai aléatoire "#r" en secondes).
+[?]      "+" (demi-frame interpolée) : impossible en CS1 (échange de textures
+         entières) -> on garde la frame basse.
+[MANQUE] Changement de costume / de skin (OP36 sur un FC_*) non appliqué : on
+         charge toujours le set facial par défaut de t_name.tbl.
+
+--- CAMERA ---
+[OK]     Convention des angles reversée depuis le handler OP45 sélecteur 4 :
+         oeil = point visé + distance x (sin yaw cos pitch, sin pitch,
+         cos yaw cos pitch). Autrement dit les angles disent où est l'OEIL
+         autour de la cible, PAS où il regarde ; l'éditeur stockait l'inverse
+         (caméra en miroir à travers le point visé). Lecture ET écriture
+         passent maintenant par ScriptCameraOrbit.
+[OK]     Une durée nulle ne s'interpole plus (c'est une coupe). L'ancien repli
+         "durée 0 -> 1 s en boucle" faisait tournoyer la caméra en continu.
+[OK]     L'interpolation part d'un instantané figé au démarrage (avant, l'état
+         de départ était relu à chaque frame = boucle de rétroaction).
+[OK]     Shortest-path : normalisation exacte du moteur, appliquée une fois au
+         départ et seulement si l'octet de flag est mis (flag à 0 = le script
+         demande volontairement le tour long).
+[?]      Couverture réelle du corpus (dat_us) : SetAngles 10752, SetDistance
+         10037, LookAtPosition 9951, SetFOV 8183 = 96 % des commandes caméra,
+         toutes sur la convention corrigée. Le reste est marginal (voir plus bas).
+[?]      Sens du roll (3e float d'OP45_4) : il ne participe PAS à la position de
+         l'oeil (vérifié), mais le signe appliqué au vecteur "up" de la vue n'est
+         pas confirmé en jeu. Test : t1000 EV_C05E14S02 #80 (roll = 346).
+[?]      FOV : la valeur est appliquée telle quelle comme FOV VERTICAL. A
+         confirmer (horizontal ? ratio 16/9 ?) sur un plan serré (#82, fov 27,1).
+[?]      Types d'interpolation (octet "interpolation" 0..4 -> CameraEasing) :
+         mappés au jugé, non reversés. Le moteur les range dans son
+         interpolateur (offset +0x3c) ; à confirmer courbe par courbe.
+[MANQUE] Camera_Reset (1317 occurrences, 5e commande la plus fréquente) : pas
+         implémentée -> après un reset le viewport garde le dernier plan au lieu
+         de revenir à la caméra de suivi par défaut.
+[MANQUE] Camera_Shake (889) : ignorée (cosmétique, sans effet sur le cadrage).
+[MANQUE] Camera_SetFlags / ClearFlags (193) et OP45_0 (611) : sélecteurs non
+         identifiés.
+[MANQUE] Camera_LookAtEntityNode (70) vise la RACINE de l'entité, pas le noeud
+         (bone) demandé -> la caméra vise les pieds au lieu de la tête. Faisable
+         maintenant qu'on a les poses de squelette : prendre la transformée
+         monde du bone nommé.
+[?]      Camera_RotateBy / AddYaw / AlignToEntity / ZoomBy (une centaine au
+         total) : interprétés comme des deltas sur les angles orbitaux, non
+         reversés depuis le binaire.
+
+--- CREATION DE SCENES ET DE TRIGGERS ---
+[OK]     Créer / supprimer une fonction de scénario (boutons "New scene…" /
+         "Delete scene" sous la liste des scènes). Une nouvelle fonction contient
+         son RETURN et rien d'autre ; ajout puis suppression = byte-perfect,
+         vérifié sur t1000 (ED8Editor.DecompilerProbe --function-smoke).
+[OK]     Trigger de zone : un EntryBox SANS carte de destination lance la
+         fonction de scénario qui porte LE MEME NOM. Constaté dans t1000.ops
+         (EV_C08E30S00, EV_C00E06S00, EV_Fishing_Tuto : next="", flag 0x3,
+         entryType 0) et chacun de ces noms existe bien comme fonction du .dat.
+         Profil de création "Event trigger" ajouté au panneau OPS.
+[?]      Taille par défaut de la boîte (3 x 2,5 x 3) et flag 0x3 : recopiés des
+         exemples du jeu, jamais testés en jeu.
+[?]      Les LookPoints (portes, points d'examen) se lient AUSSI par nom à une
+         fonction (LP_door07, EV_DOOR01 dans t1000) : le profil "LookPoint event"
+         existe mais son nom par défaut (LP_event) ne dit pas qu'il doit
+         reprendre le nom de la fonction.
+[MANQUE] Une nouvelle fonction est toujours ajoutée en FIN de fichier et les
+         sauts venant d'autres fonctions vers une fonction supprimée ne sont pas
+         réécrits (l'éditeur prévient, il ne corrige pas).
+[MANQUE] Rien ne vérifie qu'un trigger pointe vers une fonction qui existe (ni
+         l'inverse) : un contrôle "triggers orphelins / fonctions sans trigger"
+         serait le premier garde-fou utile.
+
+--- DIALOGUES ---
+[OK]     Lecture et édition : l'opérande "dialog" s'affiche en texte dans le
+         bloc et s'édite dans l'inspecteur. Les octets de contrôle sont montrés
+         en échappements {XX} (0x11 = en-tête + id de message, 0x01 = saut de
+         ligne rendu comme un vrai retour, 0x02 = fin de page, 0x00 = fin), donc
+         un dialogue non modifié se ré-encode à l'octet près. Encodage UTF-8
+         sous dat_us, cp932 sous dat.
+[OK]     Les 4 octets qui suivent l'en-tête 0x11 (id de message) sont toujours
+         échappés en {XX} : ils sont souvent imprimables par hasard (« Y[ »), et
+         les laisser en texte exposait l'id à une réécriture accidentelle.
+[OK]     Les sauts de ligne s'affichent bien dans le champ (le TextBox multi-ligne
+         ne coupe que sur CRLF alors que le décodeur produit des \\n).
+[?]      Le SENS des balises texte (#3K, #0T, #3P, l'id de message de l'en-tête
+         0x11) n'est pas reversé : elles restent en clair/échappées, on ne les
+         interprète pas. Elles apparaissent donc aussi dans l'aperçu du bloc. A creuser si tu veux un éditeur "propre" (choix de
+         couleur, icône, attente).
+[MANQUE] Rien ne relie un dialogue à son entrée de t_text/voix : pas de preview
+         du nom du locuteur ni de la voix associée.
+[MANQUE] Pas de vérification de longueur/largeur de boîte : un texte trop long
+         débordera en jeu sans avertissement.
+
+--- EDITEUR DE SCRIPT (perf / ergonomie) ---
+[OK]     "Add at end" insère désormais AVANT le RETURN final (avant, l'ajout
+         après le RETURN produisait du code inatteignable, que la vue de flot
+         empile à l'écart — d'où l'impression qu'il "se mettait au début").
+[OK]     Le padding OP0 après le RETURN final n'est plus affiché comme bloc.
+[OK]     Reconstruction d'une scène accélérée : polices partagées (au lieu de
+         2 handles GDI par bloc), ajout des blocs en une passe (AddRange) et
+         canvas masqué pendant la reconstruction.
+[OK]     Zone de défilement du graphe : les blocs étaient placés en coordonnées
+         CLIENT (donc décalées dès qu'on avait scrollé) et les bornes de scroll
+         lues sur ces mêmes coordonnées -> vide énorme sous le dernier bloc et
+         contenu inaccessible à droite. Le placement se fait maintenant depuis
+         l'origine, les bornes viennent de la mise en page elle-même, et la
+         largeur inclut la voie où sont tracées les flèches de boucle. Les rangées
+         vides ne prennent plus de place.
+[OK]     Profondeur des rangées : 8 passes ne suffisaient pas sur les grandes
+         scènes (le RETURN final ne se retrouvait pas en bas). Limite portée à
+         nb de noeuds (max 256), sortie dès stabilité.
+[OK]     CRASH corrigé : le placement des colonnes récursait à l'infini (stack
+         overflow) dès qu'une branche de saut arrière rejoignait son propre
+         embranchement — chaque appel repartait avec un parcours neuf. Une région
+         n'est désormais placée qu'une fois (+ limite de profondeur).
+[?]      Vérif automatique : --verify-graph <script.dat> "*" contrôle que la
+         zone de défilement couvre exactement les blocs ET PEINT réellement
+         chaque scène à 4 positions de défilement. Passé sur t1000, t1010,
+         c0100, t1500, a0000 (681 scènes, 73k instructions). Ne contrôle PAS le
+         croisement des flèches ni la lisibilité du placement.
+[OK]     GDI+ refuse les coordonnées au-delà de ±32768 (pipeline fixed-point
+         16.16) : une scène de 1400 blocs fait ~100 000 px de haut, donc dessiner
+         via un TranslateTransform en coordonnées de graphe levait une
+         OverflowException dès l'ouverture. Le rendu se fait maintenant en
+         coordonnées ÉCRAN, et les points d'arête hors champ sont bornés à
+         ±20000 — sans effet visible, tous les segments routés étant alignés sur
+         les axes. C'est ce cas que la vérification par peinture couvre.
+[OK]     Les blocs sont maintenant DESSINÉS, plus instanciés : zéro contrôle
+         WinForms par instruction (avant : ~4000 contrôles reconstruits à chaque
+         édition d'une scène de 1300 instructions). Tous les blocs restent
+         présents ; seul ce qui croise la zone visible est peint. Mesure : les
+         198 scènes de t1000 (17 734 instructions, la plus grosse en fait 1448)
+         se mettent en page en 809 ms au TOTAL, soit ~4 ms par scène, contre
+         ~15 s auparavant pour une seule.
+[?]      L'édition des opérandes est inchangée (inspecteur + éditeur d'instruction
+         en popup) : le canevas ne fait que sélectionner (clic), ouvrir l'éditeur
+         (double-clic), déplacer (glisser) et éditer un saut (double-clic sur une
+         flèche). Rien n'était éditable DANS le bloc avant, rien ne l'est
+         maintenant.
+[MANQUE] Le canevas ne redimensionne pas les blocs au contenu long : le résumé
+         d'opérandes est coupé (ellipse) au-delà de la hauteur mesurée.
+
+--- GESTION DES FICHIERS DE MOD ---
+[OK]     Projet de mod (.ed8mod, JSON) + magasin local à côté du projet :
+         <projet>.files/original/<chemin jeu> (copie vierge prise AVANT la
+         première écriture) et .../current/<chemin jeu> (version du mod).
+         Onglet "Mod project" du panneau de gauche : arborescence des fichiers,
+         restauration des originaux, ré-application du mod, export .zip avec les
+         chemins du jeu à la racine (data/... prêt à décompresser par-dessus une
+         installation). Sauvegardes d'OPS et de scripts suivies automatiquement.
+[?]      Un fichier ajouté à la main au projet ("Add an existing file") n'a PAS
+         de copie d'origine : la restauration le SUPPRIME. A n'utiliser que pour
+         des fichiers que le mod apporte.
+[MANQUE] Aucune détection de conflit : si un fichier du jeu a été modifié par un
+         autre outil entre-temps, l'éditeur l'écrase sans prévenir.
+[MANQUE] Repack pkg pour les assets ajoutés/modifiés (les .pkg ne peuvent
+         qu'être ajoutés au projet tels quels, pas reconstruits).
+[MANQUE] Le projet ne rouvre pas encore les fichiers dans l'éditeur : il les
+         liste et les gère, mais l'ouverture d'une scène passe toujours par le
+         menu Fichier.
+[MANQUE] Pas d'historique/versions (une seule copie "current" par fichier, pas
+         de suivi des révisions successives).
+
+--- OUTILLAGE DE VERIF (headless, sans fenêtre) ---
+  ED8Editor.Viewer --verify-conventions
+      vérifie la convention caméra + le parseur de motifs faciaux.
+  ED8Editor.Viewer --dump-entity-state <script.dat> <fonction> <index> <out.txt>
+      rejoue un bloc et écrit caméra (cible/distance/angles/oeil calculé) +
+      entités (modèle, slots d'animation, expression faciale échantillonnée).
+  ED8Editor.DecompilerProbe --function-smoke <script.dat>
+      création d'une fonction + sérialisation + suppression = byte-perfect.
+  dotnet run --project tests/ED8Editor.Tests
+      dont le projet de mod (sauvegarde / restauration / export .zip).

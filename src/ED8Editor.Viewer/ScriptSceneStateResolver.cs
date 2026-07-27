@@ -596,6 +596,7 @@ internal static class ScriptSceneStateResolver
         private readonly Dictionary<string, ScriptPropAnimation> propAnimations =
             new(StringComparer.Ordinal);
         private readonly List<UnresolvedScriptCall> unresolvedCalls = new();
+        private readonly ScriptVariableState variables = new();
         private List<ScriptSceneTimelinePoint>? timelinePoints;
         private int executedInstructions;
         private int elapsedFrames;
@@ -701,6 +702,7 @@ internal static class ScriptSceneStateResolver
                     "Script state replay exceeded its instruction limit.");
 
             var before = timelinePoints is null ? null : Snapshot();
+            ApplyVariableWrite(instruction, selfEntityId);
             EnsureReferencedEntities(instruction, selfEntityId);
             ApplyEntityInstruction(instruction, selfEntityId);
             ApplyFacialExpression(instruction, selfEntityId);
@@ -807,8 +809,78 @@ internal static class ScriptSceneStateResolver
                 var instruction = function.Instructions[index];
                 ExecuteInstruction(ownerScript, function, instruction, callStack, selfEntityId);
                 if (instruction.Opcode == 1) return;
-                index = ScriptCameraStateResolver.Successors(function, index)
-                    .FirstOrDefault(-1);
+                index = NextInstructionIndex(function, index, selfEntityId);
+            }
+        }
+
+        /// <summary>
+        /// Follows the branch the engine would take. A conditional jump whose
+        /// expression is fully known is resolved exactly; anything else keeps the
+        /// deterministic sequential-first policy shared with the camera resolver.
+        /// </summary>
+        private int NextInstructionIndex(
+            DecompiledFunction function,
+            int index,
+            int? selfEntityId)
+        {
+            var instruction = function.Instructions[index];
+            if (instruction.Opcode == 5
+                && instruction.Arguments.FirstOrDefault(value => value.Kind == "expr")
+                    is { } condition
+                && ScriptExpressionEvaluator.TryEvaluate(
+                    condition.Expression, variables, selfEntityId, out var value))
+            {
+                if (value != 0)
+                {
+                    return index + 1 < function.Instructions.Count ? index + 1 : -1;
+                }
+                var target = instruction.Jumps.FirstOrDefault(jump =>
+                    jump.TargetFunctionIndex == function.Index
+                    && jump.TargetInstructionIndex >= 0);
+                if (target is not null) return target.TargetInstructionIndex;
+                return -1;
+            }
+            return ScriptCameraStateResolver.Successors(function, index).FirstOrDefault(-1);
+        }
+
+        private void ApplyVariableWrite(
+            DecompiledInstruction instruction,
+            int? selfEntityId)
+        {
+            switch (instruction.Opcode)
+            {
+                case 10:
+                case 18:
+                {
+                    if (instruction.Arguments.Count < 2) return;
+                    var expression = instruction.Arguments[1];
+                    variables.WriteRegister(
+                        selfEntityId,
+                        instruction.Arguments[0].IntValue,
+                        ScriptExpressionEvaluator.TryEvaluate(
+                            expression.Expression, variables, selfEntityId, out var value)
+                            ? value
+                            : null);
+                    return;
+                }
+                case 12:
+                case 13:
+                {
+                    if (instruction.Arguments.Count < 1) return;
+                    variables.WriteFlag(
+                        instruction.Arguments[0].IntValue, instruction.Opcode == 12);
+                    return;
+                }
+                case 43:
+                case 44:
+                {
+                    if (instruction.Arguments.Count < 2) return;
+                    variables.WriteEntityStatus(
+                        ResolveEntityId(instruction.Arguments[0].IntValue, selfEntityId),
+                        instruction.Arguments[1].IntValue,
+                        instruction.Opcode == 43);
+                    return;
+                }
             }
         }
 
@@ -867,11 +939,16 @@ internal static class ScriptSceneStateResolver
                 if (holdFinalFrame && entities.TryGetValue(entityId, out var finalEntity)
                     && finalEntity.AnimationSlots is { Count: > 0 })
                 {
+                    // Outside a timeline the scene is shown at rest: a one-shot
+                    // clip stays on its final pose, but a looping clip (every
+                    // idle) keeps playing exactly as the engine loops it.
                     entities[entityId] = finalEntity with
                     {
                         AnimationSlots = finalEntity.AnimationSlots.ToDictionary(
                             pair => pair.Key,
-                            pair => pair.Value with { HoldFinalFrame = true }),
+                            pair => pair.Value.Loop
+                                ? pair.Value
+                                : pair.Value with { HoldFinalFrame = true }),
                     };
                 }
             }

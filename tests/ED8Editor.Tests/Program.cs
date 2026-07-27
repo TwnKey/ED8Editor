@@ -1,4 +1,4 @@
-using System.Buffers.Binary;
+﻿using System.Buffers.Binary;
 using System.Numerics;
 using System.Text;
 using ED8Editor.Core;
@@ -903,6 +903,7 @@ var tests = new (string Name, Action Run)[]
     ("evaluates embedded scene-node animation", EvaluatesSceneNodeAnimation),
     ("reads exact animation actions from object INF metadata", ReadsObjectAnimationInfo),
     ("segments embedded animations by authored INF frames", SegmentsEmbeddedAnimation),
+    ("backs up, restores and ships mod project files", TracksModProjectFiles),
 };
 
 var failures = 0;
@@ -921,6 +922,62 @@ foreach (var test in tests)
 }
 
 return failures == 0 ? 0 : 1;
+
+static void TracksModProjectFiles()
+{
+    var root = Path.Combine(Path.GetTempPath(), $"ed8mod-{Guid.NewGuid():N}");
+    var game = Path.Combine(root, "game");
+    var scripts = Path.Combine(game, "data", "scripts", "scena", "dat_us");
+    Directory.CreateDirectory(scripts);
+    var edited = Path.Combine(scripts, "t1000.dat");
+    var added = Path.Combine(scripts, "brand_new.dat");
+    File.WriteAllText(edited, "original");
+    try
+    {
+        var project = ED8Editor.Application.ModProject.Create(
+            Path.Combine(root, "my-mod.ed8mod"), game);
+
+        // An edit of a shipped file keeps a pristine copy.
+        project.CaptureOriginal(edited);
+        File.WriteAllText(edited, "modded");
+        project.TrackSave(edited);
+        // A file the game never had is tracked with no original.
+        File.WriteAllText(added, "new content");
+        project.Include(added);
+
+        if (project.Files.Count != 2) throw new Exception("The project did not track both files.");
+        var relative = project.Files.Select(value => value.RelativePath).ToArray();
+        if (!relative.Contains("data/scripts/scena/dat_us/t1000.dat"))
+            throw new Exception("The tracked path is not game-relative with forward slashes.");
+
+        var archive = Path.Combine(root, "ship.zip");
+        if (project.ExportArchive(archive) != 2) throw new Exception("The archive is missing files.");
+        using (var zip = System.IO.Compression.ZipFile.OpenRead(archive))
+        {
+            if (zip.GetEntry("data/scripts/scena/dat_us/t1000.dat") is null)
+                throw new Exception("The archive does not keep the game paths at its root.");
+        }
+
+        project.RestoreOriginals();
+        if (File.ReadAllText(edited) != "original")
+            throw new Exception("Restoring did not put the shipped file back.");
+        if (File.Exists(added))
+            throw new Exception("Restoring did not remove a file the game never had.");
+
+        project.ApplyMod();
+        if (File.ReadAllText(edited) != "modded" || File.ReadAllText(added) != "new content")
+            throw new Exception("Re-applying the mod did not write its files back.");
+
+        // The project survives a reload.
+        var reopened = ED8Editor.Application.ModProject.Open(Path.Combine(root, "my-mod.ed8mod"));
+        if (reopened.Files.Count != 2 || !reopened.Files.All(value => value.HasModCopy))
+            throw new Exception("The reopened project lost its file list.");
+    }
+    finally
+    {
+        if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+    }
+}
 
 static void RoundTripsCs1Table()
 {

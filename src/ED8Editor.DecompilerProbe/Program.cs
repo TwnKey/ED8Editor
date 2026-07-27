@@ -82,6 +82,70 @@ if (args is ["--edit-smoke", var editPath])
     }
 }
 
+if (args is ["--function-smoke", var functionPath])
+{
+    var temporaryPath = Path.Combine(Path.GetTempPath(), $"ed8editor-fn-{Guid.NewGuid():N}.dat");
+    try
+    {
+        using var document = ScriptEditorDocument.Open(functionPath);
+        var before = document.Snapshot.Functions.Count;
+        var index = document.AddCodeFunction("EV_ED8EDITOR_SMOKE");
+        var created = document.Snapshot.Functions[index];
+        if (created.Name != "EV_ED8EDITOR_SMOKE" || !created.IsCode || created.Instructions.Count != 1)
+            throw new InvalidOperationException("The created function is not an executable one-instruction body.");
+        document.Save(temporaryPath);
+        using (var reopened = ScriptEditorDocument.Open(temporaryPath))
+        {
+            var snapshot = reopened.Snapshot;
+            if (snapshot.Functions.Count != before + 1)
+                throw new InvalidOperationException("The created function did not survive serialization.");
+            var reloaded = snapshot.Functions.FirstOrDefault(value => value.Name == "EV_ED8EDITOR_SMOKE")
+                ?? throw new InvalidOperationException("The created function lost its name.");
+            if (!reloaded.IsCode || reloaded.Instructions.Count == 0 || reloaded.Instructions[0].Opcode != 1)
+                throw new InvalidOperationException("The reopened function does not start with its RETURN.");
+            // Every other function must still decode exactly as before.
+            var original = ScriptDecompiler.Decompile(functionPath);
+            foreach (var function in original.Functions)
+            {
+                var match = snapshot.Functions.FirstOrDefault(value => value.Name == function.Name);
+                if (match is null || match.IsCode != function.IsCode
+                    || match.Instructions.Count != function.Instructions.Count)
+                {
+                    throw new InvalidOperationException(
+                        $"Function '{function.Name}' changed when a new function was added.");
+                }
+            }
+        }
+        document.RemoveFunction(index);
+        document.Save(temporaryPath);
+        if (!File.ReadAllBytes(functionPath).SequenceEqual(File.ReadAllBytes(temporaryPath)))
+            throw new InvalidOperationException("Add then remove is not byte-perfect.");
+        Console.WriteLine($"PASS function add/serialize/remove byte-perfect: {Path.GetFileName(functionPath)}");
+        return 0;
+    }
+    finally
+    {
+        if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+    }
+}
+
+if (args is ["--time-snapshot", var timePath])
+{
+    var clock = System.Diagnostics.Stopwatch.StartNew();
+    using var timed = ScriptEditorDocument.Open(timePath);
+    Console.WriteLine($"open: {clock.ElapsedMilliseconds} ms");
+    for (var pass = 0; pass < 3; pass++)
+    {
+        clock.Restart();
+        var snapshot = timed.Snapshot;
+        Console.WriteLine(
+            $"snapshot {pass}: {clock.ElapsedMilliseconds} ms"
+            + $" ({snapshot.Functions.Count} functions,"
+            + $" {snapshot.Functions.Sum(value => value.Instructions.Count)} instructions)");
+    }
+    return 0;
+}
+
 if (args is ["--dump-tables", var tablePath])
 {
     var tableScript = ScriptDecompiler.Decompile(tablePath);

@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text;
 using ED8Editor.Decompiler;
 using ED8Editor.Tables;
@@ -12,6 +12,11 @@ namespace ED8Editor.Viewer;
 public sealed class ScriptEditorForm : Form
 {
     private static readonly Encoding ScriptEncoding = CreateScriptEncoding();
+    private static readonly Font DialogFont = new("Consolas", 9.5f);
+
+    // Dialogue text follows the script's locale: UTF-8 under dat_us, cp932 for
+    // the Japanese originals. Set when a script is loaded.
+    private static Encoding DialogEncoding = CreateScriptEncoding();
     private static readonly ExpressionTokenChoice[] ExpressionTokens =
     {
         new("Constant (0x00)", 0x00),
@@ -38,6 +43,8 @@ public sealed class ScriptEditorForm : Form
     private static readonly Color BlockBackground = Color.FromArgb(45, 46, 52);
 
     private readonly ListBox scenesList = new() { Dock = DockStyle.Fill, IntegralHeight = false };
+    private readonly Button newSceneButton = new() { AutoSize = true, Text = "New scene…" };
+    private readonly Button deleteSceneButton = new() { AutoSize = true, Text = "Delete scene" };
     private readonly TreeView tablesTree = new() { Dock = DockStyle.Fill, HideSelection = false };
     private readonly ListBox entitiesList = new() { Dock = DockStyle.Fill, IntegralHeight = false };
     private readonly ScriptFlowPanel blocks = new()
@@ -109,7 +116,7 @@ public sealed class ScriptEditorForm : Form
     private readonly StatusStrip status = new();
     private readonly ToolStripStatusLabel statusLabel = new();
     private readonly List<DecompiledFunction> codeFunctions = new();
-    private readonly Dictionary<int, Control> blockByIndex = new();
+    private readonly HashSet<int> blockByIndex = new();
     private readonly HashSet<Keys> forwardedViewportKeys = new();
 
     private ScriptEditorDocument? document;
@@ -136,6 +143,8 @@ public sealed class ScriptEditorForm : Form
         KeyPreview = true;
         BuildUi();
         blocks.MoveRequested += (from, to) => MoveInstruction(from, to);
+        blocks.InstructionSelected += index => SelectDrawnInstruction(index);
+        blocks.InstructionActivated += index => ActivateDrawnInstruction(index);
         blocks.JumpEditRequested += (instruction, argument) => OpenJumpEditor(instruction, argument);
         Deactivate += (_, _) => ReleaseViewportKeys();
     }
@@ -151,6 +160,12 @@ public sealed class ScriptEditorForm : Form
     public event Action<DecompiledFunction>? FunctionSelected;
 
     public event Action<int>? EntityActivated;
+
+    /// <summary>Raised with the target path just before a script is written.</summary>
+    public event Action<string>? FileSaving;
+
+    /// <summary>Raised with the target path once a script has been written.</summary>
+    public event Action<string>? FileSaved;
 
     public DecompiledScript? CurrentScript => script;
 
@@ -296,7 +311,19 @@ public sealed class ScriptEditorForm : Form
             SplitterWidth = 5,
         };
         var scenesGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Scenes (functions)" };
+        var scenesTools = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom,
+            AutoSize = true,
+            WrapContents = false,
+            Padding = new Padding(2),
+        };
+        newSceneButton.Click += (_, _) => CreateScene();
+        deleteSceneButton.Click += (_, _) => DeleteScene();
+        scenesTools.Controls.Add(newSceneButton);
+        scenesTools.Controls.Add(deleteSceneButton);
         scenesGroup.Controls.Add(scenesList);
+        scenesGroup.Controls.Add(scenesTools);
         leftSplit.Panel1.Controls.Add(scenesGroup);
         var lowerNavigator = new SplitContainer
         {
@@ -384,6 +411,7 @@ public sealed class ScriptEditorForm : Form
         }
         if (!ConfirmCloseDocument()) return;
 
+        DialogEncoding = ScriptDialogText.ResolveEncoding(datPath);
         ScriptEditorDocument loadedDocument;
         DecompiledScript loadedScript;
         try
@@ -435,7 +463,7 @@ public sealed class ScriptEditorForm : Form
             ScriptSceneStateResolver.VerifyReplaySmoke(script);
             var function = script.Functions[selectedFunctionIndex];
             if (function.Instructions.Where(value => value.Opcode == 5)
-                .Any(value => blockByIndex.ContainsKey(value.Index)))
+                .Any(value => blockByIndex.Contains(value.Index)))
                 throw new InvalidOperationException("A conditional jump is still represented by a block.");
         }
 
@@ -502,7 +530,9 @@ public sealed class ScriptEditorForm : Form
 
         try
         {
+            FileSaving?.Invoke(target!);
             document.Save(target);
+            FileSaved?.Invoke(target!);
             statusLabel.Text = $"Saved: {target}";
             UpdateTitle();
             return true;
@@ -596,24 +626,37 @@ public sealed class ScriptEditorForm : Form
         SetRuntimeEntities(Array.Empty<ScriptEntityChoice>());
         SetInstructionToolsEnabled(true);
         ClearInstructionInspector();
+        // The canvas draws its blocks, so showing a scene only fills a list and
+        // repaints: no control is created, whatever the size of the scene.
         blocks.SuspendLayout();
-        blocks.ClearSelection();
-        blocks.Controls.Clear();
-        blockByIndex.Clear();
-        rightHeader.Text = $"Scene: {function.Name} — {function.Instructions.Count} instructions";
-        foreach (var instruction in function.Instructions)
+        try
         {
-            // OP5 = branch point (pivot node drawn by the canvas).
-            // OP3 = unconditional jump: the arrow stands for it, so no block.
-            if (instruction.Opcode == 5) continue;
-            if (instruction.Opcode == 3 && instruction.Jumps.Any(value =>
-                value.TargetFunctionIndex == function.Index && value.TargetInstructionIndex >= 0)) continue;
-            var block = BuildCompactInstructionBlock(function, instruction);
-            blockByIndex[instruction.Index] = block;
-            blocks.Controls.Add(block);
+            blocks.ClearSelection();
+            blocks.Controls.Clear();
+            blockByIndex.Clear();
+            rightHeader.Text = $"Scene: {function.Name} — {function.Instructions.Count} instructions";
+            var newBlocks = new List<ScriptFlowBlock>(function.Instructions.Count);
+            foreach (var instruction in function.Instructions)
+            {
+                // OP5 = branch point (pivot node drawn by the canvas).
+                // OP3 = unconditional jump: the arrow stands for it, so no block.
+                if (instruction.Opcode == 5) continue;
+                if (instruction.Opcode == 3 && instruction.Jumps.Any(value =>
+                    value.TargetFunctionIndex == function.Index && value.TargetInstructionIndex >= 0)) continue;
+                if (IsTrailingPadding(function, instruction)) continue;
+                blockByIndex.Add(instruction.Index);
+                newBlocks.Add(new ScriptFlowBlock(
+                    instruction.Index,
+                    $"#{instruction.Index}   {instruction.Name}",
+                    BuildInstructionSummary(function, instruction),
+                    GetInstructionColor(instruction.Name)));
+            }
+            blocks.SetGraph(newBlocks, function);
         }
-        blocks.SetGraph(blockByIndex, function);
-        blocks.ResumeLayout();
+        finally
+        {
+            blocks.ResumeLayout();
+        }
     }
 
     /// <summary>One condition of the active path and the branch taken.</summary>
@@ -656,7 +699,7 @@ public sealed class ScriptEditorForm : Form
 
         var function = script.Functions[selectedFunctionIndex];
         var matches = function.Instructions
-            .Where(instruction => blockByIndex.ContainsKey(instruction.Index))
+            .Where(instruction => blockByIndex.Contains(instruction.Index))
             .Where(instruction => MatchesSearch(instruction, query))
             .ToArray();
         if (matches.Length == 0)
@@ -697,42 +740,6 @@ public sealed class ScriptEditorForm : Form
         return exactValue.Contains(query, StringComparison.OrdinalIgnoreCase);
     }
 
-    private Panel BuildCompactInstructionBlock(
-        DecompiledFunction function, DecompiledInstruction instruction)
-    {
-        var block = new Panel
-        {
-            BorderStyle = BorderStyle.FixedSingle,
-            BackColor = BlockBackground,
-            Margin = Padding.Empty,
-            MinimumSize = new Size(330, 64),
-        };
-        var header = new Label
-        {
-            Dock = DockStyle.Top,
-            Height = 29,
-            BackColor = GetInstructionColor(instruction.Name),
-            ForeColor = Color.White,
-            Font = new Font("Consolas", 9.5f, FontStyle.Bold),
-            Padding = new Padding(7, 0, 4, 0),
-            TextAlign = ContentAlignment.MiddleLeft,
-            Text = $"#{instruction.Index}   {instruction.Name}",
-        };
-        var summary = new Label
-        {
-            Dock = DockStyle.Fill,
-            ForeColor = Color.Gainsboro,
-            Font = new Font("Consolas", 8.5f),
-            Padding = new Padding(7, 4, 5, 3),
-            AutoEllipsis = true,
-            Text = BuildInstructionSummary(function, instruction),
-        };
-        block.Controls.Add(summary);
-        block.Controls.Add(header);
-        WireCompactBlockSelection(block, function, instruction);
-        return block;
-    }
-
     private string BuildInstructionSummary(DecompiledFunction function, DecompiledInstruction instruction)
     {
         var hasDrawableJump = instruction.Jumps.Any(jump => jump.TargetFunctionIndex == function.Index
@@ -758,29 +765,23 @@ public sealed class ScriptEditorForm : Form
         return values.Count == 0 ? "No arguments" : string.Join("   |   ", values);
     }
 
-    private void WireCompactBlockSelection(
-        Control root, DecompiledFunction function, DecompiledInstruction instruction)
+    /// <summary>Selection raised by the canvas, which knows indices, not models.</summary>
+    private void SelectDrawnInstruction(int index)
     {
-        Point? dragOrigin = null;
-        root.MouseDown += (_, eventArgs) =>
-        {
-            blocks.Focus();
-            SelectInstruction(function, instruction);
-            if (eventArgs.Button == MouseButtons.Left) dragOrigin = eventArgs.Location;
-        };
-        root.MouseUp += (_, _) => dragOrigin = null;
-        root.DoubleClick += (_, _) => OpenInstructionEditor(function, instruction);
-        root.MouseMove += (_, eventArgs) =>
-        {
-            if (dragOrigin is not { } origin || eventArgs.Button != MouseButtons.Left) return;
-            var dragSize = SystemInformation.DragSize;
-            if (Math.Abs(eventArgs.X - origin.X) < Math.Max(2, dragSize.Width / 2)
-                && Math.Abs(eventArgs.Y - origin.Y) < Math.Max(2, dragSize.Height / 2)) return;
-            dragOrigin = null;
-            blocks.BeginInstructionDrag(root, instruction.Index);
-        };
-        foreach (Control child in root.Controls)
-            WireCompactBlockSelection(child, function, instruction);
+        if (script is null || selectedFunctionIndex < 0) return;
+        var function = script.Functions.FirstOrDefault(value => value.Index == selectedFunctionIndex);
+        var instruction = function?.Instructions.FirstOrDefault(value => value.Index == index);
+        if (function is null || instruction is null) return;
+        SelectInstruction(function, instruction);
+    }
+
+    private void ActivateDrawnInstruction(int index)
+    {
+        if (script is null || selectedFunctionIndex < 0) return;
+        var function = script.Functions.FirstOrDefault(value => value.Index == selectedFunctionIndex);
+        var instruction = function?.Instructions.FirstOrDefault(value => value.Index == index);
+        if (function is null || instruction is null) return;
+        OpenInstructionEditor(function, instruction);
     }
 
     private void SelectInstruction(DecompiledFunction function, DecompiledInstruction instruction)
@@ -1087,6 +1088,68 @@ public sealed class ScriptEditorForm : Form
         }, instruction.Index);
     }
 
+    /// <summary>
+    /// Dialogue editor: the line is shown as text, its control codes as {XX}
+    /// escapes (0x11 opens the header carrying the message id, 0x02 closes a
+    /// page, 0x00 terminates) and its 0x01 line breaks as real new lines. Leave
+    /// the escapes untouched and the bytes come back exactly as they were.
+    /// </summary>
+    private Control BuildDialogEditor(
+        DecompiledFunction function, DecompiledInstruction instruction, InstructionArgument argument)
+    {
+        var encoding = ScriptDialogText.ResolveEncoding(document?.SourcePath);
+        var panel = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            WrapContents = false,
+            FlowDirection = FlowDirection.TopDown,
+            Margin = new Padding(8, 6, 8, 10),
+            Padding = new Padding(8),
+            BackColor = Color.FromArgb(41, 54, 68),
+        };
+        panel.Controls.Add(new Label
+        {
+            AutoSize = true,
+            ForeColor = Color.Gainsboro,
+            Text = $"Dialogue ({argument.Raw.Length} bytes) — {{XX}} = control byte, kept as is",
+        });
+        var field = new TextBox
+        {
+            Multiline = true,
+            ScrollBars = ScrollBars.Vertical,
+            AcceptsReturn = true,
+            Width = 460,
+            Height = 150,
+            Font = DialogFont,
+            // A multiline text box only breaks a line on CRLF; the decoder speaks
+            // in single new lines.
+            Text = ScriptDialogText.Decode(argument.Raw, encoding)
+                .Replace("\n", Environment.NewLine, StringComparison.Ordinal),
+        };
+        var status = new Label { AutoSize = true, ForeColor = Color.Gainsboro, Text = string.Empty };
+        var apply = new Button { AutoSize = true, Text = "Apply dialogue" };
+        apply.Click += (_, _) =>
+        {
+            byte[] encoded;
+            try
+            {
+                encoded = ScriptDialogText.Encode(field.Text, encoding);
+            }
+            catch (EncoderFallbackException exception)
+            {
+                status.Text = $"Unsupported character for this script's encoding: {exception.Message}";
+                return;
+            }
+            RunEdit(
+                () => document!.SetBytes(function.Index, instruction.Index, argument.Index, encoded),
+                instruction.Index);
+        };
+        panel.Controls.Add(field);
+        panel.Controls.Add(apply);
+        panel.Controls.Add(status);
+        return panel;
+    }
+
     private Control BuildArgumentEditor(
         DecompiledFunction function, DecompiledInstruction instruction, InstructionArgument argument)
     {
@@ -1111,6 +1174,9 @@ public sealed class ScriptEditorForm : Form
 
         if (argument.Kind == "scalar" && argument.Type != "ptr32")
             return BuildScalarEditor(instruction, new[] { argument });
+
+        if (argument.Kind == "dialog")
+            return BuildDialogEditor(function, instruction, argument);
 
         var row = CreateArgumentRow(argument);
         if (argument.Kind == "string")
@@ -1548,15 +1614,120 @@ public sealed class ScriptEditorForm : Form
         }
     }
 
+    /// <summary>
+    /// Creates an empty scenario function. The game binds an event to a function
+    /// by NAME: an OPS entry box (or look point) carrying the same name runs it,
+    /// so the name typed here is what the map trigger must repeat.
+    /// </summary>
+    private void CreateScene()
+    {
+        if (document is null || script is null) return;
+        var name = PromptForSceneName();
+        if (name is null) return;
+        if (script.Functions.Any(value => value.Name.Equals(name, StringComparison.Ordinal)))
+        {
+            MessageBox.Show(
+                this, $"'{name}' already exists in this script.", "Cannot create scene",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        try
+        {
+            var index = document.AddCodeFunction(name);
+            RefreshDocument(index, 0);
+            statusLabel.Text = $"Created scene '{name}'. Add a map trigger with the same name"
+                + " (OPS creation panel → \"Event trigger\") to run it when the player walks in.";
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+        {
+            MessageBox.Show(
+                this, exception.Message, "Cannot create scene", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private void DeleteScene()
+    {
+        if (document is null || script is null || selectedFunctionIndex < 0) return;
+        var function = script.Functions.FirstOrDefault(value => value.Index == selectedFunctionIndex);
+        if (function is null) return;
+        var result = MessageBox.Show(
+            this,
+            $"Delete scene '{function.Name}' and its {function.Instructions.Count} instructions?"
+            + "\n\nBranches from other scenes into this one are not rewritten.",
+            "Delete scene", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+        if (result != DialogResult.Yes) return;
+        try
+        {
+            document.RemoveFunction(function.Index);
+            RefreshDocument(Math.Max(0, function.Index - 1), null);
+            statusLabel.Text = $"Deleted scene '{function.Name}'.";
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+        {
+            MessageBox.Show(
+                this, exception.Message, "Cannot delete scene", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private string? PromptForSceneName()
+    {
+        using var dialog = new Form
+        {
+            Text = "New scene",
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterParent,
+            MinimizeBox = false,
+            MaximizeBox = false,
+            ClientSize = new Size(420, 120),
+        };
+        var label = new Label
+        {
+            AutoSize = true,
+            Left = 12,
+            Top = 14,
+            Text = "Function name (an OPS trigger of the same name will run it):",
+        };
+        var input = new TextBox { Left = 12, Top = 40, Width = 396, Text = "EV_NEW00" };
+        var ok = new Button { Text = "Create", DialogResult = DialogResult.OK, Left = 252, Top = 74, Width = 75 };
+        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Left = 333, Top = 74, Width = 75 };
+        dialog.Controls.AddRange(new Control[] { label, input, ok, cancel });
+        dialog.AcceptButton = ok;
+        dialog.CancelButton = cancel;
+        if (dialog.ShowDialog(this) != DialogResult.OK) return null;
+        var name = input.Text.Trim();
+        return name.Length == 0 ? null : name;
+    }
+
     private void InsertInstruction(int? position)
     {
         if (document is null || selectedFunctionIndex < 0) return;
         var name = instructionTypes.Text.Trim();
         if (name.Length == 0) return;
         var function = script!.Functions[selectedFunctionIndex];
-        var insertion = position ?? function.Instructions.Count;
+        // "At the end" means the end of what actually runs: appending after the
+        // closing RETURN would produce unreachable code, which the flow view then
+        // stacks apart from the scene.
+        var insertion = position ?? LastExecutableIndex(function);
         RunEdit(() => document.InsertInstruction(selectedFunctionIndex, insertion, name), insertion);
     }
+
+    /// <summary>
+    /// Index of the function's closing RETURN, i.e. where a new instruction must
+    /// go to stay part of the executed flow.
+    /// </summary>
+    private static int LastExecutableIndex(DecompiledFunction function)
+    {
+        for (var index = function.Instructions.Count - 1; index >= 0; index--)
+            if (function.Instructions[index].Opcode == 1) return index;
+        return function.Instructions.Count;
+    }
+
+    /// <summary>
+    /// A function is padded to its alignment with OP0 bytes after the closing
+    /// RETURN. They are not instructions and must not appear as blocks.
+    /// </summary>
+    private static bool IsTrailingPadding(DecompiledFunction function, DecompiledInstruction instruction)
+        => instruction.Opcode == 0 && instruction.Index > LastExecutableIndex(function);
 
     private void MoveInstruction(int from, int to)
     {
@@ -1658,19 +1829,9 @@ public sealed class ScriptEditorForm : Form
 
     private void ScrollToBlock(int index)
     {
-        if (!blockByIndex.TryGetValue(index, out var target)) return;
+        if (!blockByIndex.Contains(index)) return;
         blocks.SelectInstruction(index);
-        blocks.ScrollControlIntoView(target);
-        var old = target.BackColor;
-        target.BackColor = HeaderTarget;
-        var timer = new System.Windows.Forms.Timer { Interval = 700 };
-        timer.Tick += (_, _) =>
-        {
-            target.BackColor = old;
-            timer.Stop();
-            timer.Dispose();
-        };
-        timer.Start();
+        blocks.ScrollInstructionIntoView(index);
     }
 
     private void SetInstructionToolsEnabled(bool enabled)
@@ -1732,9 +1893,15 @@ public sealed class ScriptEditorForm : Form
         "scalar" => FormatScalar(argument),
         "string" => $"\"{DecodeText(argument.Raw)}\"",
         "expr" => FormatExpression(argument.Expression),
-        "dialog" => $"[dialogue {argument.Raw.Length} o]",
+        "dialog" => DescribeDialog(argument.Raw),
         _ => argument.Raw.Length == 0 ? "-" : BitConverter.ToString(argument.Raw).Replace('-', ' '),
     };
+
+    private static string DescribeDialog(byte[] raw)
+    {
+        var preview = ScriptDialogText.Summarize(raw, DialogEncoding);
+        return preview.Length == 0 ? $"[dialogue {raw.Length} o]" : $"“{preview}”";
+    }
 
     private static string FormatExpression(IReadOnlyList<ExprElement>? expression)
     {

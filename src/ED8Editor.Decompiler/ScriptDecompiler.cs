@@ -251,7 +251,14 @@ public sealed class ScriptDecompiler
             var label = Str(NativeMethods.cs1i_expr_elem_label(doc, f, k, a, i)) ?? string.Empty;
             var value = NativeMethods.cs1i_expr_value(doc, f, k, a, i);
             var nested = Str(NativeMethods.cs1i_expr_nested_name(doc, f, k, a, i));
-            elements.Add(new ExprElement(subop, kind, label, value, nested));
+            var nestedOpcode = NativeMethods.cs1i_expr_nested_op(doc, f, k, a, i);
+            var nestedArgumentCount = Math.Max(
+                0, NativeMethods.cs1i_expr_nested_argc(doc, f, k, a, i));
+            var nestedArguments = new int[nestedArgumentCount];
+            for (var n = 0; n < nestedArgumentCount; n++)
+                nestedArguments[n] = NativeMethods.cs1i_expr_nested_argi(doc, f, k, a, i, n);
+            elements.Add(new ExprElement(
+                subop, kind, label, value, nested, nestedOpcode, nestedArguments));
         }
 
         return elements;
