@@ -31,6 +31,8 @@ internal sealed class QuestEditorWindow : Form
     };
     private readonly Label metadata = new() { Dock = DockStyle.Top, Height = 54, AutoEllipsis = true };
     private string? savedPath;
+    private QuestRecord? currentQuest;
+    private QuestStage? currentStage;
 
     public QuestEditorWindow(string path, Action<string, bool> onSaving)
     {
@@ -113,7 +115,10 @@ internal sealed class QuestEditorWindow : Form
 
     private void SelectQuest()
     {
+        ApplyCurrent();
         if (questList.SelectedItem is not QuestRecord quest) return;
+        currentQuest = quest;
+        currentStage = null;
         title.Text = Value(quest.TitleFields, "title");
         persons.Text = Value(quest.TitleFields, "persons");
         stageList.DataSource = quest.Stages;
@@ -128,7 +133,9 @@ internal sealed class QuestEditorWindow : Form
 
     private void SelectStage()
     {
+        ApplyCurrent();
         if (stageList.SelectedItem is not QuestStage stage) return;
+        currentStage = stage;
         stageText.Text = Value(stage.Fields, "text");
         metadata.Text = $"Quest ID {stage.QuestId}; QSText state code "
             + $"{Value(stage.Fields, "unknown_byte_1")}; trailing byte "
@@ -137,15 +144,15 @@ internal sealed class QuestEditorWindow : Form
 
     private void ApplyCurrent()
     {
-        if (questList.SelectedItem is not QuestRecord quest) return;
-        Set(quest.TitleFields, "title", title.Text);
-        Set(quest.TitleFields, "persons", persons.Text);
-        quest.TitleEntry.Data = codec.Encode("QSTitle", quest.TitleFields);
-        if (stageList.SelectedItem is QuestStage stage)
+        if (currentQuest is null) return;
+        var changed = false;
+        changed |= SetIfChanged(currentQuest.TitleFields, "title", title.Text);
+        changed |= SetIfChanged(currentQuest.TitleFields, "persons", persons.Text);
+        if (currentStage is not null)
         {
-            Set(stage.Fields, "text", stageText.Text);
-            stage.Entry.Data = codec.Encode("QSText", stage.Fields);
+            changed |= SetIfChanged(currentStage.Fields, "text", stageText.Text);
         }
+        if (!changed) return;
         questList.Refresh();
         stageList.Refresh();
         Text = "Quest editor — t_quest.tbl *";
@@ -172,6 +179,12 @@ internal sealed class QuestEditorWindow : Form
         }
         try
         {
+            foreach (var quest in quests)
+            {
+                quest.TitleEntry.Data = codec.Encode("QSTitle", quest.TitleFields);
+                foreach (var stage in quest.Stages)
+                    stage.Entry.Data = codec.Encode("QSText", stage.Fields);
+            }
             onSaving(target!, true);
             document.Write(target!);
             onSaving(target!, false);
@@ -241,6 +254,16 @@ internal sealed class QuestEditorWindow : Form
         // The codec values are immutable records; this list is always the mutable
         // List created below.
         ((List<Cs1TableFieldValue>)values)[index] = values[index] with { Value = value };
+    }
+
+    private static bool SetIfChanged(
+        IReadOnlyList<Cs1TableFieldValue> values,
+        string name,
+        string value)
+    {
+        if (Value(values, name).Equals(value, StringComparison.Ordinal)) return false;
+        Set(values, name, value);
+        return true;
     }
 
     private sealed record QuestRecord(
