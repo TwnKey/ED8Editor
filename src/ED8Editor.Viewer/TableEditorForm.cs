@@ -7,6 +7,7 @@ internal sealed class TableEditorForm : Form
 {
     private readonly ScriptEditorDocument document;
     private readonly int functionIndex;
+    private readonly IReadOnlyList<MonsterTableChoice> monsterChoices;
     private readonly Label header = new() { Dock = DockStyle.Top, Height = 32, Padding = new Padding(8, 0, 0, 0) };
     private readonly DataGridView fields = new()
     {
@@ -22,10 +23,14 @@ internal sealed class TableEditorForm : Form
     private readonly Button duplicateEncounterButton = new() { Text = "Duplicate encounter", AutoSize = true, Visible = false };
     private readonly Button deleteEncounterButton = new() { Text = "Delete encounter", AutoSize = true, Visible = false };
 
-    public TableEditorForm(ScriptEditorDocument document, int functionIndex)
+    public TableEditorForm(
+        ScriptEditorDocument document,
+        int functionIndex,
+        IReadOnlyList<MonsterTableChoice>? monsterChoices = null)
     {
         this.document = document ?? throw new ArgumentNullException(nameof(document));
         this.functionIndex = functionIndex;
+        this.monsterChoices = monsterChoices ?? Array.Empty<MonsterTableChoice>();
         Text = "Table editor";
         StartPosition = FormStartPosition.CenterParent;
         MinimumSize = new Size(680, 420);
@@ -65,6 +70,7 @@ internal sealed class TableEditorForm : Form
         duplicateEncounterButton.Click += (_, _) => RunStructureEdit(DuplicateEncounter);
         deleteEncounterButton.Click += (_, _) => RunStructureEdit(DeleteEncounter);
         fields.SelectionChanged += (_, _) => UpdateEncounterButtons();
+        fields.DataError += (_, eventArgs) => eventArgs.ThrowException = false;
         LoadTable();
     }
 
@@ -83,7 +89,8 @@ internal sealed class TableEditorForm : Form
         duplicateEncounterButton.Visible = isCreateMonsters;
         deleteEncounterButton.Visible = isCreateMonsters;
         fields.Rows.Clear();
-        foreach (var field in table.Fields)
+        foreach (var field in table.Fields.Where(field =>
+                     table.Kind != "CreateMonsters" || field.Type != "fill"))
         {
             var rowIndex = fields.Rows.Add(
                 field.Index,
@@ -92,10 +99,33 @@ internal sealed class TableEditorForm : Form
                 FormatValue(field));
             var row = fields.Rows[rowIndex];
             row.Tag = field;
-            if (field.Type == "fill" || table.IsStale)
+            if (table.IsStale)
             {
                 row.Cells["value"].ReadOnly = true;
                 row.DefaultCellStyle.ForeColor = SystemColors.GrayText;
+            }
+            else if (TryGetMonsterSlot(table, field, out _)
+                     && field.Type == "string")
+            {
+                var choices = monsterChoices;
+                var assetId = field.Text ?? string.Empty;
+                if (!choices.Any(value =>
+                        value.AssetId.Equals(assetId, StringComparison.OrdinalIgnoreCase)))
+                {
+                    choices = choices.Append(new MonsterTableChoice(
+                        assetId,
+                        string.IsNullOrEmpty(assetId) ? "(empty slot)" : $"Unknown monster ({assetId})",
+                        string.Empty)).ToArray();
+                }
+                row.Cells["value"] = new DataGridViewComboBoxCell
+                {
+                    DataSource = choices,
+                    DisplayMember = nameof(MonsterTableChoice.Label),
+                    ValueMember = nameof(MonsterTableChoice.AssetId),
+                    Value = assetId,
+                    DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton,
+                    FlatStyle = FlatStyle.Flat,
+                };
             }
         }
         UpdateEncounterButtons();
@@ -263,7 +293,6 @@ internal sealed class TableEditorForm : Form
     {
         if (table.Kind != "CreateMonsters") return $"Field {field.Index}";
         if (field.Index == 0) return "Map asset";
-        if (field.Index == 1) return "Map asset padding";
         if (field.Index == 2) return "Header value 0";
         if (field.Index is >= 3 and <= 8) return $"Header value {field.Index - 2}";
         if (!CreateMonstersTableReader.TryRead(table, out var parsed) || parsed is null)
@@ -274,13 +303,32 @@ internal sealed class TableEditorForm : Form
             if (local < 0) continue;
             if (local == 0) return $"Encounter {encounter.Index}: ID";
             if (local is >= 1 and <= 16)
-                return local % 2 == 1
-                    ? $"Encounter {encounter.Index}: monster {(local - 1) / 2}"
-                    : $"Encounter {encounter.Index}: monster {(local - 2) / 2} padding";
+                return $"Encounter {encounter.Index}: monster {(local - 1) / 2}";
             if (local is >= 17 and <= 24)
                 return $"Encounter {encounter.Index}: weight {local - 17}";
             return $"Encounter {encounter.Index}: auxiliary data";
         }
         return "Trailer data";
+    }
+
+    private static bool TryGetMonsterSlot(
+        DecompiledTable table,
+        TableField field,
+        out int slot)
+    {
+        slot = -1;
+        if (!CreateMonstersTableReader.TryRead(table, out var parsed) || parsed is null)
+            return false;
+        foreach (var encounter in parsed.Encounters)
+        {
+            var local = encounter.SourceFields.ToList().FindIndex(value =>
+                value.Index == field.Index);
+            if (local is >= 1 and <= 16 && local % 2 == 1)
+            {
+                slot = (local - 1) / 2;
+                return true;
+            }
+        }
+        return false;
     }
 }

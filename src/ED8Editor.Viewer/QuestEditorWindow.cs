@@ -17,6 +17,8 @@ internal sealed class QuestEditorWindow : Form
     private readonly Cs1TableRecordCodec codec;
     private readonly IReadOnlyList<QuestRecord> quests;
     private readonly Action<string, bool> onSaving;
+    private readonly string? scriptPath;
+    private readonly Action openScriptEditor;
     private readonly ListBox questList = new() { Dock = DockStyle.Fill, IntegralHeight = false };
     private readonly ListBox stageList = new() { Dock = DockStyle.Fill, IntegralHeight = false };
     private readonly TextBox title = new() { Dock = DockStyle.Top };
@@ -34,9 +36,16 @@ internal sealed class QuestEditorWindow : Form
     private QuestRecord? currentQuest;
     private QuestStage? currentStage;
 
-    public QuestEditorWindow(string path, Action<string, bool> onSaving)
+    public QuestEditorWindow(
+        string path,
+        string? scriptPath,
+        Action openScriptEditor,
+        Action<string, bool> onSaving)
     {
         sourcePath = Path.GetFullPath(path);
+        this.scriptPath = scriptPath;
+        this.openScriptEditor =
+            openScriptEditor ?? throw new ArgumentNullException(nameof(openScriptEditor));
         this.onSaving = onSaving ?? throw new ArgumentNullException(nameof(onSaving));
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
         var locale = Path.GetFileName(Path.GetDirectoryName(sourcePath));
@@ -74,7 +83,6 @@ internal sealed class QuestEditorWindow : Form
         {
             Dock = DockStyle.Fill,
             Orientation = Orientation.Horizontal,
-            SplitterDistance = 380,
         };
         left.Panel1.Controls.Add(questGroup);
         left.Panel2.Controls.Add(stageGroup);
@@ -93,17 +101,111 @@ internal sealed class QuestEditorWindow : Form
         var split = new SplitContainer
         {
             Dock = DockStyle.Fill,
-            SplitterDistance = 390,
-            Panel1MinSize = 260,
-            Panel2MinSize = 420,
         };
         split.Panel1.Controls.Add(left);
         split.Panel2.Controls.Add(editor);
-        Controls.Add(split);
+        var questDataTab = new TabPage("Quest data") { Padding = new Padding(4) };
+        questDataTab.Controls.Add(split);
+        var integrationTab = new TabPage("Quest integration") { Padding = new Padding(8) };
+        integrationTab.Controls.Add(BuildIntegrationPanel());
+        var tabs = new TabControl { Dock = DockStyle.Fill };
+        tabs.TabPages.Add(questDataTab);
+        tabs.TabPages.Add(integrationTab);
+        Controls.Add(tabs);
         Controls.Add(menu);
+        WinFormsLayout.SetInitialSplitterDistance(split, 390);
+        WinFormsLayout.SetInitialSplitterDistance(left, 380);
         questList.SelectedIndexChanged += (_, _) => SelectQuest();
         stageList.SelectedIndexChanged += (_, _) => SelectStage();
         apply.Click += (_, _) => TryApplyCurrent();
+    }
+
+    private Control BuildIntegrationPanel()
+    {
+        var components = new ListView
+        {
+            Dock = DockStyle.Top,
+            Height = 245,
+            View = View.Details,
+            FullRowSelect = true,
+            GridLines = true,
+        };
+        components.Columns.Add("Component", 190);
+        components.Columns.Add("Current knowledge", 500);
+        components.Columns.Add("Status", 170);
+        Add("t_quest / QSTitle", "Quest ID, title, requester and preserved unknown flags.", "Editable");
+        Add("t_quest / QSText", "Journal stages grouped by the verified quest ID.", "Editable");
+        Add("t_quest / QSRank + QSChapter", "Global rank/chapter lookup data; exact quest lifecycle role not established.", "Decoded");
+        Add("t_navi / NaviTextData", "Objective/navigation text and opaque transition bytes.", "Decoded; link unresolved");
+        Add("Scenario script", "Start, progress and completion logic must reuse the existing script graph.", "Open current script");
+        Add("Quest state transitions", "Opcodes/flags that publish journal stages still require corpus verification.", "Research required");
+        Add("Rewards and inventory", "Likely executed by scenario instructions; not owned by QSTitle/QSText.", "Research required");
+        Add("Map markers / destinations", "Potential script, OPS and place-table references; no relation is assumed.", "Research required");
+        Add("Dialogue / cutscenes", "Calls and branches remain authored in the existing script editor.", "Reuse script graph");
+
+        var openScript = new Button
+        {
+            Dock = DockStyle.Top,
+            Height = 34,
+            Text = scriptPath is null
+                ? "No scenario script is associated with this table"
+                : $"Open current script graph — {Path.GetFileName(scriptPath)}",
+            Enabled = scriptPath is not null,
+        };
+        openScript.Click += (_, _) => openScriptEditor();
+
+        var naviGrid = new DataGridView
+        {
+            Dock = DockStyle.Fill,
+            ReadOnly = true,
+            AllowUserToAddRows = false,
+            AllowUserToDeleteRows = false,
+            RowHeadersVisible = false,
+            AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+        };
+        naviGrid.Columns.Add("id", "Navi ID");
+        naviGrid.Columns.Add("text", "Navigation text");
+        naviGrid.Columns.Add("opaque", "Preserved transition bytes");
+        PopulateNavigationRows(naviGrid);
+
+        var naviGroup = new GroupBox
+        {
+            Dock = DockStyle.Fill,
+            Text = "t_navi.tbl — decoded reference data (quest relationship not inferred)",
+        };
+        naviGroup.Controls.Add(naviGrid);
+        var panel = new Panel { Dock = DockStyle.Fill };
+        panel.Controls.Add(naviGroup);
+        panel.Controls.Add(openScript);
+        panel.Controls.Add(components);
+        return panel;
+
+        void Add(string component, string knowledge, string status)
+        {
+            var item = new ListViewItem(component);
+            item.SubItems.Add(knowledge);
+            item.SubItems.Add(status);
+            components.Items.Add(item);
+        }
+    }
+
+    private void PopulateNavigationRows(DataGridView grid)
+    {
+        var path = Path.Combine(
+            Path.GetDirectoryName(sourcePath)!,
+            "t_navi.tbl");
+        if (!File.Exists(path)) return;
+        var navi = Cs1TableDocument.Read(path);
+        foreach (var entry in navi.Entries.Where(value =>
+                     value.Category.Equals("NaviTextData", StringComparison.Ordinal)))
+        {
+            var values = codec.Decode(entry);
+            if (values is null) continue;
+            grid.Rows.Add(
+                Value(values, "unknown_short"),
+                Value(values, "text"),
+                Value(values, "unknown_data_2"));
+        }
     }
 
     private void PopulateQuests()

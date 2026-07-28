@@ -71,7 +71,6 @@ internal sealed class EffEditorWindow : Form
         {
             Dock = DockStyle.Fill,
             Orientation = Orientation.Vertical,
-            SplitterDistance = 780,
         };
         split.Panel1.Controls.Add(editor);
         previewTools.Items.Add(showCropButton);
@@ -83,6 +82,7 @@ internal sealed class EffEditorWindow : Form
         previewPanel.Controls.Add(previewTools);
         split.Panel2.Controls.Add(previewPanel);
         Controls.Add(split);
+        WinFormsLayout.SetInitialSplitterDistance(split, 780);
 
         previewHost.MouseWheel += (_, eventArgs) =>
         {

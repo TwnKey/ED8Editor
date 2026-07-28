@@ -152,7 +152,6 @@ public sealed class EffEditorControl : UserControl
         {
             Dock = DockStyle.Fill,
             Orientation = Orientation.Vertical,
-            SplitterDistance = 240,
         };
         editor.Panel1.Controls.Add(segments);
         segmentTabs.TabPages.Add(tracksTab);
@@ -168,7 +167,6 @@ public sealed class EffEditorControl : UserControl
         {
             Dock = DockStyle.Fill,
             Orientation = Orientation.Vertical,
-            SplitterDistance = 220,
         };
         split.Panel1.Controls.Add(browser);
         split.Panel2.Controls.Add(editor);
@@ -195,6 +193,8 @@ public sealed class EffEditorControl : UserControl
         Controls.Add(bar);
         Controls.Add(status);
         Dock = DockStyle.Fill;
+        WinFormsLayout.SetInitialSplitterDistance(editor, 240);
+        WinFormsLayout.SetInitialSplitterDistance(split, 220);
 
         filter.TextChanged += (_, _) => RefreshFiles();
         files.SelectedIndexChanged += (_, _) => OpenSelectedFile();

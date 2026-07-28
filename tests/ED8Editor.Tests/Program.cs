@@ -1266,6 +1266,15 @@ static void TracksModProjectFiles()
         var reopened = ED8Editor.Application.ModProject.Open(Path.Combine(root, "my-mod.ed8mod"));
         if (reopened.Files.Count != 2 || !reopened.Files.All(value => value.HasModCopy))
             throw new Exception("The reopened project lost its file list.");
+        reopened.Remove("data/scripts/scena/dat_us/t1000.dat");
+        var afterRemoval = ED8Editor.Application.ModProject.Open(
+            Path.Combine(root, "my-mod.ed8mod"));
+        if (afterRemoval.Files.Count != 1
+            || afterRemoval.Files.Single().RelativePath
+                != "data/scripts/scena/dat_us/brand_new.dat")
+        {
+            throw new Exception("Removing one mod file removed another project entry.");
+        }
     }
     finally
     {

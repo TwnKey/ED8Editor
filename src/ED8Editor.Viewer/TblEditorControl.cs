@@ -88,7 +88,7 @@ public sealed class TblEditorControl : UserControl
         var entryGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Entries by category" };
         entryGroup.Controls.Add(entryPanel);
 
-        var navigation = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal, SplitterDistance = 250 };
+        var navigation = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Horizontal };
         navigation.Panel1.Controls.Add(fileGroup);
         navigation.Panel2.Controls.Add(entryGroup);
 
@@ -116,12 +116,14 @@ public sealed class TblEditorControl : UserControl
         payloadGroup.Controls.Add(entryEditorTabs);
         payloadGroup.Controls.Add(entryTools);
 
-        var split = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 150, FixedPanel = FixedPanel.Panel1 };
+        var split = new SplitContainer { Dock = DockStyle.Fill, FixedPanel = FixedPanel.Panel1 };
         split.Panel1.Controls.Add(navigation);
         split.Panel2.Controls.Add(payloadGroup);
         Controls.Add(split);
         Controls.Add(status);
         Controls.Add(tools);
+        WinFormsLayout.SetInitialSplitterDistance(navigation, 250);
+        WinFormsLayout.SetInitialSplitterDistance(split, 150);
 
         localeList.SelectedIndexChanged += (_, _) => { if (!refreshing) SwitchDirectory(); };
         filter.TextChanged += (_, _) => RefreshFiles();

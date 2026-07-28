@@ -190,14 +190,12 @@ internal sealed class CharacterStudioForm : Form
         var split = new SplitContainer
         {
             Dock = DockStyle.Fill,
-            SplitterDistance = 470,
-            Panel1MinSize = 330,
-            Panel2MinSize = 400,
         };
         split.Panel1.Controls.Add(inspectorTabs);
         split.Panel2.Controls.Add(previewPanel);
         Controls.Add(split);
         Controls.Add(tools);
+        WinFormsLayout.SetInitialSplitterDistance(split, 470);
     }
 
     private async Task LoadSelectedAsync()

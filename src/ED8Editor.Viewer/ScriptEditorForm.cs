@@ -158,16 +158,19 @@ public sealed class ScriptEditorForm : Form
     private readonly Func<Cs1TableReference, IReadOnlyList<Cs1TableChoice>>? tableChoices;
     private readonly ScriptEditorSemanticContext? semanticContext;
     private readonly string? instructionDefinitionsPath;
+    private readonly IReadOnlyList<MonsterTableChoice> monsterChoices;
     private readonly Dictionary<string, Dictionary<int, Dictionary<string, string>>> bitmaskDefs = new();
 
     public ScriptEditorForm(
         Func<Cs1TableReference, IReadOnlyList<Cs1TableChoice>>? tableChoices = null,
         ScriptEditorSemanticContext? semanticContext = null,
-        string? instructionDefinitionsPath = null)
+        string? instructionDefinitionsPath = null,
+        IReadOnlyList<MonsterTableChoice>? monsterChoices = null)
     {
         this.tableChoices = tableChoices;
         this.semanticContext = semanticContext;
         this.instructionDefinitionsPath = instructionDefinitionsPath;
+        this.monsterChoices = monsterChoices ?? Array.Empty<MonsterTableChoice>();
         LoadBitmaskDefs();
         KeyPreview = true;
         BuildUi();
@@ -211,6 +214,39 @@ public sealed class ScriptEditorForm : Form
     public event Action<string>? FileSaved;
 
     public DecompiledScript? CurrentScript => script;
+
+    public void OpenCreateMonstersEditor()
+    {
+        if (document is null || script is null) return;
+        var function = script.Functions.FirstOrDefault(value =>
+            value.Table is { Kind: "CreateMonsters", IsStale: false });
+        if (function is null)
+        {
+            MessageBox.Show(
+                this,
+                "The current script contains no valid CreateMonsters table.",
+                "CreateMonsters",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+        using var editor = new TableEditorForm(
+            document, function.Index, monsterChoices);
+        editor.TableChanged += (_, _) =>
+            RefreshDocument(selectedFunctionIndex, selectedInstructionIndex);
+        editor.ShowDialog(this);
+    }
+
+    public void StartFieldMonsterPlacement()
+    {
+        if (script is null || document is null) return;
+        if (selectedFunctionIndex < 0)
+        {
+            selectedFunctionIndex = script.Functions
+                .FirstOrDefault(value => value.IsCode)?.Index ?? -1;
+        }
+        BeginFieldMonsterPlacement();
+    }
 
     public void DeleteFieldMonster(ScriptMonsterSpawn spawn)
     {
@@ -2001,7 +2037,8 @@ public sealed class ScriptEditorForm : Form
     private void ShowTable(TreeNode node)
     {
         if (document is null || node.Tag is not DecompiledFunction { Table: not null } function) return;
-        using var editor = new TableEditorForm(document, function.Index);
+        using var editor = new TableEditorForm(
+            document, function.Index, monsterChoices);
         editor.TableChanged += (_, _) => RefreshDocument(selectedFunctionIndex, selectedInstructionIndex);
         editor.ShowDialog(this);
     }
@@ -2033,6 +2070,7 @@ public sealed class ScriptEditorForm : Form
             monsterGrid.Columns.Add("encounter", "Encounter");
             monsterGrid.Columns.Add("slot", "Slot");
             monsterGrid.Columns.Add("asset", "Monster asset");
+            monsterGrid.Columns.Add("name", "Monster name");
             monsterGrid.Columns.Add("weight", "Weight");
             monsterGrid.Columns.Add("auxiliary", "Auxiliary asset");
             foreach (var encounter in monsters.Encounters)
@@ -2043,6 +2081,7 @@ public sealed class ScriptEditorForm : Form
                         encounter.Id,
                         slot,
                         encounter.MonsterAssets[slot],
+                        MonsterName(encounter.MonsterAssets[slot]),
                         encounter.Weights[slot],
                         slot == 0 ? encounter.AuxiliaryAsset ?? string.Empty : string.Empty);
                 }
@@ -2080,6 +2119,12 @@ public sealed class ScriptEditorForm : Form
         blocks.Controls.Add(grid);
         blocks.ResumeLayout();
     }
+
+    private string MonsterName(string assetId)
+        => monsterChoices.FirstOrDefault(value =>
+                value.AssetId.Equals(assetId, StringComparison.OrdinalIgnoreCase))
+            ?.DisplayName
+            ?? (string.IsNullOrEmpty(assetId) ? "(empty slot)" : "Unknown");
 
     private void ScrollToBlock(int index)
     {
@@ -2152,12 +2197,19 @@ public sealed class ScriptEditorForm : Form
         templateList.Format += (_, eventArgs) =>
         {
             if (eventArgs.ListItem is ScriptMonsterSpawn spawn)
-                eventArgs.Value = $"{spawn.AssetId} — entity {spawn.EntityId}";
+                eventArgs.Value =
+                    $"{MonsterName(spawn.AssetId)} — {spawn.AssetId} — entity {spawn.EntityId}";
         };
         var tableList = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
         tableList.Items.AddRange(tables.Cast<object>().ToArray());
         var encounterList = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
-        var assetList = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDown };
+        var assetList = new ComboBox
+        {
+            Dock = DockStyle.Fill,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            DisplayMember = nameof(MonsterTableChoice.Label),
+            ValueMember = nameof(MonsterTableChoice.AssetId),
+        };
         var entityId = new NumericUpDown
         {
             Dock = DockStyle.Left,
@@ -2204,19 +2256,26 @@ public sealed class ScriptEditorForm : Form
             {
                 if (eventArgs.ListItem is CreateMonstersEncounter encounter)
                     eventArgs.Value = $"{encounter.Id} — "
-                        + string.Join(", ", encounter.MonsterAssets.Where(value => value.Length > 0).Distinct());
+                        + string.Join(", ", encounter.MonsterAssets
+                            .Where(value => value.Length > 0)
+                            .Distinct()
+                            .Select(value => $"{MonsterName(value)} ({value})"));
             };
             if (encounterList.Items.Count > 0) encounterList.SelectedIndex = 0;
         }
         void RefreshAssetChoices()
         {
-            assetList.Items.Clear();
+            assetList.DataSource = null;
             if (encounterList.SelectedItem is not CreateMonstersEncounter encounter) return;
-            assetList.Items.AddRange(encounter.MonsterAssets
+            var assets = encounter.MonsterAssets
                 .Where(value => !string.IsNullOrWhiteSpace(value))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Cast<object>().ToArray());
-            if (assetList.Items.Count > 0) assetList.SelectedIndex = 0;
+                .Select(value => monsterChoices.FirstOrDefault(choice =>
+                        choice.AssetId.Equals(value, StringComparison.OrdinalIgnoreCase))
+                    ?? new MonsterTableChoice(value, $"Unknown monster ({value})", string.Empty))
+                .ToArray();
+            assetList.DataSource = assets;
+            if (assets.Length > 0) assetList.SelectedIndex = 0;
         }
         tableList.SelectedIndexChanged += (_, _) => RefreshEncounterChoices();
         encounterList.SelectedIndexChanged += (_, _) => RefreshAssetChoices();
@@ -2226,7 +2285,8 @@ public sealed class ScriptEditorForm : Form
             || templateList.SelectedItem is not ScriptMonsterSpawn template
             || tableList.SelectedItem is not FieldMonsterTableChoice tableChoice
             || encounterList.SelectedItem is not CreateMonstersEncounter encounterChoice
-            || string.IsNullOrWhiteSpace(assetList.Text))
+            || assetList.SelectedValue is not string selectedAsset
+            || string.IsNullOrWhiteSpace(selectedAsset))
         {
             return;
         }
@@ -2235,7 +2295,7 @@ public sealed class ScriptEditorForm : Form
             template,
             tableChoice.FunctionIndex,
             encounterChoice.Id,
-            assetList.Text.Trim(),
+            selectedAsset,
             decimal.ToInt32(entityId.Value),
             (float)heading.Value,
             selectedFunctionIndex);

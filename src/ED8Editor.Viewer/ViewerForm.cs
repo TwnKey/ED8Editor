@@ -165,6 +165,13 @@ public sealed class ViewerForm : Form
         Text = "Show map indicators / triggers",
         Checked = true,
     };
+    private readonly CheckBox showFieldMonstersCheckBox = new()
+    {
+        Dock = DockStyle.Top,
+        Height = 28,
+        Text = "Show field monsters",
+        Checked = true,
+    };
     private readonly ComboBox keyboardLayoutList = new()
     {
         Dock = DockStyle.Top,
@@ -188,6 +195,18 @@ public sealed class ViewerForm : Form
     private readonly Button addAssetButton = new() { Dock = DockStyle.Bottom, Height = 34, Text = "Add selected asset" };
     private readonly Button duplicateButton = new() { Dock = DockStyle.Bottom, Height = 30, Text = "Duplicate selected element" };
     private readonly Button deleteButton = new() { Dock = DockStyle.Bottom, Height = 30, Text = "Delete selected element" };
+    private readonly Button editFieldMonstersButton = new()
+    {
+        Dock = DockStyle.Bottom,
+        Height = 30,
+        Text = "Edit CreateMonsters encounters…",
+    };
+    private readonly Button addFieldMonsterButton = new()
+    {
+        Dock = DockStyle.Bottom,
+        Height = 30,
+        Text = "Place a field monster…",
+    };
     private readonly GroupBox propertyGroup = new() { Dock = DockStyle.Bottom, Height = 300, Text = "Selected OPS attributes" };
     private readonly DataGridView propertyGrid = new()
     {
@@ -252,6 +271,8 @@ public sealed class ViewerForm : Form
     private bool refreshingEnvironmentVariant;
     private string? instructionDefinitionsPath;
     private ScriptAnimationLibrary? scriptAnimationLibrary;
+    private IReadOnlyList<MonsterTableChoice> monsterTableChoices =
+        Array.Empty<MonsterTableChoice>();
     private DecompiledScript? systemScript;
     private bool manualScriptCameraOverride;
     // The slider only moves in whole degrees; the authored value keeps its
@@ -285,6 +306,7 @@ public sealed class ViewerForm : Form
             scriptSubject = ScriptSubjectResolver.Resolve(
                 session.Script.Header.SourcePath, gameDataPath, scriptAnimationLibrary);
             attachTable = ScriptAttachTable.Load(gameDataPath);
+            monsterTableChoices = MonsterTableCatalog.Load(gameDataPath);
         }
         this.projectLoader = projectLoader ?? new EditorProjectLoader(
             new OpsReader(), new GameAssetResolverFactory(), new PkgArchiveReader(),
@@ -302,6 +324,7 @@ public sealed class ViewerForm : Form
         assetControlsPanel.Controls.Add(assetList);
         assetControlsPanel.Controls.Add(snapCheckBox);
         assetControlsPanel.Controls.Add(showIndicatorsCheckBox);
+        assetControlsPanel.Controls.Add(showFieldMonstersCheckBox);
         assetControlsPanel.Controls.Add(effectMetadataStatus);
         assetControlsPanel.Controls.Add(environmentVariantList);
         assetControlsPanel.Controls.Add(keyboardLayoutList);
@@ -325,6 +348,8 @@ public sealed class ViewerForm : Form
         assetControlsPanel.Controls.Add(deleteButton);
         assetControlsPanel.Controls.Add(duplicateButton);
         assetControlsPanel.Controls.Add(addAssetButton);
+        assetControlsPanel.Controls.Add(addFieldMonsterButton);
+        assetControlsPanel.Controls.Add(editFieldMonstersButton);
         assetControlsPanel.Controls.Add(opsCreationGroup);
         assetsTab.Controls.Add(assetControlsPanel);
         rightPanelTabs.TabPages.Add(assetsTab);
@@ -438,6 +463,22 @@ public sealed class ViewerForm : Form
         {
             RefreshRenderInstances(uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase));
             RefreshOverlay();
+        };
+        showFieldMonstersCheckBox.CheckedChanged += (_, _) =>
+        {
+            RefreshRenderInstances(uploadedModels.ToDictionary(
+                value => value.AssetId, StringComparer.OrdinalIgnoreCase));
+            RefreshOutliner();
+        };
+        editFieldMonstersButton.Click += (_, _) =>
+        {
+            OpenScriptEditor();
+            scriptEditor?.OpenCreateMonstersEditor();
+        };
+        addFieldMonsterButton.Click += (_, _) =>
+        {
+            OpenScriptEditor();
+            scriptEditor?.StartFieldMonsterPlacement();
         };
         addAssetButton.Click += async (_, _) => await AddSelectedAssetAsync();
         duplicateButton.Click += (_, _) => DuplicateSelectedElement();
@@ -1391,7 +1432,8 @@ public sealed class ViewerForm : Form
                             ? scriptAnimationLibrary.GetFunctionNames(entity)
                             : Array.Empty<string>(),
                     BeginScriptSurfacePositionCapture),
-                instructionDefinitionsPath);
+                instructionDefinitionsPath,
+                monsterTableChoices);
             scriptEditor = editor;
             editor.TopLevel = false;
             editor.FormBorderStyle = FormBorderStyle.None;
@@ -1463,11 +1505,17 @@ public sealed class ViewerForm : Form
             var spawn = spawns[index];
             if (!loadedModelsByAsset.TryGetValue(spawn.AssetId, out var model)) continue;
             var instanceId = FieldMonsterSceneInstanceBase + index;
+            var monsterName = monsterTableChoices.FirstOrDefault(value =>
+                value.AssetId.Equals(spawn.AssetId, StringComparison.OrdinalIgnoreCase))
+                ?.DisplayName;
+            var label = string.IsNullOrWhiteSpace(monsterName)
+                ? spawn.AssetId
+                : $"{monsterName} — {spawn.AssetId}";
             byInstance.Add(instanceId, spawn);
             rendered.Add(new SceneModelInstance(
                 instanceId,
                 spawn.AssetId,
-                $"{spawn.AssetId} — encounter {spawn.EncounterIndex}",
+                $"{label} — encounter {spawn.EncounterIndex}",
                 model,
                 Matrix4x4.CreateRotationY(spawn.HeadingDegrees * MathF.PI / 180f)
                     * Matrix4x4.CreateTranslation(spawn.Position),
@@ -1480,6 +1528,7 @@ public sealed class ViewerForm : Form
         fieldMonsterInstances = rendered;
         RefreshRenderInstances(
             uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase));
+        RefreshOutliner();
     }
 
     private const int FieldMonsterSceneInstanceBase = int.MinValue + 400000;
@@ -3387,13 +3436,31 @@ public sealed class ViewerForm : Form
             existing.Focus();
             return;
         }
-        var window = new CharacterStudioForm(
-            gameDataPath,
-            projectLoader,
-            graphics,
-            scriptAnimationLibrary,
-            kind,
-            (target, beforeWrite) => TrackModSave(target, beforeWrite));
+        CharacterStudioForm window;
+        try
+        {
+            window = new CharacterStudioForm(
+                gameDataPath,
+                projectLoader,
+                graphics,
+                scriptAnimationLibrary,
+                kind,
+                (target, beforeWrite) => TrackModSave(target, beforeWrite));
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException or InvalidOperationException
+            or ArgumentException)
+        {
+            MessageBox.Show(
+                this,
+                exception.Message,
+                kind == CharacterAuthoringKind.Character
+                    ? "Cannot open Character studio"
+                    : "Cannot open Enemy studio",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            return;
+        }
         window.FormClosed += (_, _) =>
         {
             if (kind == CharacterAuthoringKind.Character) characterStudioWindow = null;
@@ -3424,9 +3491,31 @@ public sealed class ViewerForm : Form
                 MessageBoxIcon.Information);
             return;
         }
-        var window = new QuestEditorWindow(
-            path,
-            (target, beforeWrite) => TrackModSave(target, beforeWrite));
+        QuestEditorWindow window;
+        try
+        {
+            window = new QuestEditorWindow(
+                path,
+                session.Script.Header.SourcePath,
+                () =>
+                {
+                    rightPanelTabs.SelectedTab = scriptsTab;
+                    OpenScriptEditor();
+                },
+                (target, beforeWrite) => TrackModSave(target, beforeWrite));
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException or InvalidOperationException
+            or ArgumentException)
+        {
+            MessageBox.Show(
+                this,
+                exception.Message,
+                "Cannot open Quest editor",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            return;
+        }
         window.FormClosed += (_, _) => questEditorWindow = null;
         questEditorWindow = window;
         window.Show(this);
@@ -3622,6 +3711,9 @@ public sealed class ViewerForm : Form
                         && value.Id == selection.SourceIndex,
                     MaterialDiffuse: value.MaterialDiffuse,
                     MaterialEmission: value.MaterialEmission)));
+        }
+        if (showFieldMonstersCheckBox.Checked)
+        {
             rendered.AddRange(fieldMonsterInstances
                 .Where(value => resourcesByAsset.ContainsKey(value.AssetId))
                 .Where(value => !fieldMonsterSpawns.TryGetValue(value.Id, out var spawn)
@@ -4142,7 +4234,15 @@ public sealed class ViewerForm : Form
     private void RefreshOutliner()
     {
         var groups = outlinerBuilder.Build(document.Elements);
-        var selections = groups.SelectMany(group => group.Elements).ToArray();
+        var fieldMonsterSelections = showFieldMonstersCheckBox.Checked
+            ? fieldMonsterInstances.Select(value => new SceneElementSelection(
+                SceneElementKind.FieldMonster,
+                value.Id,
+                value.Name)).ToArray()
+            : Array.Empty<SceneElementSelection>();
+        var selections = groups.SelectMany(group => group.Elements)
+            .Concat(fieldMonsterSelections)
+            .ToArray();
         if (selections.SequenceEqual(outlinerSelections))
         {
             SyncOutlinerSelection();
@@ -4167,6 +4267,24 @@ public sealed class ViewerForm : Form
                         $"{element.Name} — {group.ElementTypeName} [{element.SourceIndex}]{assetSuffix}") { Tag = element });
                 }
                 groupNode.Expand();
+            }
+            if (fieldMonsterSelections.Length > 0)
+            {
+                var monsterNode = sceneOutliner.Nodes.Add(
+                    $"Field monsters ({fieldMonsterSelections.Length})");
+                foreach (var monster in fieldMonsterSelections)
+                {
+                    var spawn = fieldMonsterSpawns.GetValueOrDefault(monster.SourceIndex);
+                    var encounter = spawn is null
+                        ? string.Empty
+                        : $" — encounter {spawn.EncounterIndex}";
+                    monsterNode.Nodes.Add(new TreeNode(
+                        $"{monster.Name} — entity {spawn?.EntityId}{encounter}")
+                    {
+                        Tag = monster,
+                    });
+                }
+                monsterNode.Expand();
             }
             outlinerSelections = selections;
             SyncOutlinerSelection();
@@ -4256,6 +4374,11 @@ public sealed class ViewerForm : Form
             (_, _) => IncludeModFile());
         fileMenu.Items.Add("Remove from the mod", null, (_, _) => RemoveModFile());
         modFileTree.ContextMenuStrip = fileMenu;
+        modFileTree.NodeMouseClick += (_, eventArgs) =>
+        {
+            if (eventArgs.Button == MouseButtons.Right)
+                modFileTree.SelectedNode = eventArgs.Node;
+        };
         modFileTree.NodeMouseDoubleClick += (_, eventArgs) =>
         {
             if (modProject is null || eventArgs.Node.Tag is not string relative) return;
@@ -4447,10 +4570,30 @@ public sealed class ViewerForm : Form
 
     private void RemoveModFile()
     {
-        if (modProject is null || SelectedModFiles() is not { Count: > 0 } selection) return;
+        if (modProject is null) return;
+        if (modFileTree.SelectedNode?.Tag is not string relative)
+        {
+            MessageBox.Show(
+                this,
+                "Select one file, not a folder, before removing it from the mod.",
+                "Remove mod file",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+        if (MessageBox.Show(
+                this,
+                $"Remove only this file from the mod project?\n\n{relative}\n\n"
+                + "The game file itself is not deleted or restored.",
+                "Remove mod file",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning) != DialogResult.Yes)
+        {
+            return;
+        }
         RunModProjectAction(() =>
         {
-            foreach (var relative in selection) modProject.Remove(relative);
+            modProject.Remove(relative);
             RefreshModProjectTab();
         });
     }
@@ -5062,7 +5205,10 @@ public sealed class ViewerForm : Form
         => sceneInstances
             .Where(value => SceneEnvironmentVariantSelector.IsVisible(value.Name, ActiveEnvironmentVariant))
             .Concat(showIndicatorsCheckBox.Checked
-                ? scriptMonsterInstances.Concat(fieldMonsterInstances)
+                ? scriptMonsterInstances
+                : Array.Empty<SceneModelInstance>())
+            .Concat(showFieldMonstersCheckBox.Checked
+                ? fieldMonsterInstances
                 : Array.Empty<SceneModelInstance>())
             .ToArray();
 
