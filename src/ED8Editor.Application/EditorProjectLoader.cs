@@ -128,6 +128,35 @@ public sealed class EditorProjectLoader
             $"No game manifest declares animation asset '{symbol}'.");
     }
 
+    /// <summary>
+    /// The texture an effect segment draws with. A segment names an effect
+    /// texture package (I_EFTEX###) which holds exactly one image, so the
+    /// package's single texture resource is the one it samples.
+    /// </summary>
+    public CpuTexture? LoadEffectTexture(
+        string assetId,
+        string gameDataPath,
+        AssetVariantPreference preference = AssetVariantPreference.English)
+    {
+        if (string.IsNullOrWhiteSpace(assetId))
+            throw new ArgumentException("Asset ID is required.", nameof(assetId));
+        if (assetResolverFactory is null || packageArchiveReader is null || textureReader is null)
+            throw new InvalidOperationException("The project loader has no texture-loading pipeline.");
+        var resolution = assetResolverFactory.Create(gameDataPath).Resolve(assetId, preference);
+        if (resolution.SelectedPackage is null) return null;
+        var archive = packageArchiveReader.Read(resolution.SelectedPackage.Path);
+        // The package keeps the name the texture was authored under — some are
+        // .dds.phyre, others .png.phyre — but both are Phyre texture resources.
+        var entry = archive.Entries.FirstOrDefault(value =>
+                value.Name.EndsWith(".dds.phyre", StringComparison.OrdinalIgnoreCase))
+            ?? archive.Entries.FirstOrDefault(value =>
+                value.Name.EndsWith(".phyre", StringComparison.OrdinalIgnoreCase));
+        return entry is null
+            ? null
+            : textureReader.Read(
+                Path.GetFileNameWithoutExtension(entry.Name), archive.ReadEntry(entry));
+    }
+
     public CpuFacialTextureSet LoadFacialTextures(
         string facialAssetId,
         string gameDataPath,

@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using System.Runtime.InteropServices;
 using ED8Editor.Core;
 using Vortice.D3DCompiler;
@@ -39,6 +39,13 @@ public sealed class D3D11Viewport : IDisposable
         struct VSTexturedNormalColor { float3 Position : POSITION; float4 Normal : NORMAL; float2 TexCoord : TEXCOORD0; float4 Color : COLOR0; };
         struct VSTexturedNormalColorMultiUv { float3 Position : POSITION; float4 Normal : NORMAL; float2 TexCoord : TEXCOORD0; float2 TexCoord2 : TEXCOORD1; float4 Color : COLOR0; };
         struct VSDebug { float4 Position : POSITION; float4 Color : COLOR0; };
+        struct VSEffect
+        {
+            float4 Position : POSITION;
+            float4 Color : COLOR0;
+            float4 Add : COLOR1;
+            float2 TexCoord : TEXCOORD0;
+        };
         #if SKINNED
         cbuffer Skinning : register(b1)
         {
@@ -263,6 +270,34 @@ public sealed class D3D11Viewport : IDisposable
             return CreateMaterialOutput(ApplyMaterial(input, color));
         }
         float4 PSColoredMain(PSColoredInput input) : SV_Target { return input.Color; }
+        struct PSEffectInput
+        {
+            float4 Position : SV_Position;
+            float4 Color : COLOR0;
+            float4 Add : COLOR1;
+            float2 TexCoord : TEXCOORD0;
+        };
+        PSEffectInput VSEffectMain(VSEffect input)
+        {
+            PSEffectInput output;
+            output.Position = input.Position;
+            output.Color = input.Color;
+            output.Add = input.Add;
+            output.TexCoord = input.TexCoord;
+            return output;
+        }
+        // An effect segment samples its texture, multiplies it by its colour
+        // track and adds its glow track on top. The engine works in premultiplied
+        // alpha: the multiply term is occluded by its own alpha, while the added
+        // glow is gated by the texture alone, so a segment whose colour has gone
+        // fully transparent still shows its glow.
+        float4 PSEffectMain(PSEffectInput input) : SV_Target
+        {
+            float4 texel = DiffuseTexture.Sample(DiffuseSampler, input.TexCoord);
+            float3 multiplied = texel.rgb * texel.a * input.Color.rgb * input.Color.a;
+            float3 added = input.Add.rgb * texel.a;
+            return float4(multiplied + added, texel.a * input.Color.a);
+        }
         """;
 
     private readonly D3D11GraphicsDevice graphics;
@@ -287,6 +322,16 @@ public sealed class D3D11Viewport : IDisposable
     private readonly byte[] texturedNormalColorVertexBytecode;
     private readonly byte[] texturedNormalColorMultiUvVertexBytecode;
     private readonly ID3D11InputLayout coloredInputLayout;
+    private readonly ID3D11VertexShader effectVertexShader;
+    private readonly ID3D11PixelShader effectPixelShader;
+    private readonly ID3D11InputLayout effectInputLayout;
+    private readonly ID3D11BlendState effectAlphaBlendState;
+    private readonly ID3D11BlendState effectAdditiveBlendState;
+    private readonly ID3D11BlendState effectSubtractiveBlendState;
+    private readonly ID3D11DepthStencilState effectDepthState;
+    private ID3D11Buffer? effectQuadBuffer;
+    private int effectQuadVertexCapacity;
+    private IReadOnlyList<D3D11EffectQuad> effectQuads = Array.Empty<D3D11EffectQuad>();
     private readonly ID3D11Buffer perDrawBuffer;
     private readonly ID3D11Buffer skinningBuffer;
     private readonly ID3D11SamplerState sampler;
@@ -361,6 +406,32 @@ public sealed class D3D11Viewport : IDisposable
             new InputElementDescription("POSITION", 0, Format.R32G32B32A32_Float, 0, 0),
             new InputElementDescription("COLOR", 0, Format.R32G32B32A32_Float, 16, 0),
         }, coloredVertexBytecode);
+        var effectVertexBytecode = Compile("VSEffectMain", "vs_5_0");
+        effectVertexShader = graphics.Device.CreateVertexShader(effectVertexBytecode);
+        effectPixelShader = graphics.Device.CreatePixelShader(Compile("PSEffectMain", "ps_5_0"));
+        effectInputLayout = graphics.Device.CreateInputLayout(new[]
+        {
+            new InputElementDescription("POSITION", 0, Format.R32G32B32A32_Float, 0, 0),
+            new InputElementDescription("COLOR", 0, Format.R32G32B32A32_Float, 16, 0),
+            new InputElementDescription("COLOR", 1, Format.R32G32B32A32_Float, 32, 0),
+            new InputElementDescription("TEXCOORD", 0, Format.R32G32_Float, 48, 0),
+        }, effectVertexBytecode);
+        // The three ways an effect segment is blended, from its own blend byte:
+        // premultiplied alpha over the scene, additive, and subtractive.
+        effectAlphaBlendState = CreateEffectBlendState(
+            graphics, Blend.One, Blend.InverseSourceAlpha, BlendOperation.Add);
+        effectAdditiveBlendState = CreateEffectBlendState(
+            graphics, Blend.One, Blend.One, BlendOperation.Add);
+        effectSubtractiveBlendState = CreateEffectBlendState(
+            graphics, Blend.One, Blend.One, BlendOperation.ReverseSubtract);
+        // Effects read the depth buffer so the scene occludes them, but they do
+        // not write to it: they never occlude each other.
+        effectDepthState = graphics.Device.CreateDepthStencilState(new DepthStencilDescription
+        {
+            DepthEnable = true,
+            DepthWriteMask = DepthWriteMask.Zero,
+            DepthFunc = ComparisonFunction.LessEqual,
+        });
         perDrawBuffer = graphics.Device.CreateBuffer(new BufferDescription(
             Marshal.SizeOf<PerDrawConstants>(),
             BindFlags.ConstantBuffer,
@@ -452,6 +523,36 @@ public sealed class D3D11Viewport : IDisposable
         debugLines = lines.ToArray();
     }
 
+    private static ID3D11BlendState CreateEffectBlendState(
+        D3D11GraphicsDevice graphics,
+        Blend source,
+        Blend destination,
+        BlendOperation operation)
+        => graphics.Device.CreateBlendState(new BlendDescription
+        {
+            RenderTarget =
+            {
+                [0] = new RenderTargetBlendDescription
+                {
+                    BlendEnable = true,
+                    SourceBlend = source,
+                    DestinationBlend = destination,
+                    BlendOperation = operation,
+                    SourceBlendAlpha = Blend.One,
+                    DestinationBlendAlpha = Blend.InverseSourceAlpha,
+                    BlendOperationAlpha = BlendOperation.Add,
+                    RenderTargetWriteMask = ColorWriteEnable.All,
+                },
+            },
+        });
+
+    /// <summary>The textured quads of the effects currently playing.</summary>
+    public void SetEffectQuads(IReadOnlyList<D3D11EffectQuad> quads)
+    {
+        ArgumentNullException.ThrowIfNull(quads);
+        effectQuads = quads.ToArray();
+    }
+
     public void SetDebugTriangles(IReadOnlyList<D3D11DebugTriangle> triangles)
     {
         ArgumentNullException.ThrowIfNull(triangles);
@@ -515,6 +616,7 @@ public sealed class D3D11Viewport : IDisposable
         context.PSSetConstantBuffer(0, perDrawBuffer);
         context.PSSetSampler(0, sampler);
         DrawScenePhase(instances, camera, CpuMaterialRenderPhase.Transparent);
+        DrawEffectQuads(camera);
         context.OMSetBlendState(overlayBlendState, new Color4(0f, 0f, 0f, 0f), uint.MaxValue);
         DrawDebugTriangles(camera);
         context.OMSetBlendState(null, new Color4(0f, 0f, 0f, 0f), uint.MaxValue);
@@ -607,6 +709,14 @@ public sealed class D3D11Viewport : IDisposable
         foreach (var layout in inputLayouts.Values) layout.Dispose();
         debugLineBuffer?.Dispose();
         debugTriangleBuffer?.Dispose();
+        effectQuadBuffer?.Dispose();
+        effectInputLayout.Dispose();
+        effectVertexShader.Dispose();
+        effectPixelShader.Dispose();
+        effectAlphaBlendState.Dispose();
+        effectAdditiveBlendState.Dispose();
+        effectSubtractiveBlendState.Dispose();
+        effectDepthState.Dispose();
         overlayBlendState.Dispose();
         coloredInputLayout.Dispose();
         rasterizer.Dispose();
@@ -657,6 +767,119 @@ public sealed class D3D11Viewport : IDisposable
         context.PSSetShaderResource(0, null!);
         context.Draw(debugLineVertexCount, 0);
     }
+
+    /// <summary>
+    /// Draws the effect quads, back to front within each priority the segments
+    /// carry, one draw per texture and blend mode. They read the scene depth so
+    /// the map occludes them, but they never write to it.
+    /// </summary>
+    private unsafe void DrawEffectQuads(ViewportCamera camera)
+    {
+        if (effectQuads.Count == 0) return;
+        var matrix = camera.View * camera.Projection;
+        Matrix4x4.Invert(camera.View, out var inverseView);
+        var eye = inverseView.Translation;
+        var ordered = effectQuads
+            .OrderBy(quad => quad.Priority)
+            .ThenByDescending(quad => Vector3.DistanceSquared(eye, quad.Center))
+            .ToArray();
+
+        var vertices = new List<EffectVertex>(ordered.Length * 6);
+        var batches = new List<EffectBatch>();
+        foreach (var quad in ordered)
+        {
+            if (quad.Texture is null) continue;
+            var corners = new[] { quad.CornerA, quad.CornerB, quad.CornerC, quad.CornerD };
+            var uvs = new[]
+            {
+                new Vector2(quad.UvMinimum.X, quad.UvMinimum.Y),
+                new Vector2(quad.UvMaximum.X, quad.UvMinimum.Y),
+                new Vector2(quad.UvMaximum.X, quad.UvMaximum.Y),
+                new Vector2(quad.UvMinimum.X, quad.UvMaximum.Y),
+            };
+            var projected = new Vector4[4];
+            var visible = true;
+            for (var index = 0; index < 4; index++)
+            {
+                projected[index] = Vector4.Transform(new Vector4(corners[index], 1f), matrix);
+                if (projected[index].W <= 0f) visible = false;
+            }
+            if (!visible) continue;
+            var start = vertices.Count;
+            foreach (var index in new[] { 0, 1, 2, 0, 2, 3 })
+            {
+                vertices.Add(new EffectVertex(projected[index], quad.Color, quad.Add, uvs[index]));
+            }
+            // Quads that follow each other with the same texture and blend mode
+            // are one draw.
+            if (batches.Count > 0
+                && batches[^1].Texture == quad.Texture
+                && batches[^1].Blend == quad.Blend
+                && batches[^1].Start + batches[^1].Count == start)
+            {
+                batches[^1] = batches[^1] with { Count = batches[^1].Count + 6 };
+                continue;
+            }
+            batches.Add(new EffectBatch(start, 6, quad.Texture, quad.Blend));
+        }
+        if (vertices.Count == 0) return;
+
+        EnsureEffectQuadBuffer(vertices.Count);
+        var mapped = graphics.Context.Map(
+            effectQuadBuffer!, 0, MapMode.WriteDiscard, Vortice.Direct3D11.MapFlags.None);
+        var data = CollectionsMarshal.AsSpan(vertices);
+        fixed (EffectVertex* source = data)
+        {
+            Buffer.MemoryCopy(source, (void*)mapped.DataPointer,
+                (long)effectQuadVertexCapacity * Marshal.SizeOf<EffectVertex>(),
+                (long)data.Length * Marshal.SizeOf<EffectVertex>());
+        }
+        graphics.Context.Unmap(effectQuadBuffer!, 0);
+
+        var context = graphics.Context;
+        context.RSSetState(rasterizer);
+        context.OMSetDepthStencilState(effectDepthState);
+        context.IASetInputLayout(effectInputLayout);
+        context.IASetVertexBuffer(0, effectQuadBuffer!, Marshal.SizeOf<EffectVertex>(), 0);
+        context.IASetPrimitiveTopology(Vortice.Direct3D.PrimitiveTopology.TriangleList);
+        context.VSSetShader(effectVertexShader);
+        context.PSSetShader(effectPixelShader);
+        context.PSSetSampler(0, sampler);
+        foreach (var batch in batches)
+        {
+            context.OMSetBlendState(
+                batch.Blend switch
+                {
+                    EffBlendMode.Additive => effectAdditiveBlendState,
+                    EffBlendMode.Subtractive => effectSubtractiveBlendState,
+                    _ => effectAlphaBlendState,
+                },
+                new Color4(0f, 0f, 0f, 0f),
+                uint.MaxValue);
+            context.PSSetShaderResource(0, batch.Texture);
+            context.Draw(batch.Count, batch.Start);
+        }
+        context.PSSetShaderResource(0, null!);
+        context.OMSetDepthStencilState(null);
+    }
+
+    private void EnsureEffectQuadBuffer(int requiredVertexCount)
+    {
+        if (effectQuadBuffer is not null && effectQuadVertexCapacity >= requiredVertexCount) return;
+        effectQuadBuffer?.Dispose();
+        effectQuadVertexCapacity = Math.Max(requiredVertexCount, 256);
+        effectQuadBuffer = graphics.Device.CreateBuffer(new BufferDescription(
+            effectQuadVertexCapacity * Marshal.SizeOf<EffectVertex>(),
+            BindFlags.VertexBuffer,
+            ResourceUsage.Dynamic,
+            CpuAccessFlags.Write));
+    }
+
+    private readonly record struct EffectBatch(
+        int Start,
+        int Count,
+        ID3D11ShaderResourceView Texture,
+        EffBlendMode Blend);
 
     private unsafe void DrawDebugTriangles(ViewportCamera camera)
     {
@@ -1159,6 +1382,16 @@ public sealed class D3D11Viewport : IDisposable
 
     [StructLayout(LayoutKind.Sequential)]
     private readonly record struct DebugLineVertex(Vector4 Position, Vector4 Color);
+
+    /// <summary>
+    /// A vertex of an effect quad: already in clip space, with the segment's
+    /// colour track, its glow track and the texture coordinate its crop selects.
+    /// </summary>
+    private readonly record struct EffectVertex(
+        Vector4 Position,
+        Vector4 Color,
+        Vector4 Add,
+        Vector2 TexCoord);
 
     private sealed record SkinnedVertexProgram(ID3D11VertexShader Shader, byte[] Bytecode);
 

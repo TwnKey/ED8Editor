@@ -10,17 +10,18 @@ using ED8Editor.Phyre;
 using ED8Editor.Rendering;
 using ED8Editor.Scene;
 using ED8Editor.Tables;
+using Vortice.Direct3D11;
 
 namespace ED8Editor.Viewer;
 
 public sealed class ViewerForm : Form
 {
-    private readonly EditorSession session;
+    private EditorSession session;
     private readonly EditorProjectLoader projectLoader;
     private readonly EditorSettingsStore settingsStore;
-    private readonly EditorSceneDocument document;
+    private EditorSceneDocument document;
     private readonly bool smokeTest;
-    private readonly string baseTitle;
+    private string baseTitle;
     private readonly SceneElementPicker elementPicker = new();
     private readonly SceneRaycaster surfaceRaycaster = new();
     private readonly EditorOrbitCamera cameraNavigation = new();
@@ -50,6 +51,24 @@ public sealed class ViewerForm : Form
     private readonly HashSet<string> unavailablePropAnimations =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Panel viewportHost = new() { Dock = DockStyle.Fill, TabStop = true };
+    private readonly TabControl openFileTabs = new()
+    {
+        Dock = DockStyle.Top,
+        Height = 26,
+        Visible = false,
+    };
+    private readonly List<string> openFiles = new();
+    private bool switchingFile;
+    private ScriptSubject? scriptSubject;
+    private ScriptAttachTable attachTable = ScriptAttachTable.Empty;
+
+    /// <summary>Rendered attachment -> the actor carrying it and the node it hangs from.</summary>
+    private readonly Dictionary<int, (int OwnerInstanceId, int EntityId, string AttachPoint)>
+        attachmentOwners = new();
+
+    /// <summary>Pose of each rendered actor this frame, for its attachments.</summary>
+    private readonly Dictionary<int, (Matrix4x4 Transform, CpuSkeletonPose Pose, CpuSkeleton Skeleton)>
+        posedCharacters = new();
     private readonly ToolStrip gizmoToolStrip = new()
     {
         Dock = DockStyle.Top,
@@ -131,7 +150,6 @@ public sealed class ViewerForm : Form
     private readonly TabControl rightPanelTabs = new() { Dock = DockStyle.Fill };
     private readonly TabPage assetsTab = new("Assets / OPS");
     private readonly TabPage scriptsTab = new("Scripts");
-    private readonly TabPage tblTab = new("Tbl");
     private readonly Panel assetControlsPanel = new() { Dock = DockStyle.Fill, Padding = new Padding(8) };
     private readonly TextBox assetSearch = new() { Dock = DockStyle.Top, PlaceholderText = "Search PKG assets..." };
     private readonly CheckBox snapCheckBox = new()
@@ -229,8 +247,8 @@ public sealed class ViewerForm : Form
     private SceneEnvironmentVariant environmentVariant = SceneEnvironmentVariant.Daylight;
     private bool refreshingEnvironmentVariant;
     private string? instructionDefinitionsPath;
-    private readonly ScriptAnimationLibrary? scriptAnimationLibrary;
-    private readonly DecompiledScript? systemScript;
+    private ScriptAnimationLibrary? scriptAnimationLibrary;
+    private DecompiledScript? systemScript;
     private bool manualScriptCameraOverride;
     // The slider only moves in whole degrees; the authored value keeps its
     // decimals so applying a shot back into a script does not round 43.2 to 43.
@@ -260,6 +278,9 @@ public sealed class ViewerForm : Form
             systemScript = new ScriptSystemLibrary(
                 session.Script.Header.SourcePath,
                 instructionDefinitionsPath).Script;
+            scriptSubject = ScriptSubjectResolver.Resolve(
+                session.Script.Header.SourcePath, gameDataPath, scriptAnimationLibrary);
+            attachTable = ScriptAttachTable.Load(gameDataPath);
         }
         this.projectLoader = projectLoader ?? new EditorProjectLoader(
             new OpsReader(), new GameAssetResolverFactory(), new PkgArchiveReader(),
@@ -304,10 +325,11 @@ public sealed class ViewerForm : Form
         assetsTab.Controls.Add(assetControlsPanel);
         rightPanelTabs.TabPages.Add(assetsTab);
         rightPanelTabs.TabPages.Add(scriptsTab);
-        rightPanelTabs.TabPages.Add(tblTab);
         assetPanel.Controls.Add(rightPanelTabs);
         BuildMainMenu();
+        openFileTabs.SelectedIndexChanged += (_, _) => SelectOpenFileTab();
         Controls.Add(viewportHost);
+        Controls.Add(openFileTabs);
         Controls.Add(assetPanelSplitter);
         Controls.Add(assetPanel);
         Controls.Add(scenePanel);
@@ -399,7 +421,6 @@ public sealed class ViewerForm : Form
         {
             ApplyScriptModeLayout(eventArgs.TabPage == scriptsTab);
             if (eventArgs.TabPage == scriptsTab) OpenScriptEditor();
-            else if (eventArgs.TabPage == tblTab) OpenTblEditor();
         };
         viewportHost.Resize += (_, _) => ResizeViewport();
         Resize += (_, _) =>
@@ -448,13 +469,6 @@ public sealed class ViewerForm : Form
         renderTimer.Tick += (_, _) => RenderFrame();
         KeyDown += (_, eventArgs) =>
         {
-            if (assetPanel.Visible && rightPanelTabs.SelectedTab == tblTab
-                && eventArgs.Control && eventArgs.KeyCode == Keys.S)
-            {
-                tblEditor?.SaveCurrent(eventArgs.Shift);
-                eventArgs.SuppressKeyPress = true;
-                return;
-            }
             if (assetPanel.Visible && rightPanelTabs.SelectedTab == scriptsTab
                 && scriptEditor is { ContainsFocus: true })
             {
@@ -644,6 +658,7 @@ public sealed class ViewerForm : Form
                 effectMetadataStatus.Text = $"Phyre effects: {effectCount}/{modelCount}; monsters: {monsterCount}";
                 effectMetadataStatus.ForeColor = effectCount == modelCount ? Color.DarkGreen : Color.DarkOrange;
             }
+            if (!smokeTest) AddFileTab(session.Script.Header.SourcePath);
             if (smokeTest)
             {
                 OpenScriptEditor();
@@ -740,14 +755,34 @@ public sealed class ViewerForm : Form
     private void InitializeRenderer()
     {
         graphics = D3D11GraphicsDevice.Create();
+        viewport = new D3D11Viewport(
+            graphics, viewportHost.Handle, viewportHost.ClientSize.Width, viewportHost.ClientSize.Height);
+        LoadSceneForSession();
+    }
+
+    /// <summary>
+    /// Builds everything that belongs to the open file: its map, its models and
+    /// the camera that frames them. Switching to another file of the project runs
+    /// this again on the new session instead of restarting the editor.
+    /// </summary>
+    private void LoadSceneForSession()
+    {
+        if (graphics is null || viewport is null) return;
         var uploader = new D3D11ModelUploader(graphics.Device);
         var resourcesByAsset = new Dictionary<string, D3D11ModelResources>(StringComparer.OrdinalIgnoreCase);
         foreach (var load in session.AssetModels.Values.Where(value => value.Model is not null))
         {
             loadedModelsByAsset[load.AssetId] = load.Model!;
+            if (uploadedModels.FirstOrDefault(value =>
+                    value.AssetId.Equals(load.AssetId, StringComparison.OrdinalIgnoreCase))
+                is { } existing)
+            {
+                resourcesByAsset[load.AssetId] = existing;
+                continue;
+            }
             var uploaded = uploader.Upload(load.Model!);
             uploadedModels.Add(uploaded);
-            resourcesByAsset.Add(load.AssetId, uploaded);
+            resourcesByAsset[load.AssetId] = uploaded;
         }
 
         sceneInstances = document.CreateModelInstances();
@@ -761,11 +796,15 @@ public sealed class ViewerForm : Form
         sceneRadius = Math.Max(bounds.Radius, 1f);
         var initialPosition = center + new Vector3(0, sceneRadius * 0.35f, -sceneRadius * 1.6f);
         cameraNavigation.Initialize(center, initialPosition);
-        viewport = new D3D11Viewport(graphics, viewportHost.Handle, viewportHost.ClientSize.Width, viewportHost.ClientSize.Height);
         viewport.SetEnvironmentVariant(ActiveEnvironmentVariant);
         if (currentMap?.DefaultEnvironment is { } environment)
         {
             viewport.SetClearColor(new Vector4(environment.FogColor, 1f));
+        }
+        else if (session.Map is null)
+        {
+            // No map: a bright backdrop so the actor and the ground stand out.
+            viewport.SetClearColor(new Vector4(0.86f, 0.88f, 0.91f, 1f));
         }
         overlayMarkerSize = Math.Clamp(sceneRadius * 0.008f, 0.08f, 1.5f);
         RefreshOverlay();
@@ -814,8 +853,16 @@ public sealed class ViewerForm : Form
         UpdateCameraAnimation(elapsed);
         UpdateCameraTextFields();
         RefreshAnimationPoses();
+        // Effects move on their own clock and their billboards face the camera,
+        // so they are rebuilt every frame rather than with the static overlay.
+        viewport.SetEffectQuads(BuildEffectQuads());
         var camera = CreateCamera();
         viewport.Render(instances, camera);
+        // The effect editor draws on the same device and the same clock.
+        if (effectEditorWindow is { IsDisposed: false, Visible: true } effects)
+        {
+            effects.RenderPreview();
+        }
     }
 
     private void RefreshAnimationPoses()
@@ -823,6 +870,7 @@ public sealed class ViewerForm : Form
         var characters = activeScriptEntities.Values.ToDictionary(
             value => ScriptEntitySceneInstanceId(value.EntityId));
         var elapsed = (float)frameClock.Elapsed.TotalSeconds;
+        posedCharacters.Clear();
         instances = instances.Select(instance =>
         {
             if (!loadedModelsByAsset.TryGetValue(instance.Model.AssetId, out var model)) return instance;
@@ -872,10 +920,15 @@ public sealed class ViewerForm : Form
                         - (character.FacialExpression?.StartFrame ?? 0))
                     / ScriptWaitDuration.PreviewFramesPerSecond
                 : elapsed;
+            // A walking actor faces where it walks: the engine turns it towards
+            // its own movement instead of keeping the heading it was spawned with.
+            var yawDegrees = scriptTimeline is not null
+                ? character.Motion?.HeadingAt(scriptTimelineFrame) ?? character.YawDegrees
+                : character.YawDegrees;
             animatedInstance = animatedInstance with
             {
                 Transform = Matrix4x4.CreateScale(character.Scale)
-                    * Matrix4x4.CreateRotationY(character.YawDegrees * MathF.PI / 180f)
+                    * Matrix4x4.CreateRotationY(yawDegrees * MathF.PI / 180f)
                     * Matrix4x4.CreateTranslation(position),
                 TexturesByGameMaterialId =
                     CreateFacialTextureOverrides(character, facialElapsed),
@@ -911,9 +964,72 @@ public sealed class ViewerForm : Form
                 clip,
                 time,
                 CpuAnimationUnboundTargetBehavior.Ignore);
+            posedCharacters[instance.SceneInstanceId] =
+                (animatedInstance.Transform, pose, model.Skeleton);
             return animatedInstance with { SkinMatrices = pose.SkinMatrices };
         }).ToArray();
+        PlaceAttachments();
     }
+
+    /// <summary>
+    /// Hangs what an actor carries on the node it is attached to: the weapon
+    /// follows the animated skeleton instead of floating at the actor's feet.
+    /// An actor with no clip playing is posed at its bind pose, which is what the
+    /// engine shows too.
+    /// </summary>
+    private void PlaceAttachments()
+    {
+        if (attachmentOwners.Count == 0) return;
+        instances = instances.Select(instance =>
+        {
+            if (!attachmentOwners.TryGetValue(instance.SceneInstanceId, out var owner))
+                return instance;
+            if (!TryGetOwnerPose(owner.OwnerInstanceId, out var posed))
+                return instance with { Transform = HiddenTransform };
+            var jointIndex = IndexOfJoint(posed.Skeleton, owner.AttachPoint);
+            if (jointIndex < 0) return instance with { Transform = HiddenTransform };
+            activeScriptEntities.TryGetValue(owner.EntityId, out var ownerEntity);
+            return instance with
+            {
+                Transform = AttachmentPlacement(ownerEntity, owner.AttachPoint)
+                    * posed.Pose.WorldTransforms[jointIndex]
+                    * posed.Transform,
+            };
+        }).ToArray();
+    }
+
+    private bool TryGetOwnerPose(
+        int ownerInstanceId,
+        out (Matrix4x4 Transform, CpuSkeletonPose Pose, CpuSkeleton Skeleton) posed)
+    {
+        if (posedCharacters.TryGetValue(ownerInstanceId, out posed)) return true;
+        // The actor is rendered but no clip is playing on it: its nodes are where
+        // the bind pose puts them.
+        var owner = instances.FirstOrDefault(value => value.SceneInstanceId == ownerInstanceId);
+        if (owner is null
+            || !loadedModelsByAsset.TryGetValue(owner.Model.AssetId, out var ownerModel)
+            || ownerModel.Skeleton is not { } skeleton)
+        {
+            posed = default;
+            return false;
+        }
+        posed = (owner.Transform, poseEvaluator.Evaluate(skeleton, null, 0f), skeleton);
+        posedCharacters[ownerInstanceId] = posed;
+        return true;
+    }
+
+    private static int IndexOfJoint(CpuSkeleton skeleton, string name)
+    {
+        for (var index = 0; index < skeleton.Joints.Count; index++)
+        {
+            if (skeleton.Joints[index].Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                return index;
+        }
+        return -1;
+    }
+
+    /// <summary>Where an attachment goes when its node cannot be resolved.</summary>
+    private static Matrix4x4 HiddenTransform => Matrix4x4.CreateScale(0f);
 
     private bool TryGetActivePropAnimation(
         int sceneInstanceId,
@@ -968,6 +1084,7 @@ public sealed class ViewerForm : Form
         if (pressedKeys.Contains(Keys.C)) movement -= Vector3.UnitY;
         if (movement != Vector3.Zero)
         {
+            scriptCameraAngles = null;   // the user is flying the camera now
             BeginManualScriptCameraOverride();
             var fast = pressedKeys.Contains(Keys.ShiftKey) ? 4f : 1f;
             var speed = Math.Max(sceneRadius * 0.12f, 2f);
@@ -1109,6 +1226,32 @@ public sealed class ViewerForm : Form
 
     private void BuildMainMenu()
     {
+        var file = new ToolStripMenuItem("File");
+        file.DropDownItems.Add(new ToolStripMenuItem(
+            "New project…", null, (_, _) => CreateModProject()));
+        file.DropDownItems.Add(new ToolStripMenuItem(
+            "Open project…", null, (_, _) => OpenModProject())
+        {
+            ShortcutKeys = Keys.Control | Keys.O,
+        });
+        file.DropDownItems.Add(new ToolStripSeparator());
+        file.DropDownItems.Add(new ToolStripMenuItem(
+            "Add script to the project…", null, (_, _) => AddScriptToProject()));
+        file.DropDownItems.Add(new ToolStripMenuItem(
+            "Export the mod as .zip…", null, (_, _) => ExportModArchive()));
+        file.DropDownItems.Add(new ToolStripSeparator());
+        file.DropDownItems.Add(new ToolStripMenuItem("Quit", null, (_, _) => Close()));
+        mainMenu.Items.Add(file);
+
+        // The editors that stand on their own get a window of their own, which
+        // leaves the main window to the scene and its script.
+        var windows = new ToolStripMenuItem("Windows");
+        windows.DropDownItems.Add(new ToolStripMenuItem(
+            "Effect editor…", null, (_, _) => ShowEffectEditor()));
+        windows.DropDownItems.Add(new ToolStripMenuItem(
+            "Table editor…", null, (_, _) => ShowTableEditor()));
+        mainMenu.Items.Add(windows);
+
         var options = new ToolStripMenuItem("Options");
         options.DropDownItems.Add(new ToolStripMenuItem(
             "Instruction definitions...", null, (_, _) => ConfigureInstructionDefinitions()));
@@ -1158,7 +1301,6 @@ public sealed class ViewerForm : Form
     }
 
     private ScriptEditorForm? scriptEditor;
-    private TblEditorControl? tblEditor;
     private Cs1TableCatalog? tableCatalog;
 
     // Camera animation interpolation
@@ -1170,6 +1312,13 @@ public sealed class ViewerForm : Form
     private float animationElapsed;
     private bool isCameraAnimating;
     private bool cameraAnimationLoops;
+    private EffEditorWindow? effectEditorWindow;
+    private TblEditorWindow? tableEditorWindow;
+    private D3D11EffectTextureResources? effectTextures;
+    private readonly HashSet<string> unavailableEffectTextures =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, EffFile?> loadedEffects =
+        new(StringComparer.OrdinalIgnoreCase);
     private ScriptSceneTimeline? scriptTimeline;
     private int scriptTimelinePointIndex;
     private float scriptTimelineFrame;
@@ -1241,6 +1390,10 @@ public sealed class ViewerForm : Form
             editor.FunctionSelected += _ => ClearScriptEntityPreview();
             editor.EntityActivated += FocusScriptEntity;
             editor.StopPreview += () => { isCameraAnimating = false; cameraPlayButton.Enabled = true; };
+            editor.OpenRequested += path => OpenScriptFile(path);
+            editor.PlayFunctionRequested += PlayScriptFunction;
+            editor.StopPlaybackRequested += StopScriptTimeline;
+            editor.SkipToNextCommandRequested += SkipToNextScriptCommand;
             editor.FileSaving += path => TrackModSave(path, beforeWrite: true);
             editor.FileSaved += path => TrackModSave(path, beforeWrite: false);
             scriptsTab.Controls.Add(editor);
@@ -1256,6 +1409,51 @@ public sealed class ViewerForm : Form
         }
     }
 
+    /// <summary>
+    /// Runs a whole scene on a loop. Selecting a single instruction shows the
+    /// scene as it stands at that point; playing the function instead lets it
+    /// run — waits, movements, animations and effects in the order the script
+    /// writes them — which is the only way to judge what an effect looks like
+    /// while it plays.
+    /// </summary>
+    private void PlayScriptFunction(DecompiledFunction function)
+    {
+        var script = scriptEditor?.CurrentScript;
+        if (script is null) return;
+        manualScriptCameraOverride = false;
+        StopScriptTimeline();
+        if (ScriptSceneStateResolver.BuildFunctionTimeline(
+                script,
+                function,
+                scriptAnimationLibrary,
+                systemScript,
+                scriptSubject,
+                scriptEditor?.SelectedInstruction)
+            is not { } timeline)
+        {
+            return;
+        }
+        activeScriptEntities = PrepareEntities(timeline.InitialState.Entities);
+        scriptEditor?.SetRuntimeEntities(CreateScriptEntityChoices(timeline.InitialState.Entities));
+        _ = StartScriptTimelineAsync(timeline);
+    }
+
+    /// <summary>
+    /// Moves the playback clock to the next command of the scene. The timing the
+    /// script authored is untouched — the reader simply stops waiting through a
+    /// pause the game fills with a dialogue box the editor does not show.
+    /// </summary>
+    private void SkipToNextScriptCommand()
+    {
+        if (scriptTimeline is null) return;
+        var next = scriptTimeline.Points
+            .Where(point => point.Frame > scriptTimelineFrame)
+            .Select(point => (float?)point.Frame)
+            .FirstOrDefault();
+        scriptTimelineFrame = next ?? GetScriptTimelineDurationFrames(scriptTimeline);
+        ApplyTimelinePointsAtCurrentFrame();
+    }
+
     private void ApplySelectedScriptCamera(DecompiledFunction function, DecompiledInstruction instruction)
     {
         var script = scriptEditor?.CurrentScript;
@@ -1263,26 +1461,26 @@ public sealed class ViewerForm : Form
         manualScriptCameraOverride = false;
         StopScriptTimeline();
         var sceneState = ScriptSceneStateResolver.Resolve(
-            script, function, instruction.Index, scriptAnimationLibrary, systemScript);
-        activeScriptEntities = sceneState.Entities;
+            script, function, instruction.Index, scriptAnimationLibrary, systemScript, scriptSubject);
+        activeScriptEntities = PrepareEntities(sceneState.Entities);
         scriptEditor?.SetRuntimeEntities(CreateScriptEntityChoices(sceneState.Entities));
         if (instruction.Opcode == 2
             && ScriptSceneStateResolver.BuildCallTimeline(
-                script, function, instruction, scriptAnimationLibrary, systemScript) is { } timeline)
+                script, function, instruction, scriptAnimationLibrary, systemScript, scriptSubject) is { } timeline)
         {
             _ = StartScriptTimelineAsync(timeline);
             return;
         }
         if (instruction.Opcode == 47
             && ScriptSceneStateResolver.BuildAnimationCallTimeline(
-                script, function, instruction, scriptAnimationLibrary, systemScript) is { } animationTimeline)
+                script, function, instruction, scriptAnimationLibrary, systemScript, scriptSubject) is { } animationTimeline)
         {
             _ = StartScriptTimelineAsync(animationTimeline);
             return;
         }
         if (instruction.Opcode == 69
             && ScriptSceneStateResolver.BuildPropAnimationTimeline(
-                script, function, instruction, scriptAnimationLibrary, systemScript)
+                script, function, instruction, scriptAnimationLibrary, systemScript, scriptSubject)
                 is { } propTimeline)
         {
             _ = StartScriptTimelineAsync(propTimeline);
@@ -1290,7 +1488,7 @@ public sealed class ViewerForm : Form
         }
         if (instruction.Opcode == 54
             && ScriptSceneStateResolver.BuildMovementTimeline(
-                script, function, instruction, scriptAnimationLibrary, systemScript)
+                script, function, instruction, scriptAnimationLibrary, systemScript, scriptSubject)
                 is { } movementTimeline)
         {
             _ = StartScriptTimelineAsync(movementTimeline);
@@ -1311,7 +1509,7 @@ public sealed class ViewerForm : Form
             && ScriptCameraStateResolver.ReadDurationMs(instruction) > 0)
         {
             animationBefore = ScriptSceneStateResolver.ResolveBefore(
-                script, function, instruction.Index, scriptAnimationLibrary, systemScript).Camera;
+                script, function, instruction.Index, scriptAnimationLibrary, systemScript, scriptSubject).Camera;
             animationAfter = state;
             animationDurationMs = ScriptCameraStateResolver.ReadDurationMs(instruction);
             animationEasingType = ScriptCameraStateResolver.ReadInterpolationType(instruction);
@@ -1330,6 +1528,12 @@ public sealed class ViewerForm : Form
             ApplyCameraState(state, sceneState.Entities);
     }
 
+    // The shot the script last defined. The engine keeps its camera angles until
+    // a command changes them; deriving them back from the viewport instead let a
+    // manual orbit — or the rounding of a direction through asin/atan2 — leak into
+    // the next command, which is how a look-at ended up under the map.
+    private (float PitchDegrees, float YawDegrees)? scriptCameraAngles;
+
     private void ApplyCameraState(
         ScriptCameraState state,
         IReadOnlyDictionary<int, ScriptEntityState>? entities = null)
@@ -1345,13 +1549,21 @@ public sealed class ViewerForm : Form
         // l'animation, pas ici.
         if (state.YawDegrees is not null || state.PitchDegrees is not null)
         {
-            var current = ScriptCameraOrbit.FromViewDirection(cameraNavigation.Forward);
-            forward = ScriptCameraOrbit.ViewDirection(
-                state.PitchDegrees ?? current.PitchDegrees,
-                state.YawDegrees ?? current.YawDegrees);
+            var current = CurrentScriptAngles();
+            var angles = (
+                PitchDegrees: state.PitchDegrees ?? current.PitchDegrees,
+                YawDegrees: state.YawDegrees ?? current.YawDegrees);
+            scriptCameraAngles = angles;
+            forward = ScriptCameraOrbit.ViewDirection(angles.PitchDegrees, angles.YawDegrees);
 
             if (state.RollDegrees is { } rollDeg)
                 roll = rollDeg * MathF.PI / 180f;
+        }
+        else if (scriptCameraAngles is { } pinned && state.Forward is null)
+        {
+            // Moving only the look-at keeps the authored angles: the engine
+            // rebuilds the eye around the new centre without touching them.
+            forward = ScriptCameraOrbit.ViewDirection(pinned.PitchDegrees, pinned.YawDegrees);
         }
 
         var resolvedTarget = state.Target;
@@ -1383,10 +1595,10 @@ public sealed class ViewerForm : Form
             var entYaw = entities is not null && entities.TryGetValue(entId, out var entity)
                 ? entity.YawDegrees
                 : 0f;
-            var current = ScriptCameraOrbit.FromViewDirection(cameraNavigation.Forward);
+            var current = CurrentScriptAngles();
+            scriptCameraAngles = (state.PitchDegrees ?? current.PitchDegrees, entYaw + yawOffDeg);
             forward = ScriptCameraOrbit.ViewDirection(
-                state.PitchDegrees ?? current.PitchDegrees,
-                entYaw + yawOffDeg);
+                scriptCameraAngles.Value.PitchDegrees, scriptCameraAngles.Value.YawDegrees);
             if (state.RollDegrees is { } rollDeg) roll = rollDeg * MathF.PI / 180f;
         }
 
@@ -1394,10 +1606,10 @@ public sealed class ViewerForm : Form
         {
             // The deltas are authored in the script's own angle convention, so
             // they are added to the current angles expressed the same way.
-            var current = ScriptCameraOrbit.FromViewDirection(cameraNavigation.Forward);
+            var current = CurrentScriptAngles();
+            scriptCameraAngles = (current.PitchDegrees + deltaDeg.X, current.YawDegrees + deltaDeg.Y);
             forward = ScriptCameraOrbit.ViewDirection(
-                current.PitchDegrees + deltaDeg.X,
-                current.YawDegrees + deltaDeg.Y);
+                scriptCameraAngles.Value.PitchDegrees, scriptCameraAngles.Value.YawDegrees);
             roll += deltaDeg.Z * MathF.PI / 180f;
             position = cameraNavigation.Target - forward * distance;
         }
@@ -1494,6 +1706,7 @@ public sealed class ViewerForm : Form
             await EnsureFacialTexturesAsync(facialAssetId, session.Script.GameDataPath);
         }
 
+        await EnsureAttachmentModelsAsync(entities, generation);
         if (generation != scriptEntityRefreshGeneration || IsDisposed) return;
         scriptMonsterInstances = entities.Values
             .Where(value => value.HasPosition
@@ -1518,10 +1731,134 @@ public sealed class ViewerForm : Form
                     Vector3.Zero,
                     SceneElementKind.ScriptCharacter);
             })
+            .Concat(CreateAttachmentInstances(entities))
             .ToArray();
         RefreshRenderInstances(
             uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase));
     }
+
+    /// <summary>
+    /// Loads what the actors of the scene carry. t_attach.tbl gives a character
+    /// its default equipment — a weapon on a hand node, a scabbard on a back one —
+    /// which the game draws attached to that node of the animated skeleton.
+    /// </summary>
+    private async Task EnsureAttachmentModelsAsync(
+        IReadOnlyDictionary<int, ScriptEntityState> entities,
+        int generation)
+    {
+        if (session.Script.GameDataPath is not { } gameDataPath
+            || scriptAnimationLibrary is null
+            || attachTable.Count == 0)
+        {
+            return;
+        }
+        foreach (var assetId in entities.Values
+                     .SelectMany(FindAttachments)
+                     .Select(value => value.ModelAssetId)
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (generation != scriptEntityRefreshGeneration || IsDisposed) return;
+            if (!loadedModelsByAsset.TryGetValue(assetId, out var model))
+            {
+                model = await LoadScriptEntityModelAsync(assetId, gameDataPath);
+                if (generation != scriptEntityRefreshGeneration || IsDisposed) return;
+                if (model is null) continue;
+                loadedModelsByAsset[assetId] = model;
+            }
+            if (graphics is not null && uploadedModels.All(value =>
+                    !value.AssetId.Equals(assetId, StringComparison.OrdinalIgnoreCase)))
+            {
+                uploadedModels.Add(new D3D11ModelUploader(graphics.Device).Upload(model));
+            }
+        }
+    }
+
+    /// <summary>
+    /// What an actor carries right now: its default loadout from t_attach.tbl,
+    /// overridden by what the script attached, cleared or hid on each node
+    /// (OP37 / OP32_0). A node the script emptied stays empty, and a node it
+    /// hid keeps its model but is not drawn.
+    /// </summary>
+    private IReadOnlyList<ScriptAttachment> FindAttachments(ScriptEntityState entity)
+    {
+        if (string.IsNullOrWhiteSpace(entity.AssetId)) return Array.Empty<ScriptAttachment>();
+        var characterId = scriptAnimationLibrary?.FindCharacterByModel(entity.AssetId);
+        var defaults = characterId is { } id
+            ? attachTable.FindByCharacter(id)
+            : Array.Empty<ScriptAttachment>();
+        if (entity.Attachments is not { Count: > 0 } runtime) return defaults;
+
+        var byNode = defaults.ToDictionary(
+            value => value.AttachPoint, StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in runtime)
+        {
+            if (!pair.Value.Visible)
+            {
+                byNode.Remove(pair.Key);
+                continue;
+            }
+            if (!string.IsNullOrWhiteSpace(pair.Value.ModelAssetId))
+            {
+                byNode[pair.Key] = new ScriptAttachment(
+                    characterId ?? 0, pair.Value.ModelAssetId, pair.Key);
+            }
+            // Visible with no model of its own: the default equipment shows.
+        }
+        return byNode.Values.ToArray();
+    }
+
+    /// <summary>Local placement a script gave an attachment, if any.</summary>
+    private static Matrix4x4 AttachmentPlacement(ScriptEntityState? owner, string attachPoint)
+    {
+        if (owner?.Attachments is null
+            || !owner.Attachments.TryGetValue(attachPoint, out var attachment)
+            || (attachment.Offset == Vector3.Zero
+                && attachment.RotationDegrees == Vector3.Zero
+                && attachment.Scale == Vector3.One))
+        {
+            return Matrix4x4.Identity;
+        }
+        const float toRadians = MathF.PI / 180f;
+        return Matrix4x4.CreateScale(attachment.Scale)
+            * Matrix4x4.CreateFromYawPitchRoll(
+                attachment.RotationDegrees.Y * toRadians,
+                attachment.RotationDegrees.X * toRadians,
+                attachment.RotationDegrees.Z * toRadians)
+            * Matrix4x4.CreateTranslation(attachment.Offset);
+    }
+
+    private IEnumerable<SceneModelInstance> CreateAttachmentInstances(
+        IReadOnlyDictionary<int, ScriptEntityState> entities)
+    {
+        attachmentOwners.Clear();
+        var instanceId = AttachmentSceneInstanceBase;
+        foreach (var entity in entities.Values
+                     .Where(value => value.HasPosition)
+                     .OrderBy(value => value.EntityId))
+        {
+            foreach (var attachment in FindAttachments(entity))
+            {
+                if (!loadedModelsByAsset.TryGetValue(attachment.ModelAssetId, out var model)) continue;
+                var id = instanceId++;
+                attachmentOwners[id] = (
+                    ScriptEntitySceneInstanceId(entity.EntityId),
+                    entity.EntityId,
+                    attachment.AttachPoint);
+                yield return new SceneModelInstance(
+                    id,
+                    attachment.ModelAssetId,
+                    $"{attachment.ModelAssetId} on {attachment.AttachPoint}",
+                    model,
+                    Matrix4x4.Identity,
+                    Vector4.One,
+                    Vector3.Zero,
+                    SceneElementKind.ScriptCharacter);
+            }
+        }
+    }
+
+    /// <summary>Identity space of attachment instances, disjoint from the actors'.</summary>
+    private const int AttachmentSceneInstanceBase = int.MinValue + 200000;
 
     private static int ScriptEntitySceneInstanceId(int entityId)
         => int.MinValue + (entityId - short.MinValue);
@@ -1978,7 +2315,7 @@ public sealed class ViewerForm : Form
                     call.Instruction.Arguments[2].Raw).TrimEnd('\0')
                 : "<invalid OP47>";
             var timeline = ScriptSceneStateResolver.BuildAnimationCallTimeline(
-                script, call.Function, call.Instruction, scriptAnimationLibrary, systemScript);
+                script, call.Function, call.Instruction, scriptAnimationLibrary, systemScript, scriptSubject);
             if (timeline is null)
             {
                 if (mistyCall.Instruction is not null)
@@ -2325,8 +2662,16 @@ public sealed class ViewerForm : Form
             }
             return;
         }
-        throw new InvalidOperationException(
-            "No OP69 instruction resolved to a changing prop animation in this scene.");
+        // A script that animates no prop (an animation or craft script) has
+        // nothing to check here: the smoke covers whatever the file contains.
+        if (script.Functions.Where(value => value.IsCode)
+            .SelectMany(value => value.Instructions)
+            .Any(value => value.Opcode == 69))
+        {
+            throw new InvalidOperationException(
+                "No OP69 instruction resolved to a changing prop animation in this scene.");
+        }
+        Console.WriteLine("Prop animation smoke: skipped, this script animates no prop.");
     }
 
     private static bool MatrixNearlyEqual(Matrix4x4 left, Matrix4x4 right)
@@ -2497,8 +2842,12 @@ public sealed class ViewerForm : Form
     private void UpdateScriptTimeline(float elapsedSeconds)
     {
         if (scriptTimeline is null) return;
-        scriptTimelineFrame += elapsedSeconds * ScriptWaitDuration.PreviewFramesPerSecond;
+        // The speed only changes how fast the preview walks the timeline; the
+        // frames the script itself authored are untouched.
+        var speed = scriptEditor is { IsDisposed: false } ? scriptEditor.PlaybackSpeed : 1f;
+        scriptTimelineFrame += elapsedSeconds * speed * ScriptWaitDuration.PreviewFramesPerSecond;
         var duration = GetScriptTimelineDurationFrames(scriptTimeline);
+        ShowPlaybackPosition(duration);
         if (scriptTimelineFrame >= duration)
         {
             if (scriptTimeline.LoopPlayback)
@@ -2516,6 +2865,20 @@ public sealed class ViewerForm : Form
             }
         }
         ApplyTimelinePointsAtCurrentFrame();
+    }
+
+    /// <summary>
+    /// Where the playback stands, in the scene's own seconds and in the commands
+    /// it has run: a scene is mostly authored waits, so a reader needs to see
+    /// the clock move even while no block changes.
+    /// </summary>
+    private void ShowPlaybackPosition(float durationFrames)
+    {
+        if (scriptTimeline is null || scriptEditor is not { IsDisposed: false } editor) return;
+        editor.ShowPlaybackPosition(
+            $"▶ {scriptTimelineFrame / ScriptWaitDuration.PreviewFramesPerSecond:0.0}"
+            + $" / {durationFrames / ScriptWaitDuration.PreviewFramesPerSecond:0.0} s"
+            + $"  ({scriptTimelinePointIndex}/{scriptTimeline.Points.Count})");
     }
 
     private void ApplyTimelinePointsAtCurrentFrame()
@@ -2558,10 +2921,10 @@ public sealed class ViewerForm : Form
 
     private void ApplyTimelineSceneState(ScriptSceneState state, bool applyCamera)
     {
-        activeScriptEntities = state.Entities;
+        activeScriptEntities = PrepareEntities(state.Entities);
         activeScriptPropAnimations = state.PropAnimations;
-        scriptEditor?.SetRuntimeEntities(CreateScriptEntityChoices(state.Entities));
-        _ = RefreshScriptEntitiesAsync(state.Entities);
+        scriptEditor?.SetRuntimeEntities(CreateScriptEntityChoices(activeScriptEntities));
+        _ = RefreshScriptEntitiesAsync(activeScriptEntities);
         _ = RefreshScriptPropAnimationsAsync(state.PropAnimations);
         RefreshOverlay();
         if (applyCamera && ShouldApplyScriptCamera && state.Camera.HasViewValue)
@@ -2600,11 +2963,31 @@ public sealed class ViewerForm : Form
                         + clip.Duration * ScriptWaitDuration.PreviewFramesPerSecond);
             }
         }
+        // An effect the scene started outlives the command that started it: a
+        // loop that restarted before it had played would never show it.
+        if (session.Script.GameDataPath is { } gameDataPath)
+        {
+            foreach (var entity in finalState.Entities.Values)
+            {
+                foreach (var instance in entity.Effects?.Values ?? Enumerable.Empty<ScriptEffectInstance>())
+                {
+                    if (LoadEffect(gameDataPath, instance.EffectPath) is not { } effect
+                        || EffSimulation.FiniteDuration(effect) is not { } seconds)
+                    {
+                        continue;
+                    }
+                    duration = Math.Max(
+                        duration,
+                        instance.StartFrame + seconds * ScriptWaitDuration.PreviewFramesPerSecond);
+                }
+            }
+        }
         return Math.Max(1f, duration);
     }
 
     private void StopScriptTimeline()
     {
+        if (scriptEditor is { IsDisposed: false } editor) editor.ShowPlaybackPosition(string.Empty);
         scriptTimelineGeneration++;
         scriptTimeline = null;
         scriptTimelinePointIndex = 0;
@@ -2618,6 +3001,13 @@ public sealed class ViewerForm : Form
     /// it looks. Capturing a shot into a camera command goes through here, so a
     /// saved plan frames in game exactly what the viewport shows.
     /// </summary>
+    /// <summary>
+    /// Angles a relative command starts from: the shot the script last set, or
+    /// the viewport when the scene has not defined one yet.
+    /// </summary>
+    private (float PitchDegrees, float YawDegrees) CurrentScriptAngles()
+        => scriptCameraAngles ?? ScriptCameraOrbit.FromViewDirection(cameraNavigation.Forward);
+
     private ScriptCameraSnapshot CaptureCameraSnapshot()
     {
         var angles = ScriptCameraOrbit.FromViewDirection(cameraNavigation.Forward);
@@ -2742,8 +3132,9 @@ public sealed class ViewerForm : Form
             };
         }
 
-        // Angles (en degrés)
-        if (animationAfter.YawDegrees is { } yawAfter || animationAfter.PitchDegrees is { } pitchAfter)
+        // Angles (en degrés). Ils sont TOUJOURS transmis : une commande qui ne
+        // bouge que le point visé doit garder les angles du plan, pas les laisser
+        // se redériver de la caméra vivante à chaque frame.
         {
             var yawB = animationBefore.YawDegrees ?? animationStart.YawDegrees;
             var pitchB = animationBefore.PitchDegrees ?? animationStart.PitchDegrees;
@@ -2819,34 +3210,91 @@ public sealed class ViewerForm : Form
         suppressCameraTextUpdate = false;
     }
 
-    private void OpenTblEditor()
+    /// <summary>
+    /// Opens the effect editor, with its own preview: an effect is judged on its
+    /// own against a plain background, not buried in the map.
+    /// </summary>
+    private void ShowEffectEditor()
     {
-        if (session.Script.GameDataPath is null)
+        if (session.Script.GameDataPath is not { } gameDataPath || graphics is null)
         {
-            tblTab.Controls.Clear();
-            tblTab.Controls.Add(new Label
-            {
-                Dock = DockStyle.Fill,
-                TextAlign = ContentAlignment.MiddleCenter,
-                Text = "Game data directory not found.",
-            });
+            MessageBox.Show(
+                this,
+                "The game data directory was not found, so no effect can be read.",
+                "Effect editor",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
             return;
         }
-        if (tblEditor is null || tblEditor.IsDisposed)
+        if (effectEditorWindow is { IsDisposed: false } opened)
         {
-            tblEditor = new TblEditorControl(session.Script.GameDataPath, session.Script.Header.SourcePath);
-            tblEditor.CatalogChanged += (_, _) => tableCatalog = null;
-            tblTab.Controls.Add(tblEditor);
+            opened.BringToFront();
+            opened.Focus();
+            return;
         }
+        var window = new EffEditorWindow(
+            gameDataPath,
+            graphics,
+            ResolveEffectTexture,
+            (_, eventArgs) => TrackModSave(eventArgs.Path, eventArgs.BeforeWrite));
+        window.FormClosed += (_, _) => effectEditorWindow = null;
+        effectEditorWindow = window;
+        window.Show(this);
     }
 
+    private void ShowTableEditor()
+    {
+        if (session.Script.GameDataPath is not { } gameDataPath)
+        {
+            MessageBox.Show(
+                this,
+                "The game data directory was not found, so no table can be read.",
+                "Table editor",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+        if (tableEditorWindow is { IsDisposed: false } opened)
+        {
+            opened.BringToFront();
+            opened.Focus();
+            return;
+        }
+        var window = new TblEditorWindow(
+            gameDataPath,
+            session.Script.Header.SourcePath,
+            (_, _) => tableCatalog = null);
+        window.FormClosed += (_, _) => tableEditorWindow = null;
+        tableEditorWindow = window;
+        window.Show(this);
+    }
+
+    /// <summary>
+    /// The entries an operand can point at, read from the game's tables. The
+    /// script's own path chooses the locale: a script under dat_us is the
+    /// English build, anything else is the Japanese one.
+    /// </summary>
     private IReadOnlyList<Cs1TableChoice> GetTableChoices(Cs1TableReference reference)
     {
-        OpenTblEditor();
-        if (tblEditor?.CurrentDirectory is not { } directory) return Array.Empty<Cs1TableChoice>();
+        if (ResolveTableDirectory() is not { } directory) return Array.Empty<Cs1TableChoice>();
         if (tableCatalog is null || !tableCatalog.DirectoryPath.Equals(directory, StringComparison.OrdinalIgnoreCase))
             tableCatalog = new Cs1TableCatalog(directory);
         return tableCatalog.GetChoices(reference);
+    }
+
+    private string? ResolveTableDirectory()
+    {
+        if (session.Script.GameDataPath is not { } gameDataPath) return null;
+        var textRoot = Path.Combine(gameDataPath, "text");
+        var english = Path.GetFullPath(session.Script.Header.SourcePath)
+            .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            .Any(value => value.Equals("dat_us", StringComparison.OrdinalIgnoreCase));
+        foreach (var locale in english ? new[] { "dat_us", "dat" } : new[] { "dat", "dat_us" })
+        {
+            var directory = Path.Combine(textRoot, locale);
+            if (Directory.Exists(directory)) return directory;
+        }
+        return null;
     }
 
     private void ClearSelection()
@@ -3010,6 +3458,27 @@ public sealed class ViewerForm : Form
         instances = rendered;
     }
 
+    /// <summary>Ground grid shown when the open script has no map of its own.</summary>
+    private static IEnumerable<SceneOverlayLine> BuildDebugGround()
+    {
+        const int halfSize = 20;
+        const float spacing = 1f;
+        // Light grid on a light background: a character or a camera framing is
+        // read against the ground, and the dark scene made both invisible.
+        var minor = new Vector4(0.62f, 0.66f, 0.72f, 1f);
+        var major = new Vector4(0.32f, 0.38f, 0.48f, 1f);
+        for (var step = -halfSize; step <= halfSize; step++)
+        {
+            var offset = step * spacing;
+            var extent = halfSize * spacing;
+            var color = step == 0 ? major : minor;
+            yield return new SceneOverlayLine(
+                new Vector3(-extent, 0f, offset), new Vector3(extent, 0f, offset), color);
+            yield return new SceneOverlayLine(
+                new Vector3(offset, 0f, -extent), new Vector3(offset, 0f, extent), color);
+        }
+    }
+
     private void RefreshOverlay()
     {
         if (viewport is null) return;
@@ -3020,6 +3489,10 @@ public sealed class ViewerForm : Form
             : new SceneOverlayGeometry(Array.Empty<SceneOverlayLine>(), Array.Empty<SceneOverlayTriangle>());
         var overlayLines = overlay.Lines.ToList();
         var overlayTriangles = overlay.Triangles.ToList();
+        // A script with no map has nothing to stand on: draw a plain ground so a
+        // camera or an animation can still be judged against something.
+        if (session.Map is null) overlayLines.AddRange(BuildDebugGround());
+
         if (showIndicatorsCheckBox.Checked)
         {
             foreach (var entity in activeScriptEntities.Values.Where(value =>
@@ -3071,6 +3544,211 @@ public sealed class ViewerForm : Form
             .Select(triangle => new D3D11DebugTriangle(
                 triangle.A, triangle.B, triangle.C, triangle.Color))
             .ToArray());
+    }
+
+    /// <summary>
+    /// The quads of the effects the script has running, plus the one the effect
+    /// editor is previewing. OP39 loads an .eff into a slot and starts it on an
+    /// entity, one of its nodes, or the map; the file itself says which segments
+    /// it spawns, when and where, and each one is drawn with its own texture,
+    /// colour and blend mode at this point of the timeline.
+    /// </summary>
+    private IReadOnlyList<D3D11EffectQuad> BuildEffectQuads()
+    {
+        var quads = new List<D3D11EffectQuad>();
+        if (session.Script.GameDataPath is not { } gameDataPath) return quads;
+        foreach (var owner in activeScriptEntities.Values)
+        {
+            if (owner.Effects is not { Count: > 0 } playing) continue;
+            foreach (var instance in playing.Values)
+            {
+                if (LoadEffect(gameDataPath, instance.EffectPath) is not { } effect) continue;
+                const float toRadians = MathF.PI / 180f;
+                var placement = Matrix4x4.CreateScale(instance.Scale)
+                    * Matrix4x4.CreateFromYawPitchRoll(
+                        instance.RotationDegrees.Y * toRadians,
+                        instance.RotationDegrees.X * toRadians,
+                        instance.RotationDegrees.Z * toRadians)
+                    * Matrix4x4.CreateTranslation(instance.Position)
+                    * ResolveEffectAnchor(instance);
+                // The effect runs on its own clock, started by the command that
+                // played it, exactly like an animation or a facial pattern.
+                var elapsedSeconds = scriptTimeline is null
+                    ? 0f
+                    : Math.Max(0f, scriptTimelineFrame - instance.StartFrame)
+                        / ScriptWaitDuration.PreviewFramesPerSecond;
+                DrawEffect(quads, effect, elapsedSeconds, placement);
+            }
+        }
+        return quads;
+    }
+
+    private void DrawEffect(
+        ICollection<D3D11EffectQuad> quads,
+        EffFile effect,
+        float seconds,
+        Matrix4x4 placement)
+    {
+        foreach (var node in EffSimulation.Evaluate(effect, seconds).Nodes)
+        {
+            if (!node.Drawn) continue;
+            AddEffectNodeQuad(quads, effect.Segments[node.SegmentIndex], node, placement);
+        }
+    }
+
+    /// <summary>
+    /// Where an effect hangs: on one of an actor's nodes, on the actor itself, or
+    /// in the world when the script anchored it to the scene.
+    /// </summary>
+    private Matrix4x4 ResolveEffectAnchor(ScriptEffectInstance instance)
+    {
+        if (!activeScriptEntities.TryGetValue(instance.AnchorEntityId, out var host))
+            return Matrix4x4.Identity;
+        if (instance.AnchorNode.Length > 0
+            && TryGetOwnerPose(ScriptEntitySceneInstanceId(host.EntityId), out var posed)
+            && IndexOfJoint(posed.Skeleton, instance.AnchorNode) is var joint and >= 0)
+        {
+            return posed.Pose.WorldTransforms[joint] * posed.Transform;
+        }
+        var position = scriptTimeline is not null
+            ? EvaluateEntityMotionPosition(host, scriptTimelineFrame)
+            : host.Position;
+        var yaw = scriptTimeline is not null
+            ? host.Motion?.HeadingAt(scriptTimelineFrame) ?? host.YawDegrees
+            : host.YawDegrees;
+        return Matrix4x4.CreateRotationY(yaw * MathF.PI / 180f)
+            * Matrix4x4.CreateTranslation(position);
+    }
+
+    /// <summary>
+    /// One segment of a playing effect: a unit quad the segment's scale track
+    /// sizes, showing the piece of its texture the segment's crop selects,
+    /// multiplied by its colour track and lit by its glow track.
+    /// </summary>
+    private void AddEffectNodeQuad(
+        ICollection<D3D11EffectQuad> quads,
+        EffSegment segment,
+        EffNode node,
+        Matrix4x4 placement)
+    {
+        // A segment that names no texture draws nothing in the engine: it only
+        // exists to carry its children.
+        if (segment.TextureName.Length == 0) return;
+        if (ResolveEffectTexture(segment.TextureName) is not { } texture) return;
+        var world = node.Rotation
+            * Matrix4x4.CreateTranslation(node.Position)
+            * placement;
+        var halfWidth = node.Scale.X / 2f;
+        var halfHeight = node.Scale.Y / 2f;
+        Vector3[] corners;
+        if (node.Billboard)
+        {
+            // A billboarded segment keeps its place but turns its face to the
+            // camera, so it is read the same way from every angle.
+            var center = Vector3.Transform(Vector3.Zero, world);
+            var view = CreateCamera().View;
+            var right = new Vector3(view.M11, view.M21, view.M31);
+            var up = new Vector3(view.M12, view.M22, view.M32);
+            corners = new[]
+            {
+                center - right * halfWidth - up * halfHeight,
+                center + right * halfWidth - up * halfHeight,
+                center + right * halfWidth + up * halfHeight,
+                center - right * halfWidth + up * halfHeight,
+            };
+        }
+        else
+        {
+            corners = new[]
+            {
+                Vector3.Transform(new Vector3(-halfWidth, -halfHeight, 0f), world),
+                Vector3.Transform(new Vector3(halfWidth, -halfHeight, 0f), world),
+                Vector3.Transform(new Vector3(halfWidth, halfHeight, 0f), world),
+                Vector3.Transform(new Vector3(-halfWidth, halfHeight, 0f), world),
+            };
+        }
+
+        // The crop is authored as texture coordinates, and is allowed to run past
+        // 0..1 (a tiling rain streak) or to be flipped. Only a crop that is all
+        // zeroes means "the whole texture".
+        var crop = segment.Data04;
+        var cropped = crop[0] != 0f || crop[1] != 0f || crop[2] != 0f || crop[3] != 0f;
+        quads.Add(new D3D11EffectQuad(
+            corners[0],
+            corners[1],
+            corners[2],
+            corners[3],
+            cropped ? new Vector2(crop[0], crop[1]) : Vector2.Zero,
+            cropped ? new Vector2(crop[2], crop[3]) : Vector2.One,
+            node.ColorMultiply,
+            node.ColorAdd,
+            texture,
+            BlendModeOf(segment),
+            (int)((segment.Data02[3] >> 8) & 0xFF)));
+    }
+
+    /// <summary>
+    /// How the segment is blended: its second flag word carries the blend byte
+    /// the engine switches on — 0x02 adds, 0x04 subtracts, anything else lays
+    /// the segment over the scene with its alpha.
+    /// </summary>
+    private static EffBlendMode BlendModeOf(EffSegment segment)
+        => ((segment.Data02[4] >> 8) & 0xFF) switch
+        {
+            0x02 => EffBlendMode.Additive,
+            0x04 => EffBlendMode.Subtractive,
+            _ => EffBlendMode.Alpha,
+        };
+
+    /// <summary>
+    /// The texture a segment draws with, uploaded once. A segment names an
+    /// effect texture package the editor's asset pipeline already resolves; one
+    /// that cannot be read is remembered so it is not retried every frame.
+    /// </summary>
+    private ID3D11ShaderResourceView? ResolveEffectTexture(string assetId)
+    {
+        if (string.IsNullOrWhiteSpace(assetId) || graphics is null) return null;
+        if (session.Script.GameDataPath is not { } gameDataPath) return null;
+        effectTextures ??= new D3D11EffectTextureResources(new D3D11ModelUploader(graphics.Device));
+        if (effectTextures.Knows(assetId)) return effectTextures.Find(assetId);
+        if (unavailableEffectTextures.Contains(assetId)) return null;
+        try
+        {
+            effectTextures.Add(assetId, projectLoader.LoadEffectTexture(assetId, gameDataPath));
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException
+            or ArgumentException or InvalidOperationException or NotSupportedException)
+        {
+            unavailableEffectTextures.Add(assetId);
+            Debug.WriteLine($"Could not load effect texture '{assetId}': {exception.Message}");
+            return null;
+        }
+        return effectTextures.Find(assetId);
+    }
+
+    /// <summary>
+    /// An effect file, read from the path the script named. A file that cannot
+    /// be read is remembered as missing so the viewport does not try again on
+    /// every frame.
+    /// </summary>
+    private EffFile? LoadEffect(string gameDataPath, string effectPath)
+    {
+        if (string.IsNullOrWhiteSpace(effectPath)) return null;
+        if (loadedEffects.TryGetValue(effectPath, out var cached)) return cached;
+        var relative = effectPath.Replace('/', Path.DirectorySeparatorChar);
+        if (!relative.EndsWith(".eff", StringComparison.OrdinalIgnoreCase)) relative += ".eff";
+        var full = Path.Combine(gameDataPath, "effects", relative);
+        EffFile? effect = null;
+        try
+        {
+            if (File.Exists(full)) effect = EffFileReader.Read(full);
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException)
+        {
+            effect = null;
+        }
+        loadedEffects[effectPath] = effect;
+        return effect;
     }
 
     private void AddReferencedEntityMarker(
@@ -3366,6 +4044,8 @@ public sealed class ViewerForm : Form
             WrapContents = true,
             Padding = new Padding(0, 0, 0, 4),
         };
+        var addScript = new Button { AutoSize = true, Text = "Add script…" };
+        addScript.Click += (_, _) => AddScriptToProject();
         var newProject = new Button { AutoSize = true, Text = "New…" };
         var openProject = new Button { AutoSize = true, Text = "Open…" };
         var exportArchive = new Button { AutoSize = true, Text = "Export .zip…" };
@@ -3378,7 +4058,7 @@ public sealed class ViewerForm : Form
         restoreAll.Click += (_, _) => RestoreModOriginals(selectedOnly: false);
         tools.Controls.AddRange(new Control[]
         {
-            newProject, openProject, exportArchive, applyMod, restoreAll,
+            addScript, newProject, openProject, exportArchive, applyMod, restoreAll,
         });
 
         var fileMenu = new ContextMenuStrip();
@@ -3390,12 +4070,73 @@ public sealed class ViewerForm : Form
             (_, _) => IncludeModFile());
         fileMenu.Items.Add("Remove from the mod", null, (_, _) => RemoveModFile());
         modFileTree.ContextMenuStrip = fileMenu;
+        modFileTree.NodeMouseDoubleClick += (_, eventArgs) =>
+        {
+            if (modProject is null || eventArgs.Node.Tag is not string relative) return;
+            var path = modProject.GameFilePath(relative);
+            if (path.EndsWith(".dat", StringComparison.OrdinalIgnoreCase)) OpenScriptFile(path);
+            else if (path.EndsWith(".ops", StringComparison.OrdinalIgnoreCase))
+            {
+                // An OPS belongs to a scenario: open the script that drives it.
+                var script = Path.ChangeExtension(
+                    Path.Combine(
+                        Path.GetDirectoryName(session.Script.Header.SourcePath)!,
+                        Path.GetFileName(path)),
+                    ".dat");
+                if (File.Exists(script)) OpenScriptFile(script);
+            }
+        };
 
         var treeGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Mod files (game-relative paths)" };
         treeGroup.Controls.Add(modFileTree);
         modPanel.Controls.Add(treeGroup);
         modPanel.Controls.Add(tools);
         modPanel.Controls.Add(modProjectLabel);
+    }
+
+    /// <summary>Opens a project and lists its files, without touching the scene.</summary>
+    public void LoadModProject(string projectPath)
+    {
+        RunModProjectAction(() =>
+        {
+            modProject = ModProject.Open(projectPath);
+            settingsStore.Save(settingsStore.Load() with { LastProjectPath = modProject.ProjectPath });
+            RefreshModProjectTab();
+        });
+    }
+
+    /// <summary>
+    /// Adds a script to the project and opens it. This is how a project fills up:
+    /// it starts empty, and the other files (its OPS, its packages) join it on
+    /// their own the first time they are written.
+    /// </summary>
+    private void AddScriptToProject()
+    {
+        if (modProject is null)
+        {
+            MessageBox.Show(
+                this, "Create or open a mod project first.", "No project",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        var scenario = Path.Combine(modProject.GameDirectory, "data", "scripts", "scena");
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Add a script to the mod project",
+            Filter = "Cold Steel scripts (*.dat)|*.dat|All files (*.*)|*.*",
+            InitialDirectory = Directory.Exists(scenario)
+                ? scenario
+                : Path.Combine(modProject.GameDirectory, "data"),
+            CheckFileExists = true,
+            Multiselect = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        RunModProjectAction(() =>
+        {
+            foreach (var file in dialog.FileNames) modProject.Include(file);
+            RefreshModProjectTab();
+        });
+        if (dialog.FileNames.Length > 0) OpenScriptFile(dialog.FileNames[0]);
     }
 
     private void CreateModProject()
@@ -3416,6 +4157,7 @@ public sealed class ViewerForm : Form
         RunModProjectAction(() =>
         {
             modProject = ModProject.Create(dialog.FileName, gameRoot);
+            settingsStore.Save(settingsStore.Load() with { LastProjectPath = modProject.ProjectPath });
             RefreshModProjectTab();
         });
     }
@@ -3432,6 +4174,7 @@ public sealed class ViewerForm : Form
         RunModProjectAction(() =>
         {
             modProject = ModProject.Open(dialog.FileName);
+            settingsStore.Save(settingsStore.Load() with { LastProjectPath = modProject.ProjectPath });
             RefreshModProjectTab();
         });
     }
@@ -3650,6 +4393,156 @@ public sealed class ViewerForm : Form
             MessageBox.Show(exception.Message, "Cannot save OPS", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return false;
         }
+    }
+
+    /// <summary>
+    /// Opens a script of the project. A scenario brings its map; a script that has
+    /// none (an animation or a craft) is shown over a plain ground, with the actor
+    /// it drives if the game's tables name one.
+    /// </summary>
+    public bool OpenScriptFile(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return false;
+        var full = Path.GetFullPath(path);
+        if (session.Script.Header.SourcePath.Equals(full, StringComparison.OrdinalIgnoreCase))
+        {
+            SelectFileTab(full);
+            return true;
+        }
+        EditorSession opened;
+        try
+        {
+            opened = projectLoader.OpenScript(full, session.Script.GameDataPath);
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException or ArgumentException or InvalidDataException)
+        {
+            MessageBox.Show(
+                this, exception.Message, "Cannot open script", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return false;
+        }
+        ClearScriptEntityPreview();
+        session = opened;
+        document = new EditorSceneDocument(session);
+        document.Changed += (_, _) => RefreshSceneFromDocument();
+        document.PreviewChanged += (_, _) => RefreshScenePreviewFromDocument();
+        savedOpsPath = null;
+        selection = null;
+        scriptSubject = null;
+        if (session.Script.GameDataPath is { } gameDataPath)
+        {
+            scriptAnimationLibrary = new ScriptAnimationLibrary(
+                gameDataPath, session.Script.Header.SourcePath, instructionDefinitionsPath);
+            systemScript = new ScriptSystemLibrary(
+                session.Script.Header.SourcePath, instructionDefinitionsPath).Script;
+            scriptSubject = ScriptSubjectResolver.Resolve(
+                session.Script.Header.SourcePath, gameDataPath, scriptAnimationLibrary);
+            attachTable = ScriptAttachTable.Load(gameDataPath);
+        }
+        baseTitle = $"ED8Editor — {session.Script.Header.Identifier}"
+            + (scriptSubject is null ? string.Empty : $" — {scriptSubject.ModelAssetId}")
+            + " — 1: move, 2: rotate, 3: scale, Ctrl+click: select through, Ctrl+Z/Y: undo/redo";
+        Text = baseTitle;
+        LoadSceneForSession();
+        InitializeAssetCatalog();
+        _ = LoadEffectMetadataAsync();
+        scriptEditor?.LoadDat(full);
+        AddFileTab(full);
+        _ = RefreshSubjectPreviewAsync();
+        return true;
+    }
+
+    private void AddFileTab(string path)
+    {
+        if (!openFiles.Any(value => value.Equals(path, StringComparison.OrdinalIgnoreCase)))
+        {
+            openFiles.Add(path);
+            openFileTabs.TabPages.Add(new TabPage(Path.GetFileName(path)) { ToolTipText = path });
+        }
+        openFileTabs.Visible = openFiles.Count > 0;
+        SelectFileTab(path);
+    }
+
+    private void SelectFileTab(string path)
+    {
+        var index = openFiles.FindIndex(value => value.Equals(path, StringComparison.OrdinalIgnoreCase));
+        if (index < 0 || openFileTabs.SelectedIndex == index) return;
+        switchingFile = true;
+        try
+        {
+            openFileTabs.SelectedIndex = index;
+        }
+        finally
+        {
+            switchingFile = false;
+        }
+    }
+
+    private void SelectOpenFileTab()
+    {
+        if (switchingFile) return;
+        var index = openFileTabs.SelectedIndex;
+        if (index < 0 || index >= openFiles.Count) return;
+        OpenScriptFile(openFiles[index]);
+    }
+
+    /// <summary>
+    /// Shows the actor a map-less script drives, bound to the script's own "self"
+    /// reference so its animation and camera commands play on it.
+    /// </summary>
+    private async Task RefreshSubjectPreviewAsync()
+    {
+        if (scriptSubject is null || session.Script.GameDataPath is null) return;
+        var entities = new Dictionary<int, ScriptEntityState>
+        {
+            [ScriptEntityReferences.SelfEntityId] = CreateSubjectEntity(scriptSubject),
+        };
+        activeScriptEntities = entities;
+        await RefreshScriptEntitiesAsync(entities);
+    }
+
+    private ScriptEntityState CreateSubjectEntity(ScriptSubject subject)
+        => new(
+            ScriptEntityReferences.SelfEntityId,
+            subject.ModelAssetId,
+            subject.ScriptName,
+            string.Empty,
+            0,
+            0,
+            Vector3.Zero,
+            0f,
+            1f,
+            0f,
+            0f,
+            subject.ScriptName,
+            string.Empty,
+            0, 0, 0, 0, 0,
+            Array.Empty<Vector3>(),
+            HasSpawnDefinition: true,
+            HasPosition: true,
+            ReferenceSymbol: "Self",
+            FacialAssetId: scriptAnimationLibrary?.ResolveFacialAsset(-1, subject.ModelAssetId) ?? string.Empty);
+
+    /// <summary>
+    /// Entities of a replay, with the actor of a map-less script filled in: its
+    /// script only ever refers to itself, so "self" carries no model of its own.
+    /// </summary>
+    private IReadOnlyDictionary<int, ScriptEntityState> PrepareEntities(
+        IReadOnlyDictionary<int, ScriptEntityState> entities)
+    {
+        if (scriptSubject is null) return entities;
+        var prepared = new Dictionary<int, ScriptEntityState>(entities);
+        var self = ScriptEntityReferences.SelfEntityId;
+        prepared[self] = prepared.TryGetValue(self, out var existing)
+            ? existing with
+            {
+                AssetId = scriptSubject.ModelAssetId,
+                DisplayName = scriptSubject.ScriptName,
+                IsPlaceholder = false,
+                HasPosition = true,
+            }
+            : CreateSubjectEntity(scriptSubject);
+        return prepared;
     }
 
     private void InitializeAssetCatalog()

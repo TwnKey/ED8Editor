@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Text;
 using ED8Editor.Decompiler;
@@ -27,6 +27,9 @@ internal sealed record ScriptEntityState(
     IReadOnlyList<Vector3> PendingWaypoints,
     ScriptEntityMotion? Motion = null,
     IReadOnlyDictionary<int, ScriptEntityAnimation>? AnimationSlots = null,
+    IReadOnlyDictionary<string, ScriptEntityAttachment>? Attachments = null,
+    IReadOnlyDictionary<int, string>? EffectSlots = null,
+    IReadOnlyDictionary<int, ScriptEffectInstance>? Effects = null,
     bool HasSpawnDefinition = true,
     bool HasPosition = true,
     string ReferenceSymbol = "",
@@ -35,6 +38,37 @@ internal sealed record ScriptEntityState(
     IReadOnlyList<string>? AnimationBanks = null,
     string FacialAssetId = "",
     ScriptFacialExpression? FacialExpression = null);
+
+/// <summary>
+/// A playing effect. OP39 selector 10 loads an .eff into one of an owner's
+/// slots, selector 12 starts it as a numbered instance — anchored to an entity
+/// and one of its nodes, or placed in the world — and selectors 11/13/14/16 take
+/// it down. An instance with no scripted end keeps playing.
+/// </summary>
+internal sealed record ScriptEffectInstance(
+    int Instance,
+    int Slot,
+    string EffectPath,
+    int AnchorEntityId,
+    string AnchorNode,
+    Vector3 Position,
+    Vector3 RotationDegrees,
+    Vector3 Scale,
+    int StartFrame);
+
+/// <summary>
+/// Something hanging from one of an actor's skeleton nodes. OP37 attaches a model
+/// to a node (selector 0) or clears it (selector 1) with a local placement, and
+/// OP32_0 shows or hides whatever hangs there — that is how a script draws a
+/// weapon, puts it away, or swaps it for an umbrella.
+/// </summary>
+internal sealed record ScriptEntityAttachment(
+    string AttachPoint,
+    string ModelAssetId,
+    bool Visible,
+    Vector3 Offset,
+    Vector3 RotationDegrees,
+    Vector3 Scale);
 
 internal sealed record ScriptEntityMotion(
     int Subtype,
@@ -47,6 +81,39 @@ internal sealed record ScriptEntityMotion(
     float JumpHeight = 0f)
 {
     public int EndFrame => checked(StartFrame + DurationFrames);
+
+    /// <summary>
+    /// Facing while the path is walked. The engine steers a moving actor along
+    /// its own movement (it stores the normalised direction and turns towards
+    /// it), so the heading follows the segment being travelled and stays on the
+    /// last one once the move is over.
+    /// </summary>
+    public float? HeadingAt(float frame)
+    {
+        if (Path.Count < 2) return null;
+        var progress = DurationFrames <= 0
+            ? 1f
+            : Math.Clamp((frame - StartFrame) / DurationFrames, 0f, 1f);
+        var totalLength = 0f;
+        for (var index = 1; index < Path.Count; index++)
+            totalLength += Vector3.Distance(Path[index - 1], Path[index]);
+        if (totalLength <= 0f) return null;
+        var remaining = totalLength * progress;
+        for (var index = 1; index < Path.Count; index++)
+        {
+            var segment = Path[index] - Path[index - 1];
+            var segmentLength = segment.Length();
+            if (remaining > segmentLength && index < Path.Count - 1)
+            {
+                remaining -= segmentLength;
+                continue;
+            }
+            return segmentLength <= 1e-4f
+                ? null
+                : MathF.Atan2(segment.X, segment.Z) * 180f / MathF.PI;
+        }
+        return null;
+    }
 
     public Vector3 PositionAt(float frame)
     {
@@ -144,12 +211,13 @@ internal static class ScriptSceneStateResolver
         DecompiledFunction selectedFunction,
         int selectedInstructionIndex,
         ScriptAnimationLibrary? animationLibrary = null,
-        DecompiledScript? systemScript = null)
+        DecompiledScript? systemScript = null,
+        ScriptSubject? subject = null)
     {
         ArgumentNullException.ThrowIfNull(script);
         ArgumentNullException.ThrowIfNull(selectedFunction);
 
-        var execution = new Execution(script, animationLibrary, systemScript);
+        var execution = new Execution(script, animationLibrary, systemScript, subject);
         execution.LoadInitialEntities(selectedFunction);
         var path = ScriptCameraStateResolver.FindFirstPath(
             selectedFunction, selectedInstructionIndex);
@@ -166,7 +234,8 @@ internal static class ScriptSceneStateResolver
         DecompiledFunction selectedFunction,
         int selectedInstructionIndex,
         ScriptAnimationLibrary? animationLibrary = null,
-        DecompiledScript? systemScript = null)
+        DecompiledScript? systemScript = null,
+        ScriptSubject? subject = null)
     {
         ArgumentNullException.ThrowIfNull(script);
         ArgumentNullException.ThrowIfNull(selectedFunction);
@@ -174,7 +243,7 @@ internal static class ScriptSceneStateResolver
         var path = ScriptCameraStateResolver.FindFirstPath(
             selectedFunction, selectedInstructionIndex);
         var exclusivePath = path.TakeWhile(index => index != selectedInstructionIndex).ToArray();
-        var execution = new Execution(script, animationLibrary, systemScript);
+        var execution = new Execution(script, animationLibrary, systemScript, subject);
         execution.LoadInitialEntities(selectedFunction);
         execution.ExecutePath(
             script,
@@ -189,14 +258,15 @@ internal static class ScriptSceneStateResolver
         DecompiledFunction caller,
         DecompiledInstruction callInstruction,
         ScriptAnimationLibrary? animationLibrary = null,
-        DecompiledScript? systemScript = null)
+        DecompiledScript? systemScript = null,
+        ScriptSubject? subject = null)
     {
         ArgumentNullException.ThrowIfNull(script);
         ArgumentNullException.ThrowIfNull(caller);
         ArgumentNullException.ThrowIfNull(callInstruction);
         if (callInstruction.Opcode != 2) return null;
 
-        var execution = new Execution(script, animationLibrary, systemScript);
+        var execution = new Execution(script, animationLibrary, systemScript, subject);
         if (!execution.TryResolveCallTarget(
                 script, callInstruction, out var targetScript, out var target))
         {
@@ -209,8 +279,10 @@ internal static class ScriptSceneStateResolver
             caller,
             callerPath.TakeWhile(index => index != callInstruction.Index),
             CreateCallStack(caller));
-        var initialState = execution.Snapshot();
+        // Settle the past first: the snapshot the preview starts from must be the
+        // scene as it stands, not as it stood before its last movement.
         execution.BeginTimeline();
+        var initialState = execution.Snapshot();
         execution.ExecuteFunction(
             targetScript,
             target,
@@ -223,14 +295,15 @@ internal static class ScriptSceneStateResolver
         DecompiledFunction caller,
         DecompiledInstruction callInstruction,
         ScriptAnimationLibrary? animationLibrary,
-        DecompiledScript? systemScript = null)
+        DecompiledScript? systemScript = null,
+        ScriptSubject? subject = null)
     {
         ArgumentNullException.ThrowIfNull(script);
         ArgumentNullException.ThrowIfNull(caller);
         ArgumentNullException.ThrowIfNull(callInstruction);
         if (callInstruction.Opcode != 47 || animationLibrary is null) return null;
 
-        var execution = new Execution(script, animationLibrary, systemScript);
+        var execution = new Execution(script, animationLibrary, systemScript, subject);
         execution.LoadInitialEntities(caller);
         var callerPath = ScriptCameraStateResolver.FindFirstPath(caller, callInstruction.Index);
         execution.ExecutePath(
@@ -239,8 +312,10 @@ internal static class ScriptSceneStateResolver
             callerPath.TakeWhile(index => index != callInstruction.Index),
             CreateCallStack(caller));
         if (!execution.CanResolveAnimationCall(callInstruction)) return null;
-        var initialState = execution.Snapshot();
+        // Settle the past first: the snapshot the preview starts from must be the
+        // scene as it stands, not as it stood before its last movement.
         execution.BeginTimeline();
+        var initialState = execution.Snapshot();
         execution.ExecuteInstructionForTimeline(
             script, caller, callInstruction, CreateCallStack(caller));
         return execution.CreateTimeline(
@@ -253,14 +328,15 @@ internal static class ScriptSceneStateResolver
         DecompiledFunction caller,
         DecompiledInstruction instruction,
         ScriptAnimationLibrary? animationLibrary = null,
-        DecompiledScript? systemScript = null)
+        DecompiledScript? systemScript = null,
+        ScriptSubject? subject = null)
     {
         ArgumentNullException.ThrowIfNull(script);
         ArgumentNullException.ThrowIfNull(caller);
         ArgumentNullException.ThrowIfNull(instruction);
         if (instruction.Opcode != 69 || instruction.Arguments.Count < 2) return null;
 
-        var execution = new Execution(script, animationLibrary, systemScript);
+        var execution = new Execution(script, animationLibrary, systemScript, subject);
         execution.LoadInitialEntities(caller);
         var callerPath = ScriptCameraStateResolver.FindFirstPath(caller, instruction.Index);
         execution.ExecutePath(
@@ -268,8 +344,10 @@ internal static class ScriptSceneStateResolver
             caller,
             callerPath.TakeWhile(index => index != instruction.Index),
             CreateCallStack(caller));
-        var initialState = execution.Snapshot();
+        // Settle the past first: the snapshot the preview starts from must be the
+        // scene as it stands, not as it stood before its last movement.
         execution.BeginTimeline();
+        var initialState = execution.Snapshot();
         execution.ExecuteInstructionForTimeline(
             script, caller, instruction, CreateCallStack(caller));
         return execution.CreateTimeline(
@@ -288,14 +366,15 @@ internal static class ScriptSceneStateResolver
         DecompiledFunction caller,
         DecompiledInstruction instruction,
         ScriptAnimationLibrary? animationLibrary = null,
-        DecompiledScript? systemScript = null)
+        DecompiledScript? systemScript = null,
+        ScriptSubject? subject = null)
     {
         ArgumentNullException.ThrowIfNull(script);
         ArgumentNullException.ThrowIfNull(caller);
         ArgumentNullException.ThrowIfNull(instruction);
         if (instruction.Opcode != 54) return null;
 
-        var execution = new Execution(script, animationLibrary, systemScript);
+        var execution = new Execution(script, animationLibrary, systemScript, subject);
         execution.LoadInitialEntities(caller);
         var callerPath = ScriptCameraStateResolver.FindFirstPath(caller, instruction.Index);
         execution.ExecutePath(
@@ -303,11 +382,50 @@ internal static class ScriptSceneStateResolver
             caller,
             callerPath.TakeWhile(index => index != instruction.Index),
             CreateCallStack(caller));
-        var initialState = execution.Snapshot();
+        // Settle the past first: the snapshot the preview starts from must be the
+        // scene as it stands, not as it stood before its last movement.
         execution.BeginTimeline();
+        var initialState = execution.Snapshot();
         execution.ExecuteInstructionForTimeline(
             script, caller, instruction, CreateCallStack(caller));
         return execution.CreateTimeline(instruction.Name, initialState);
+    }
+
+    /// <summary>
+    /// Plays a whole function, from its entry to its end: every instruction of
+    /// the path the replay takes becomes a timeline point, so the scene runs the
+    /// way the script writes it — waits, movements, animations and effects in
+    /// their own order. The entities the scene starts with are the ones the
+    /// function inherits, exactly as when a single instruction is inspected.
+    /// </summary>
+    /// <param name="preferredInstruction">
+    /// The block the reader is looking at. A fork the script itself decides is
+    /// followed as written; one whose condition the replay cannot know used to
+    /// fall through blindly, which is how a scene played a branch the reader was
+    /// not even looking at. With a block selected, the branch it sits on wins.
+    /// </param>
+    public static ScriptSceneTimeline? BuildFunctionTimeline(
+        DecompiledScript script,
+        DecompiledFunction function,
+        ScriptAnimationLibrary? animationLibrary = null,
+        DecompiledScript? systemScript = null,
+        ScriptSubject? subject = null,
+        int? preferredInstruction = null)
+    {
+        ArgumentNullException.ThrowIfNull(script);
+        ArgumentNullException.ThrowIfNull(function);
+        if (!function.IsCode) return null;
+
+        var execution = new Execution(script, animationLibrary, systemScript, subject)
+        {
+            PreferredInstruction = preferredInstruction,
+            PreferredFunctionIndex = function.Index,
+        };
+        execution.LoadInitialEntities(function);
+        execution.BeginTimeline();
+        var initialState = execution.Snapshot();
+        execution.ExecuteFunction(script, function, CreateCallStack(function));
+        return execution.CreateTimeline(function.Name, initialState);
     }
 
     private static HashSet<DecompiledFunction> CreateCallStack(
@@ -600,16 +718,49 @@ internal static class ScriptSceneStateResolver
         private List<ScriptSceneTimelinePoint>? timelinePoints;
         private int executedInstructions;
         private int elapsedFrames;
+
+        /// <summary>The block the reader selected, used only to settle a fork.</summary>
+        public int? PreferredInstruction { get; init; }
+
+        public int PreferredFunctionIndex { get; init; } = -1;
         private ScriptCameraState camera = new();
 
         public Execution(
             DecompiledScript script,
             ScriptAnimationLibrary? animationLibrary,
-            DecompiledScript? systemScript = null)
+            DecompiledScript? systemScript = null,
+            ScriptSubject? subject = null)
         {
             rootScript = script;
             this.animationLibrary = animationLibrary;
             this.systemScript = systemScript;
+            // An animation or craft script only ever talks to itself: bind its
+            // "self" reference to the actor the game's tables say it drives, so
+            // its own ANI functions and camera commands have a subject to play on.
+            if (subject is not null)
+            {
+                entities[ScriptEntityReferences.SelfEntityId] = new ScriptEntityState(
+                    ScriptEntityReferences.SelfEntityId,
+                    subject.ModelAssetId,
+                    subject.ScriptName,
+                    string.Empty,
+                    0,
+                    0,
+                    Vector3.Zero,
+                    0f,
+                    1f,
+                    0f,
+                    0f,
+                    subject.ScriptName,
+                    string.Empty,
+                    0, 0, 0, 0, 0,
+                    Array.Empty<Vector3>(),
+                    HasSpawnDefinition: true,
+                    HasPosition: true,
+                    ReferenceSymbol: "Self",
+                    FacialAssetId: animationLibrary?.ResolveFacialAsset(-1, subject.ModelAssetId)
+                        ?? string.Empty);
+            }
             spawnCatalog = SpawnCatalogs.GetValue(
                 script,
                 static value => new SpawnCatalog(BuildSpawnCatalog(value))).Entities;
@@ -622,8 +773,24 @@ internal static class ScriptSceneStateResolver
                 propAnimations, StringComparer.Ordinal),
             unresolvedCalls.ToArray());
 
+        /// <summary>
+        /// Starts recording a preview. The clock restarts at zero, so a movement
+        /// that belongs to the replayed past is settled here: leaving it in place
+        /// would replay it from its first waypoint and teleport the actor back to
+        /// where it stood before, often right out of frame.
+        /// </summary>
         public void BeginTimeline()
         {
+            foreach (var pair in entities.ToArray())
+            {
+                if (pair.Value.Motion is not { } motion) continue;
+                entities[pair.Key] = pair.Value with
+                {
+                    Position = motion.PositionAt(elapsedFrames),
+                    YawDegrees = motion.HeadingAt(elapsedFrames) ?? pair.Value.YawDegrees,
+                    Motion = null,
+                };
+            }
             timelinePoints = new List<ScriptSceneTimelinePoint>();
             elapsedFrames = 0;
         }
@@ -710,11 +877,9 @@ internal static class ScriptSceneStateResolver
             if (instruction.Opcode is 54 or 56 or 95
                 && ResolveInstructionEntityId(instruction, selfEntityId) is { } animatedEntityId
                 && entities.TryGetValue(animatedEntityId, out var animatedEntity)
-                && animatedEntity.Motion is { } entityMotion
-                && ScriptLocomotionAnimationCatalog.TryResolveBaseClip(
-                    entityMotion.AnimationState, out var movementClip))
+                && animatedEntity.Motion is { } entityMotion)
             {
-                ApplyLocomotionAnimation(animatedEntityId, movementClip);
+                ApplyLocomotionAnimation(animatedEntityId, entityMotion.AnimationState, callStack);
             }
             if (!RequiresNonExecutableEntity(instruction, selfEntityId))
             {
@@ -840,7 +1005,38 @@ internal static class ScriptSceneStateResolver
                 if (target is not null) return target.TargetInstructionIndex;
                 return -1;
             }
-            return ScriptCameraStateResolver.Successors(function, index).FirstOrDefault(-1);
+            var successors = ScriptCameraStateResolver.Successors(function, index).ToArray();
+            if (successors.Length > 1
+                && PreferredInstruction is { } wanted
+                && function.Index == PreferredFunctionIndex)
+            {
+                // The reader's own block breaks the tie the script does not.
+                foreach (var successor in successors)
+                {
+                    if (CanReach(function, successor, wanted)) return successor;
+                }
+            }
+            return successors.FirstOrDefault(-1);
+        }
+
+        /// <summary>The block a branch leads to, or not, following the same policy.</summary>
+        private static bool CanReach(DecompiledFunction function, int from, int target)
+        {
+            var seen = new HashSet<int>();
+            var pending = new Stack<int>();
+            pending.Push(from);
+            while (pending.Count > 0)
+            {
+                var index = pending.Pop();
+                if (index < 0 || index >= function.Instructions.Count || !seen.Add(index)) continue;
+                if (index == target) return true;
+                if (function.Instructions[index].Opcode == 1) continue;
+                foreach (var successor in ScriptCameraStateResolver.Successors(function, index))
+                {
+                    pending.Push(successor);
+                }
+            }
+            return false;
         }
 
         private void ApplyVariableWrite(
@@ -958,7 +1154,38 @@ internal static class ScriptSceneStateResolver
             }
         }
 
-        private void ApplyLocomotionAnimation(int entityId, string clipName)
+        /// <summary>
+        /// Starts the locomotion of a moving actor the way the engine does: by
+        /// running its AniWalk/AniRun/AniDush function, which resolves the clip
+        /// for the actor's current mode. Only an actor with no reachable ANI
+        /// script falls back to the plain field clip.
+        /// </summary>
+        private void ApplyLocomotionAnimation(
+            int entityId,
+            int animationState,
+            HashSet<DecompiledFunction> callStack)
+        {
+            if (ScriptLocomotionAnimationCatalog.TryResolveAnimationFunction(
+                    animationState, out var functionName))
+            {
+                var before = ReadBaseAnimationName(entityId);
+                ExecuteNamedAnimationFunction(
+                    entityId, functionName, callStack, holdFinalFrame: false);
+                if (!string.Equals(ReadBaseAnimationName(entityId), before, StringComparison.Ordinal))
+                    return;
+            }
+            if (ScriptLocomotionAnimationCatalog.TryResolveBaseClip(animationState, out var clipName))
+                ApplyLocomotionClip(entityId, clipName);
+        }
+
+        private string? ReadBaseAnimationName(int entityId)
+            => entities.TryGetValue(entityId, out var entity)
+                && entity.AnimationSlots is { } slots
+                && slots.TryGetValue(0, out var animation)
+                    ? animation.Name
+                    : null;
+
+        private void ApplyLocomotionClip(int entityId, string clipName)
         {
             if (!entities.TryGetValue(entityId, out var entity)
                 || !entity.IsExecutable)
@@ -999,6 +1226,21 @@ internal static class ScriptSceneStateResolver
             if (instruction.Opcode == 36)
             {
                 ApplyAnimationBankBinding(instruction, selfEntityId);
+                return;
+            }
+            if (instruction.Opcode == 39)
+            {
+                ApplyEffect(instruction, selfEntityId);
+                return;
+            }
+            if (instruction.Opcode == 37)
+            {
+                ApplyAttachment(instruction, selfEntityId);
+                return;
+            }
+            if (instruction.Opcode == 32)
+            {
+                ApplyAttachmentVisibility(instruction, selfEntityId);
                 return;
             }
             if (instruction.Opcode == 46)
@@ -1183,13 +1425,13 @@ internal static class ScriptSceneStateResolver
                 arguments[4].IntValue,
                 arguments[5].IntValue,
                 new Vector3(
+                    (float)arguments[5].FloatValue,
                     (float)arguments[6].FloatValue,
-                    (float)arguments[7].FloatValue,
-                    (float)arguments[8].FloatValue),
+                    (float)arguments[7].FloatValue),
+                (float)arguments[8].FloatValue,
                 (float)arguments[9].FloatValue,
                 (float)arguments[10].FloatValue,
                 (float)arguments[11].FloatValue,
-                (float)arguments[12].FloatValue,
                 ReadArgumentString(arguments[13]),
                 ReadArgumentString(arguments[14]),
                 arguments[15].IntValue,
@@ -1231,7 +1473,7 @@ internal static class ScriptSceneStateResolver
             if (!entities.TryGetValue(entityId, out var entity)) return;
             var current = entity.FacialExpression ?? ScriptFacialExpression.Neutral;
             ScriptFacialExpression updated;
-            if (instruction.Name.Equals("OP50_2", StringComparison.Ordinal)
+            if (instruction.Name.Equals("Entity_SetFacialFrames", StringComparison.Ordinal)
                 && instruction.Arguments.Count >= 5)
             {
                 updated = new ScriptFacialExpression(
@@ -1241,7 +1483,7 @@ internal static class ScriptSceneStateResolver
                     Frame(instruction.Arguments[4].IntValue),
                     elapsedFrames);
             }
-            else if (instruction.Name.Equals("OP50_3", StringComparison.Ordinal)
+            else if (instruction.Name.Equals("Entity_SetFacialPatterns", StringComparison.Ordinal)
                      && instruction.Arguments.Count >= 5)
             {
                 updated = new ScriptFacialExpression(
@@ -1251,7 +1493,7 @@ internal static class ScriptSceneStateResolver
                     Expand(ReadArgumentString(instruction.Arguments[4])),
                     elapsedFrames);
             }
-            else if (instruction.Name.Equals("OP50_4", StringComparison.Ordinal)
+            else if (instruction.Name.Equals("Entity_SetFacialCommand", StringComparison.Ordinal)
                      && instruction.Arguments.Count >= 2)
             {
                 updated = ScriptFacialCommandParser.ApplyComposite(
@@ -1300,12 +1542,185 @@ internal static class ScriptSceneStateResolver
                 arguments[4].IntValue,
                 arguments[5].IntValue,
                 arguments[6].IntValue,
+                // The blend time is the float that follows the five flag bytes,
+                // and the three time parameters follow it: reading the blend
+                // from the last flag byte shifted every one of them.
                 (float)arguments[7].FloatValue,
                 (float)arguments[8].FloatValue,
                 (float)arguments[9].FloatValue,
                 (float)arguments[10].FloatValue,
                 elapsedFrames);
             entities[entityId] = entity with { AnimationSlots = slots };
+        }
+
+        /// <summary>
+        /// OP39, the effect opcode. Selector 10 loads an .eff file into a slot of
+        /// an owner (an entity, or the map through -3), 12 starts a numbered
+        /// instance of a loaded slot, and 11/13/14/16 stop or unload it. What the
+        /// scene shows is therefore the set of instances started and not stopped.
+        /// </summary>
+        private void ApplyEffect(DecompiledInstruction instruction, int? selfEntityId)
+        {
+            var arguments = instruction.Arguments;
+            // The selector byte names the variant in the instruction definitions
+            // (Effect_LoadSlot, Effect_Play, ...): it is not one of the visible
+            // operands, so the name is what tells the variants apart.
+            if (arguments.Count < 2) return;
+            var ownerId = ResolveEntityId(arguments[0].IntValue, selfEntityId);
+            if (!entities.TryGetValue(ownerId, out var owner))
+            {
+                // Effects are commonly owned by the scene itself (-3), which no
+                // other opcode declares as an entity: register it so its slots
+                // and its playing instances have somewhere to live.
+                owner = CreateReferencedEntity(ownerId);
+                entities[ownerId] = owner;
+            }
+
+            switch (instruction.Name)
+            {
+                case "Effect_LoadSlot" when arguments.Count >= 3:
+                {
+                    var slots = CopyEffectSlots(owner);
+                    slots[arguments[1].IntValue] = ReadArgumentString(arguments[2]);
+                    entities[ownerId] = owner with { EffectSlots = slots };
+                    return;
+                }
+                case "Effect_UnloadSlot":
+                {
+                    var slots = CopyEffectSlots(owner);
+                    slots.Remove(arguments[1].IntValue);
+                    // Unloading a slot takes down whatever it was playing.
+                    var playing = CopyEffects(owner);
+                    foreach (var key in playing
+                                 .Where(pair => pair.Value.Slot == arguments[1].IntValue)
+                                 .Select(pair => pair.Key)
+                                 .ToArray())
+                    {
+                        playing.Remove(key);
+                    }
+                    entities[ownerId] = owner with { EffectSlots = slots, Effects = playing };
+                    return;
+                }
+                case "Effect_Play" when arguments.Count >= 15:
+                {
+                    var slot = arguments[1].IntValue;
+                    var effects = CopyEffects(owner);
+                    var instance = arguments[14].IntValue;
+                    effects[instance] = new ScriptEffectInstance(
+                        instance,
+                        slot,
+                        owner.EffectSlots is { } loaded && loaded.TryGetValue(slot, out var path)
+                            ? path
+                            : string.Empty,
+                        ResolveEntityId(arguments[2].IntValue, selfEntityId),
+                        ReadArgumentString(arguments[4]),
+                        new Vector3(
+                            (float)arguments[5].FloatValue,
+                            (float)arguments[6].FloatValue,
+                            (float)arguments[7].FloatValue),
+                        new Vector3(
+                            (float)arguments[8].FloatValue,
+                            (float)arguments[9].FloatValue,
+                            (float)arguments[10].FloatValue),
+                        new Vector3(
+                            (float)arguments[11].FloatValue,
+                            (float)arguments[12].FloatValue,
+                            (float)arguments[13].FloatValue),
+                        elapsedFrames);
+                    entities[ownerId] = owner with { Effects = effects };
+                    return;
+                }
+                case "Effect_Stop":
+                case "Effect_Kill":
+                case "Effect_Reset":
+                {
+                    var effects = CopyEffects(owner);
+                    effects.Remove(arguments[1].IntValue);
+                    entities[ownerId] = owner with { Effects = effects };
+                    return;
+                }
+            }
+        }
+
+        private static Dictionary<int, string> CopyEffectSlots(ScriptEntityState entity)
+            => entity.EffectSlots is null
+                ? new Dictionary<int, string>()
+                : new Dictionary<int, string>(entity.EffectSlots);
+
+        private static Dictionary<int, ScriptEffectInstance> CopyEffects(ScriptEntityState entity)
+            => entity.Effects is null
+                ? new Dictionary<int, ScriptEffectInstance>()
+                : new Dictionary<int, ScriptEffectInstance>(entity.Effects);
+
+        /// <summary>
+        /// OP37: selector 0 attaches a model to a node with a local placement,
+        /// selector 1 clears that node. The placement is authored in the script's
+        /// own units: position, Euler angles in degrees, then scale.
+        /// </summary>
+        private void ApplyAttachment(DecompiledInstruction instruction, int? selfEntityId)
+        {
+            var arguments = instruction.Arguments;
+            if (arguments.Count < 13) return;
+            var mode = arguments[0].IntValue;
+            if (mode is not (0 or 1)) return;
+            var entityId = ResolveEntityId(arguments[1].IntValue, selfEntityId);
+            if (!entities.TryGetValue(entityId, out var entity) || !entity.IsExecutable) return;
+            var model = ReadArgumentString(arguments[2]);
+            var attachPoint = ReadArgumentString(arguments[3]);
+            if (string.IsNullOrWhiteSpace(attachPoint)) return;
+            var attachments = entity.Attachments is null
+                ? new Dictionary<string, ScriptEntityAttachment>(StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, ScriptEntityAttachment>(
+                    entity.Attachments, StringComparer.OrdinalIgnoreCase);
+            if (mode == 1 || string.IsNullOrWhiteSpace(model))
+            {
+                // Clearing a node leaves it empty rather than dropping the entry:
+                // the actor's default equipment must not come back on its own.
+                attachments[attachPoint] = new ScriptEntityAttachment(
+                    attachPoint, string.Empty, false, Vector3.Zero, Vector3.Zero, Vector3.One);
+            }
+            else
+            {
+                attachments[attachPoint] = new ScriptEntityAttachment(
+                    attachPoint,
+                    model,
+                    true,
+                    new Vector3(
+                        arguments[4].IntValue, arguments[5].IntValue, arguments[6].IntValue),
+                    new Vector3(
+                        arguments[7].IntValue, arguments[8].IntValue, arguments[9].IntValue),
+                    new Vector3(
+                        (float)arguments[9].FloatValue,
+                        (float)arguments[10].FloatValue,
+                        (float)arguments[11].FloatValue));
+            }
+            entities[entityId] = entity with { Attachments = attachments };
+        }
+
+        /// <summary>
+        /// OP32_0: shows or hides what hangs from a node — the ShowEquip and
+        /// EraseEquip of a character's own ANI script.
+        /// </summary>
+        private void ApplyAttachmentVisibility(DecompiledInstruction instruction, int? selfEntityId)
+        {
+            var arguments = instruction.Arguments;
+            if (arguments.Count < 5 || arguments[0].IntValue != 0) return;
+            var entityId = ResolveEntityId(arguments[1].IntValue, selfEntityId);
+            if (!entities.TryGetValue(entityId, out var entity) || !entity.IsExecutable) return;
+            var attachPoint = ReadArgumentString(arguments[3]);
+            if (string.IsNullOrWhiteSpace(attachPoint)) return;
+            var visible = arguments[4].IntValue != 0;
+            var attachments = entity.Attachments is null
+                ? new Dictionary<string, ScriptEntityAttachment>(StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, ScriptEntityAttachment>(
+                    entity.Attachments, StringComparer.OrdinalIgnoreCase);
+            attachments[attachPoint] = attachments.TryGetValue(attachPoint, out var existing)
+                ? existing with { Visible = visible }
+                // Nothing was attached here by the script: the visibility applies
+                // to the actor's default equipment, resolved when rendering.
+                : new ScriptEntityAttachment(
+                    attachPoint, string.Empty, visible, Vector3.Zero, Vector3.Zero, Vector3.One);
+            entities[entityId] = entity with { Attachments = attachments };
         }
 
         private void ApplyAnimationBankBinding(
@@ -1673,9 +2088,15 @@ internal static class ScriptSceneStateResolver
                 : ResolveEntityId(argument.IntValue, selfEntityId);
         }
 
+        /// <summary>
+        /// The instructions the preview can show something for: a point carries a
+        /// snapshot, so only what changes the scene earns one. Effects, equipment
+        /// and expressions were modelled after this list was written and belong
+        /// in it — without them the playback never stops on an effect.
+        /// </summary>
         private static bool IsTimelineInstruction(DecompiledInstruction instruction)
-            => instruction.Opcode is 2 or 16 or 19 or 34 or 35 or 36 or 45 or 46
-                or 47 or 54 or 55 or 56 or 69 or 95;
+            => instruction.Opcode is 2 or 16 or 19 or 32 or 34 or 35 or 36 or 37 or 39
+                or 45 or 46 or 47 or 50 or 54 or 55 or 56 or 69 or 95;
 
         private static bool IsFinite(Vector3 value)
             => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);

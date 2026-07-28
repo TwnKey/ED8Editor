@@ -904,6 +904,10 @@ var tests = new (string Name, Action Run)[]
     ("reads exact animation actions from object INF metadata", ReadsObjectAnimationInfo),
     ("segments embedded animations by authored INF frames", SegmentsEmbeddedAnimation),
     ("backs up, restores and ships mod project files", TracksModProjectFiles),
+    ("round-trips an effect file byte-exactly", RoundTripsEffectFile),
+    ("evaluates effect keyframe tracks like the engine", EvaluatesEffectTracks),
+    ("adds, removes and moves effect segments", EditsEffectSegments),
+    ("writes a new effect from the format alone", CreatesEffectFromScratch),
 };
 
 var failures = 0;
@@ -922,6 +926,296 @@ foreach (var test in tests)
 }
 
 return failures == 0 ? 0 : 1;
+
+// An .eff is read with its version and flag word in hand, and its fixed-width
+// name fields keep authoring leftovers past their null terminator. Reading one
+// and writing it back must reproduce every byte, leftovers included, or an edit
+// would silently shift everything that follows.
+static void RoundTripsEffectFile()
+{
+    var original = BuildColdSteelEffect();
+    var effect = EffFileReader.Read(original);
+    if (effect.EffectName != "test_fx")
+        throw new Exception("The effect name was not read from its fixed field.");
+    if (effect.Textures is not ["fx_smoke.dds"])
+        throw new Exception("The texture list was not read.");
+    var segment = effect.Segments.Single();
+    if (segment.Name != "煙" || segment.TextureName != "I_EFTEX000")
+        throw new Exception("The segment names were not read.");
+    if (segment.StructFlags != 3)
+        throw new Exception("The PC layout must settle on flags 0x003 after block 15.");
+    if (segment.Position.Count != 2 || Math.Abs(segment.Position[1].Time - 0.5f) > 1e-6f)
+        throw new Exception("The position track was not read.");
+    if (segment.Position[1].Flags != 0x0003)
+        throw new Exception("The keyframe mode word was not read from the low half of its integer.");
+    if (segment.Data17PcRaw.Length != 16)
+        throw new Exception("The unparsed PC block was not kept.");
+
+    var written = EffFileWriter.Write(effect);
+    if (!written.AsSpan().SequenceEqual(original))
+        throw new Exception("The effect did not round-trip byte-exactly.");
+
+    // A renamed effect is re-encoded rather than written from the stale bytes.
+    effect.EffectName = "renamed";
+    var renamed = EffFileReader.Read(EffFileWriter.Write(effect));
+    if (renamed.EffectName != "renamed" || renamed.Segments.Single().Name != "煙")
+        throw new Exception("Renaming an effect lost its content.");
+}
+
+static byte[] BuildColdSteelEffect()
+{
+    var stream = new MemoryStream();
+    var writer = new BinaryWriter(stream);
+    void Fixed(string text, int size, bool japanese = false)
+    {
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        var bytes = japanese ? Encoding.GetEncoding(932).GetBytes(text) : Encoding.ASCII.GetBytes(text);
+        writer.Write(bytes);
+        for (var index = bytes.Length; index < size; index++) writer.Write((byte)0);
+    }
+    void Floats(int count, float seed)
+    {
+        for (var index = 0; index < count; index++) writer.Write(seed + index);
+    }
+    void Ints(int count)
+    {
+        for (var index = 0; index < count; index++) writer.Write((uint)index);
+    }
+    void Keyframe(float time, uint flags)
+    {
+        for (var index = 0; index < 8; index++) writer.Write(index * 0.25f);
+        writer.Write(time);
+        writer.Write(flags);
+        writer.Write(0u);
+        writer.Write(1f);
+    }
+
+    writer.Write(EffGameVersion.Pc);
+    writer.Write(7u);
+    Fixed("test_fx", 16);
+    writer.Write(1u);
+    Fixed("fx_smoke.dds", 20);
+    writer.Write(0u);
+    writer.Write(1u);
+
+    Fixed("煙", 16, japanese: true);
+    // Authoring leftovers after the terminator: the writer must keep them.
+    stream.Seek(-3, SeekOrigin.End);
+    writer.Write((byte)0x41);
+    stream.Seek(0, SeekOrigin.End);
+    Fixed("I_EFTEX000", 16);
+    Fixed("", 16);
+    Ints(8);
+    Floats(12, 1f);
+    Floats(3, 2f);
+    Floats(9, 3f);
+    Floats(8, 4f);
+    writer.Write(2u);
+    Keyframe(0f, 0x0000);
+    Keyframe(0.5f, 0x0003);
+    for (var track = 0; track < 5; track++) writer.Write(0u);
+    writer.Write(0u);
+    Floats(2, 5f);
+    Floats(16, 6f);
+    for (var index = 0; index < 16; index++) writer.Write((byte)(0x10 + index));
+    writer.Write(new byte[8]);
+    return stream.ToArray();
+}
+
+// A new effect is written from what the format says, not copied from a file the
+// game ships. It has to read back as what was written — above all the blocks the
+// PC layout always expects after the spawn list, which have no flag word to
+// announce them.
+static void CreatesEffectFromScratch()
+{
+    var effect = EffAuthoring.CreateEffect("brand_new");
+    var child = EffAuthoring.AddNewSegment(effect, effect.Version, 0, "spark");
+    effect.Segments[0].TextureName = "I_EFTEX900";
+    effect.Textures.Add("I_EFTEX900");
+
+    var written = EffFileWriter.Write(effect);
+    var reopened = EffFileReader.Read(written);
+    if (reopened.EffectName != "brand_new" || reopened.Segments.Count != 2)
+        throw new Exception("The new effect did not read back.");
+    if (reopened.Segments[0].TextureName != "I_EFTEX900" || reopened.Textures is not ["I_EFTEX900"])
+        throw new Exception("The texture the segment draws with was lost.");
+    if (reopened.Segments[1].Name != "spark")
+        throw new Exception($"The added segment lost its name: got '{reopened.Segments[1].Name}' "
+            + $"(root='{reopened.Segments[0].Name}', {reopened.Segments.Count} segments).");
+    if (EffAuthoring.TargetOf(reopened.Segments[0].Children[0]) != 1)
+        throw new Exception("The root does not spawn the segment it was given.");
+    if (reopened.Segments[0].Scale is not [{ } scale] || Math.Abs(scale.Floats[0] - 1f) > 1e-6f)
+        throw new Exception("A new segment must keep its own size.");
+    if (reopened.Segments[0].Data17PcRaw.Length != 16 || reopened.Segments[0].StructFlags != 3)
+        throw new Exception("The blocks the PC layout always carries were not written.");
+
+    // Writing what was just read must not drift.
+    if (!EffFileWriter.Write(reopened).AsSpan().SequenceEqual(written))
+        throw new Exception("The new effect did not round-trip byte-exactly.");
+
+    // It has to play, too: the root is drawn and its child is spawned after it.
+    var frame = EffSimulation.Evaluate(reopened, 0.5f);
+    if (frame.Nodes.Count != 2 || !frame.Nodes[0].Drawn || !frame.Nodes[0].Billboard)
+        throw new Exception("A new effect does not play as a drawn, camera-facing segment.");
+}
+
+// A segment's place in the tree lives in the spawn descriptors of whoever fires
+// it, and those name their target by its index in the file. So every structural
+// edit has to keep those indices straight — above all when a segment is removed
+// and everything after it moves up.
+static void EditsEffectSegments()
+{
+    var effect = EffFileReader.Read(BuildColdSteelEffect());
+    var root = 0;
+    var child = EffAuthoring.AddSegment(effect, root, root, "child");
+    var grandChild = EffAuthoring.AddSegment(effect, root, child, "grand-child");
+    if (effect.Segments.Count != 3)
+        throw new Exception("The segments were not added.");
+    if (EffAuthoring.Roots(effect) is not [0])
+        throw new Exception("A segment that is spawned is not a root.");
+    if (!EffAuthoring.Descendants(effect, root).OrderBy(value => value)
+            .SequenceEqual(new[] { root, child, grandChild }.OrderBy(value => value)))
+        throw new Exception("The spawn chain was not built.");
+    if (effect.Segments[child].Children.Count != 1
+        || EffAuthoring.TargetOf(effect.Segments[child].Children[0]) != grandChild)
+    {
+        throw new Exception("The child does not spawn the grand-child.");
+    }
+    if (effect.Segments[child].Name != "child")
+        throw new Exception("The new segment did not take its name.");
+
+    // A copy must share nothing with what it was copied from.
+    effect.Segments[child].Position[0].Time = 9f;
+    if (Math.Abs(effect.Segments[root].Position[0].Time - 9f) < 1e-6f)
+        throw new Exception("The copy shares its keyframes with the original.");
+
+    // Moving the grand-child under the root leaves the child with nothing.
+    EffAuthoring.Reparent(effect, grandChild, root);
+    if (effect.Segments[child].Children.Count != 0
+        || effect.Segments[root].Children.Count != 2)
+    {
+        throw new Exception("The segment was not moved.");
+    }
+    try
+    {
+        EffAuthoring.Reparent(effect, root, grandChild);
+        throw new Exception("A segment was allowed under one of its own children.");
+    }
+    catch (InvalidOperationException)
+    {
+    }
+
+    // Removing the middle segment renumbers what the descriptors point at.
+    EffAuthoring.RemoveSegment(effect, child);
+    if (effect.Segments.Count != 2) throw new Exception("The segment was not removed.");
+    var remaining = effect.Segments.FindIndex(value => value.Name == "grand-child");
+    if (remaining < 0) throw new Exception("Removing a segment took another one with it.");
+    if (effect.Segments[0].Children.Count != 1
+        || EffAuthoring.TargetOf(effect.Segments[0].Children[0]) != remaining)
+    {
+        throw new Exception("The spawn descriptors were not renumbered.");
+    }
+
+    // What was edited has to survive being written and read back.
+    var reopened = EffFileReader.Read(EffFileWriter.Write(effect));
+    if (reopened.Segments.Count != 2
+        || reopened.Segments[remaining].Name != "grand-child"
+        || EffAuthoring.TargetOf(reopened.Segments[0].Children[0]) != remaining)
+    {
+        throw new Exception("The edited effect did not survive a round-trip.");
+    }
+}
+
+// The keyframe modes reversed from the engine: additive values chain onto the
+// previous keyframe, uniform ones broadcast a single component, random ones roll
+// between the two bounds, and bits 4/5 loop a region of the track.
+static void EvaluatesEffectTracks()
+{
+    static EffKeyframe Keyframe(float time, ushort flags, float[] value, float[] bound)
+        => new()
+        {
+            Floats = new[]
+            {
+                value[0], value[1], value[2], value[3],
+                bound[0], bound[1], bound[2], bound[3],
+                time,
+            },
+            Ints = new uint[] { flags, 0 },
+        };
+    static void Near(float actual, float expected, float tolerance, string what)
+    {
+        if (Math.Abs(actual - expected) > tolerance)
+            throw new Exception($"{what}: expected {expected}, got {actual}.");
+    }
+
+    var ones = new[] { 1f, 1f, 1f, 1f };
+    // Scale of a real segment: 1.0 uniform, then +0.4 and -0.1 additive.
+    var scale = new List<EffKeyframe>
+    {
+        Keyframe(0f, 0x02, new[] { 1f, 1f, 1f, 1f }, ones),
+        Keyframe(0.2f, 0x03, new[] { 0.4f, 1f, 1f, 1f }, ones),
+        Keyframe(0.6f, 0x03, new[] { -0.1f, 1f, 1f, 1f }, ones),
+    };
+    float Scale(float time) => EffTrackEvaluator.Evaluate(scale, time, ones, 0)[0];
+    Near(Scale(0f), 1f, 1e-5f, "scale at rest");
+    Near(Scale(0.1f), 1.2f, 1e-5f, "scale rising toward 1.0 + 0.4");
+    Near(Scale(0.2f), 1.4f, 1e-5f, "scale at the additive keyframe");
+    Near(Scale(0.4f), 1.35f, 1e-5f, "scale falling toward 1.4 - 0.1");
+    Near(Scale(2f), 1.3f, 1e-5f, "scale held after the last keyframe");
+
+    var zeros = new[] { 0f, 0f, 0f, 0f };
+    var absolute = new List<EffKeyframe>
+    {
+        Keyframe(0f, 0x00, zeros, zeros),
+        Keyframe(1f, 0x10, new[] { 5f, 0f, 0f, 0f }, zeros),
+        Keyframe(2f, 0x20, new[] { 9f, 0f, 0f, 0f }, zeros),
+    };
+    float Absolute(float time) => EffTrackEvaluator.Evaluate(absolute, time, zeros, 0)[0];
+    Near(Absolute(0.5f), 2.5f, 1e-5f, "absolute loop before wrapping");
+    Near(Absolute(2.5f), 7f, 1e-4f, "absolute loop wrapped to 1.5");
+    Near(Absolute(10.7f), 7.8f, 1e-3f, "absolute loop wrapped to 1.7");
+
+    var accumulating = new List<EffKeyframe>
+    {
+        Keyframe(0f, 0x00, zeros, zeros),
+        Keyframe(1f, 0x11, new[] { 1f, 0f, 0f, 0f }, zeros),
+        Keyframe(2f, 0x21, new[] { 2f, 0f, 0f, 0f }, zeros),
+    };
+    float Accumulating(float time) => EffTrackEvaluator.Evaluate(accumulating, time, zeros, 0)[0];
+    Near(Accumulating(1.5f), 2f, 1e-5f, "additive loop, first pass");
+    Near(Accumulating(2.5f), 5f, 1e-5f, "additive loop, second pass");
+    Near(Accumulating(3.5f), 8f, 1e-4f, "additive loop, third pass");
+
+    // A random keyframe stays inside its bounds and rolls once per instance.
+    var random = new List<EffKeyframe>
+    {
+        Keyframe(0f, 0x04, new[] { 0f, 0f, 30f, 0f }, new[] { 0f, 0f, -30f, 0f }),
+    };
+    float? previousRoll = null;
+    var distinct = false;
+    foreach (var seed in new uint[] { 1, 42, 999, 123456 })
+    {
+        var value = EffTrackEvaluator.Evaluate(random, 0f, zeros, seed)[2];
+        if (value < -30f - 1e-3f || value > 30f + 1e-3f)
+            throw new Exception($"A random keyframe left its bounds: {value}.");
+        if (EffTrackEvaluator.Evaluate(random, 0f, zeros, seed)[2] != value)
+            throw new Exception("A random keyframe rolled twice for the same instance.");
+        if (previousRoll is { } roll && Math.Abs(value - roll) > 1e-3f) distinct = true;
+        previousRoll = value;
+    }
+    if (!distinct) throw new Exception("Different instances rolled the same value.");
+
+    // Uniform and random together: one roll, broadcast to x, y and z.
+    var uniform = new List<EffKeyframe>
+    {
+        Keyframe(0f, 0x06, new[] { 1f, 5f, 9f, 0f }, new[] { 2f, 6f, 10f, 0f }),
+    };
+    var broadcast = EffTrackEvaluator.Evaluate(uniform, 0f, zeros, 7);
+    if (broadcast[0] < 1f || broadcast[0] > 2f)
+        throw new Exception("The uniform roll ignored its bounds.");
+    if (broadcast[0] != broadcast[1] || broadcast[0] != broadcast[2])
+        throw new Exception("The uniform roll was not broadcast to x, y and z.");
+}
 
 static void TracksModProjectFiles()
 {

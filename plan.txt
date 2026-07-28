@@ -1,4 +1,4 @@
-Aucune heuristique ou détection farfelue.
+﻿Aucune heuristique ou détection farfelue.
 
 Codex :
 - Implémenter les "entités" cad spawn les acteurs, leur attribuer une id dans une liste d'entité qui se maintient à jour selon la position dans la fonction (depuis le départ de la fonction), etc, comme le fait le script, de manière similaire à la caméra cad que depuis le départ de la fonction courante, retracer les spawn/mouvements des acteurs pour qu'ils soient positionnés correctement par rapport à la caméra (de cette façon l'utilisateur saura cadrer la caméra dans l'éditeur)
@@ -43,11 +43,17 @@ implémenté du tout.
 [?]      Valeur par défaut 0 pour un registre / bit d'état jamais écrit pendant
          le rejeu. Vrai à la création d'une entité, faux si une scène
          antérieure a laissé un mode actif (ex. reg[3]=1 = mode parapluie).
-[MANQUE] Flags de sauvegarde (flag[262] pluie, flag[265] costume, work[]/sys[]) :
-         inconnus, donc toute branche qui en dépend retombe sur le
-         fall-through. C'est ce qui empêche d'exécuter l'Init du script ANI au
-         spawn (sinon Rean se retrouve en mode parapluie + visage costume C05).
-         => besoin d'une UI de choix de flags (cf. item "Gestion des flags").
+[OK]     Un flag de sauvegarde jamais écrit pendant le rejeu lit FAUX (le moteur
+         démarre flags à zéro, seule l'histoire les pose). Avant, il était
+         "inconnu" -> branche séquentielle -> on affirmait le cas EXCEPTIONNEL :
+         c'est ce qui donnait le parapluie de Rean (flag[262] = pluie) dans
+         toutes les fonctions de ply000, via AniReset -> AniStartRainMode.
+[?]      Conséquence : une scène qui dépend d'un flag d'avancement prend la
+         branche "pas encore fait". C'est le comportement d'une sauvegarde
+         neuve ; une UI de choix de flags reste souhaitable pour prévisualiser
+         l'autre cas (cf. item "Gestion des flags").
+[MANQUE] work[] / sys[] restent inconnus : les branches qui en dépendent
+         retombent sur le fall-through.
 [MANQUE] Une entité dont le script ne fixe aucune animation reste en bind pose
          (ex. PNJ spawné avant ses appels ANI). Débloqué par le point ci-dessus.
 [MANQUE] SWITCH (op6) non évalué : retombe aussi sur le fall-through.
@@ -55,6 +61,21 @@ implémenté du tout.
 --- ANIMATION ---
 [OK]     Idle correct pour les persos (dispatch AniWait résolu : WAIT / WAIT1 /
          BTL_WAIT selon reg[3] et le masque d'état).
+[OK]     Locomotion : le moteur n'impose pas un clip, il appelle la fonction ANI
+         de l'acteur (AniWalk / AniRun / AniDush selon l'état de mouvement 1/2/3,
+         cf. FUN_005606c0 où le paramètre est l'entier 1/2/3 et où l'appel se
+         fait par nom de fonction). L'éditeur fait pareil et ne retombe sur le
+         clip brut (WALK/RUN/DASH) que si l'acteur n'a pas de script ANI
+         joignable -> un perso en garde de combat ou sous la pluie prendra sa
+         vraie variante.
+[OK]     Orientation : un acteur qui se déplace regarde là où il va (le moteur
+         stocke la direction normalisée de son mouvement et l'y tourne). Le cap
+         suit le segment parcouru et reste sur le dernier une fois le
+         déplacement fini ; un Entity_SetPosition explicite reprend la main
+         (il efface le mouvement).
+[?]      La VITESSE de rotation n'est pas modélisée : l'acteur pivote
+         instantanément au changement de segment, alors que le moteur interpole
+         (FUN_0055c830). Visible sur un virage serré.
 [?]      Bancs d'animation (OP36) : la liste est construite mais on ne vérifie
          pas que le jeu résout un clip dans le même ordre de priorité.
 [MANQUE] Pas de blend entre deux clips (le BlendTime d'OP34 est lu, pas appliqué)
@@ -95,6 +116,20 @@ implémenté du tout.
 [?]      Couverture réelle du corpus (dat_us) : SetAngles 10752, SetDistance
          10037, LookAtPosition 9951, SetFOV 8183 = 96 % des commandes caméra,
          toutes sur la convention corrigée. Le reste est marginal (voir plus bas).
+[OK]     Camera_LookAtPosition (sélecteur 2) = 3 floats de POSITION du point visé
+         (confirmé par le correctif 60 fps du moteur qui compare ces trois
+         valeurs à des coordonnées et corrige la 3e). Il n'écrit QUE le centre
+         (0x5a0), jamais l'oeil : les angles du plan restent ceux du dernier
+         Camera_SetAngles. L'éditeur les ÉPINGLE désormais (champ
+         scriptCameraAngles) au lieu de les redériver de la caméra du viewport à
+         chaque application -> plus de caméra qui passe sous la map quand aucun
+         angle n'a encore été posé, et plus de dérive/saut près de la verticale
+         (le passage direction -> asin/atan2 -> clamp de pitch à ±89,99° était
+         rejoué à chaque frame). Les angles sont aussi transmis pendant toute une
+         interpolation, même quand la commande ne bouge que le point visé.
+[?]      L'épinglage est relâché dès que l'utilisateur pilote la caméra au
+         clavier : la commande suivante repart alors du viewport. A revoir si
+         c'est gênant.
 [?]      Sens du roll (3e float d'OP45_4) : il ne participe PAS à la position de
          l'oeil (vérifié), mais le signe appliqué au vecteur "up" de la vue n'est
          pas confirmé en jeu. Test : t1000 EV_C05E14S02 #80 (roll = 346).
@@ -152,9 +187,19 @@ implémenté du tout.
          les laisser en texte exposait l'id à une réécriture accidentelle.
 [OK]     Les sauts de ligne s'affichent bien dans le champ (le TextBox multi-ligne
          ne coupe que sur CRLF alors que le décodeur produit des \\n).
-[?]      Le SENS des balises texte (#3K, #0T, #3P, l'id de message de l'en-tête
-         0x11) n'est pas reversé : elles restent en clair/échappées, on ne les
-         interprète pas. Elles apparaissent donc aussi dans l'aperçu du bloc. A creuser si tu veux un éditeur "propre" (choix de
+[OK]     L'en-tête 0x11 porte un ID DE VOIX (u32) : t_voice.tbl le résout en nom
+         de clip (14 251 lignes ; ex. 61951 -> pc8v01028, fichier réel
+         data/voice/wav/pc8v01028.wav). Un opérande de dialogue peut contenir
+         PLUSIEURS répliques : l'éditeur les sépare en autant de couples
+         (voix, texte) dans le MÊME bloc, avec un bouton Play par réplique
+         (lecture directe des .wav). Découpe + recomposition = byte-perfect,
+         vérifié sur l'exemple à deux répliques.
+[?]      Le SENS des balises texte (#3K, #0T, #3P) n'est pas reversé : elles
+         restent en clair, on ne les interprète pas. Elles apparaissent donc
+         aussi dans l'aperçu du bloc.
+[?]      Le séparateur entre deux répliques (0x02 0x03) est conservé tel quel,
+         sa sémantique exacte n'est pas reversée. Ajouter/supprimer une réplique
+         n'est donc pas possible depuis l'éditeur (seulement les modifier). A creuser si tu veux un éditeur "propre" (choix de
          couleur, icône, attente).
 [MANQUE] Rien ne relie un dialogue à son entrée de t_text/voix : pas de preview
          du nom du locuteur ni de la voix associée.
@@ -207,8 +252,376 @@ implémenté du tout.
          (double-clic), déplacer (glisser) et éditer un saut (double-clic sur une
          flèche). Rien n'était éditable DANS le bloc avant, rien ne l'est
          maintenant.
+[OK]     Ouvrir une scène cadre son entrée (le rond "Init") au centre : une scène
+         très ramifiée s'étale loin sur les côtés et vers le bas, l'ouvrir
+         ailleurs obligeait à chercher par où elle commence. Rafraîchir la scène
+         déjà ouverte conserve la position de lecture.
 [MANQUE] Le canevas ne redimensionne pas les blocs au contenu long : le résumé
          d'opérandes est coupé (ellipse) au-delà de la hauteur mesurée.
+[OK]     DÉBORDEMENT D'ENTIER corrigé : la largeur d'une région doublait à chaque
+         embranchement imbriqué (max(a,b)*2), donc PreInit (64 tests de flags en
+         cascade) réclamait 2^64 colonnes -> tous les blocs se retrouvaient à
+         X = 2 147 483 635, d'où "un seul bloc visible" et du contenu
+         inatteignable. Largeur passée en somme des deux branches, et un
+         embranchement dont une branche est un bloc unique GARDE l'autre sur le
+         tronc (une cascade de tests se lit maintenant en une colonne).
+         Les colonnes sont ensuite compactées en rangs consécutifs, et deux
+         noeuds d'une même ligne ne peuvent plus tomber sur la même colonne
+         (l'un masquait l'autre). PreInit : 87 000 px -> 8 471 px de large.
+[OK]     La vue ne se recadre plus toute seule : le centrage sur l'entrée n'a
+         lieu que quand l'UTILISATEUR choisit une scène, pas quand un aperçu
+         entre dans une autre fonction (d'où les sauts/tremblements en boucle
+         pendant une lecture).
+[OK]     Branches distinctes qui se lisaient comme une seule : trois corrections.
+         (1) Les embranchements successifs ALTERNENT le côté où part leur
+         branche courte (avant, toutes empilées dans la même colonne : les deux
+         Call "Ani_HS1_Load" de ply000 Init sont maintenant de part et d'autre du
+         tronc). (2) Deux blocs empilés dans une colonne sans arête entre eux
+         sont écartés d'une colonne (mesuré en PIXELS, car une ligne vide ne
+         prend pas de place). (3) Chaque arête traversant une même bande a sa
+         propre VOIE : départ/arrivée décalés sur la largeur du bloc, hauteur du
+         coude propre à l'arête, et une voie latérale par flèche de boucle.
+         Avant, deux arêtes d'une même bande se superposaient au pixel près.
+[?]      Reste 12 paires ambiguës sur 628 scènes (t1000 9, a0000 2, ply000 1) :
+         --verify-graph les COMPTE au lieu d'échouer, le nombre ne doit que
+         baisser. Cas non couvert par la passe : le nœud à écarter n'est pas le
+         voisin immédiat dans sa colonne.
+[MANQUE] Le placement reste illisible sur les scènes très ramifiées (croisements
+         de flèches, colonnes qui s'éloignent). Cas extrême : a0000 TK_QuestJump,
+         2 752 blocs -> 1,1 M px de large. Piste : replier les sous-arbres, ou
+         une mise en page en couloirs plutôt qu'en Y symétrique.
+
+--- APERÇU (timelines) ---
+[OK]     Un aperçu (clic sur un Script_CallAniFun, un Call, une animation de prop
+         ou un déplacement) redémarre son horloge à zéro : les déplacements DÉJÀ
+         joués sont donc figés à leur position d'arrivée au moment de l'aperçu.
+         Sans ça, PositionAt(0) renvoyait l'acteur à son point de départ (ex.
+         Clotilde ramenée 3 m en arrière, hors cadre) -> impression que les
+         autres entités disparaissaient.
+[MANQUE] Un aperçu ne rejoue pas ce qui précède : les entités sont posées à leur
+         état final, sans transition.
+
+--- DEMARRAGE / FICHIERS OUVERTS ---
+[OK]     L'outil démarre sur un PROJET : il rouvre le dernier (mémorisé dans les
+         réglages) et, s'il n'y en a pas, propose d'en créer un. Le premier
+         fichier affiché est un .dat déjà suivi par le projet, sinon on demande.
+[OK]     Double-clic dans l'arborescence du projet = ouverture du fichier ; les
+         fichiers ouverts s'empilent en onglets en haut de la fenêtre, et changer
+         d'onglet recharge la scène en place (plus besoin de relancer l'outil).
+[OK]     Un .dat SANS map (script d'animation, craft) s'ouvre sur un sol de
+         debug (grille 40x40 m) au lieu d'une scène vide.
+[OK]     Acteur d'un script sans map : t_name.tbl pour les persos/PNJ,
+         t_mons.tbl (catégorie "status", 1er champ = nom du script, puis le
+         modèle C_*) pour les monstres. Vérifié : ply000 -> C_PLY000,
+         npc017 -> C_NPC017, mon000 -> C_MON000, mon022 -> C_MON022.
+[OK]     La variable "self" (-2) est liée à cet acteur DANS LE RÉSOLVEUR : les
+         fonctions ANI du fichier (qui n'adressent que -2) s'appliquent donc
+         directement à lui. Vérifié bout en bout : ply000 -> AniWait -> WAIT,
+         mon000 -> AniWait -> BTL_WAIT.
+[OK]     Bouton "Add script…" dans l'onglet Mod project : ajoute un ou plusieurs
+         .dat au projet ET ouvre le premier. Les autres fichiers (OPS, pkg)
+         rejoignent le projet tout seuls à la première écriture.
+[OK]     Sol de debug et fond ÉCLAIRCIS (grille claire sur fond clair) : la scène
+         sombre rendait l'acteur et le cadrage illisibles.
+[?]      Un projet VIDE demande encore un .dat au démarrage (une seule fois : le
+         fichier choisi est aussitôt ajouté au projet, donc les lancements
+         suivants ouvrent dessus sans rien demander). Ouvrir la fenêtre sans
+         aucun document demande de rendre la session nullable dans ViewerForm
+         (~30 usages) : à faire pour supprimer cette dernière question.
+[?]      Un .ops double-cliqué ouvre le .dat de même nom du dossier scenario
+         courant ; si le mod réorganise ses dossiers, l'association peut rater.
+[?]      La barre d'onglets est masquée en mode --smoke : elle redimensionne le
+         viewport, ce qui fausse la comparaison d'images du test.
+[MANQUE] Un seul document est réellement chargé à la fois : changer d'onglet
+         relit le fichier (rapide, mais l'état d'édition non sauvé du fichier
+         quitté n'est pas conservé).
+[MANQUE] L'arborescence ne liste que les fichiers SUIVIS par le projet : les
+         fichiers du jeu non encore édités ne s'y trouvent pas (il faut passer
+         par "Add an existing file" ou le menu Fichier).
+
+--- EQUIPEMENT (armes) ---
+[OK]     t_attach.tbl décodé (catégorie AttachTableData) : [s16 id de perso]
+         [u32 ?][u16 id d'objet][12 octets][modèle][point d'attache]. Les lignes
+         dont le modèle OU le point vaut "null" sont des variantes de costume/DLC,
+         pas des objets portés. 28 attachements réels. Vérifié : Rean (0) =
+         C_EQU300_R sur R_arm_point + C_EQU300_L sur Left_SB_point, Alisa (1) =
+         C_EQU320 sur L_arm_point, Fie (7) = C_EQU440_R/L sur R/L_arm_point.
+         Résolution exposée par --dump-attach <script.dat>.
+[OK]     L'arme est RENDUE, attachée au bone : une instance de rendu par
+         attachement (espace d'identifiants disjoint de celui des acteurs), sa
+         transformée = monde du bone (pose courante) x transformée de l'acteur,
+         recalculée à chaque frame dans RefreshAnimationPoses. Un acteur sans
+         clip actif est posé en bind pose (comme le moteur). Un point d'attache
+         introuvable masque l'objet au lieu de le poser au sol.
+         Vérifié par --dump-attach (bone trouvé + position en bind pose +
+         modèle chargé) : Rean R_arm_point = bone 61 (-0,53 / 0,92),
+         Left_SB_point = bone 35 ; Alisa L_arm_point = bone 63 ; Fie = deux
+         lames symétriques (±0,42 / 0,835).
+[?]      Aucune vérification automatique du RENDU de l'arme (le smoke ne compare
+         pas d'image avec/sans attachement) : la position est vérifiée sur la
+         donnée (bone + bind pose), pas à l'écran.
+[OK]     Equipement PILOTÉ PAR LE SCRIPT : OP37 (sélecteur 0 = attacher un modèle
+         à un noeud avec placement local pos/euler deg/échelle, sélecteur 1 =
+         vider le noeud) et OP32_0 (afficher/masquer ce qui pend à un noeud) sont
+         interprétés et stockés par entité. Le rendu fusionne : dotation par
+         défaut de t_attach.tbl, puis ce que le script a attaché / vidé / masqué
+         (un noeud vidé le reste, un noeud masqué garde son modèle sans être
+         dessiné). Placement local appliqué avant la transformée du bone.
+         Vérifié : ply000 AniStartRainMode+ShowEquip -> C_EQU032 sur R_arm_point ;
+         t1000 EV_C05E14S02 -> le PNJ 1020 porte C_EQU131 sur R_arm_point.
+[?]      L'EraseEquip de Rean (branche 0x8000 d'AniWait) ne ressort PAS dans
+         l'état rejoué de t1000 alors que la branche est bien prise : à
+         instrumenter (soit l'appel EraseEquip n'est pas exécuté, soit sa branche
+         interne saute les OP32_0). Effet actuel : Rean garde son épée par
+         défaut au lieu de la ranger — conservateur, mais à confirmer.
+[OK]     Le parapluie collé à Rean dans toutes les fonctions venait du défaut des
+         flags (voir section BRANCHEMENT) : AniReset prenait la branche pluie.
+[?]      OP37 sélecteur 2 (FUN_005b4ae0) non interprété : rôle non reversé.
+[?]      L'ORDRE des trois angles d'OP37 est pris tel qu'écrit (X,Y,Z) alors que
+         le moteur les empile en ordre inverse dans son vecteur d'Euler : sans
+         cas de test à rotation non nulle, non vérifiable.
+
+--- EFFETS (.eff) ---
+[OK]     OP39 reversé (le sélecteur est consommé par le nom OP39_xx, il n'est PAS
+         un opérande visible) :
+           10 (entité, slot, chemin)      = CHARGER un .eff dans un slot
+           11 (entité, slot)              = décharger le slot
+           12 (proprio, slot, ancre, ?, noeud, 3 pos, 3 rot deg, 3 échelle,
+               instance)                  = JOUER, crée l'instance numérotée
+           13 / 14 / 16 (entité, instance)= arrêter / tuer / réinitialiser
+           15 / 17 (entité, instance)     = attendre / tester la fin
+           18 (entité, instance, u16)     = paramètre (u16/1000)
+           19 / 20 (entité, instance, 4)  = paramètres (couleur ?)
+           21 (u8, chaîne)                = global, non reversé
+         Slots : 64 globaux + 16 (offset 200) pour la scène (-3), 16 par entité.
+[OK]     Cycle de vie suivi par le rejeu : slots chargés et instances VIVANTES par
+         entité (une instance démarrée sans arrêt programmé reste active). Visible
+         dans --dump-entity-state. Vérifié sur t1000 Init : slots 200/201/202 =
+         sysfish / rain00 / evet0004, instance #100 = sysfish jouée en
+         (19,06 / -1,47 / -39,95) depuis la frame 0.
+[OK]     FORMAT .eff porté en C# (EffFile / EffFileReader / EffFileWriter) :
+         en-tête (version, nom, textures, liste de noms secondaires), segments
+         (blocs conditionnés par la version ET par le mot de flags du segment),
+         pistes de 48 octets, bloc 72 octets des versions console. Les octets
+         bruts des champs de noms, le bloc 17 non reversé du PC et la queue du
+         fichier sont conservés tels quels.
+         GARDE-FOU : --verify-eff <dossier> relit et réécrit tout le corpus.
+         PASS sur 1071 effets, 11145 segments, 120975 keyframes, octet pour
+         octet. Test unitaire "round-trips an effect file byte-exactly".
+[OK]     ÉVALUATEUR de keyframes porté (EffTrackEvaluator) : bit0 additif (la
+         valeur s'ajoute à la keyframe précédente), bit1 uniforme (une composante
+         diffusée sur xyz), bit2 aléatoire (tirage entre les deux bornes, stable
+         par instance), bits 4/5 boucle (la région rejouée est re-chaînée à
+         chaque passage, donc l'additif s'accumule). Interpolation linéaire,
+         maintien avant la première et après la dernière keyframe. Test
+         "evaluates effect keyframe tracks like the engine" (4 cas de l'outil
+         Rust, dont deux tirés de fichiers réels).
+[OK]     LECTURE des segments (EffSimulation) : arbre des spawns (bloc 14 :
+         cible, nombre de salves, particules par salve, déclencheur, délai,
+         intervalle), durée de vie (data_04[4]), jet (gravité data_04[10] et
+         vitesse initiale tirée entre data_04[8..9]), héritage du parent
+         (data_02[2] : position vivante 0x3000 / figée 0x8000, échelle 0x4000,
+         rotation 0x10000 figée / 0x2000 vivante), orientation de base
+         (data_06[5..7] + décalage Y data_06[8]), segment conteneur
+         (data_02[0] bit 0 : place ses enfants, ne se dessine pas).
+         Diagnostic : --dump-eff et --dump-eff-nodes <fichier> <secondes>.
+[OK]     RENDU dans le viewport : chaque instance vivante d'OP39 est jouée sur
+         son horloge (frame de départ de l'instance) et dessinée à son ancre
+         (noeud d'entité, entité, ou monde). Les quads sont reconstruits à chaque
+         image (horloge propre + billboards qui suivent la caméra).
+[OK]     TEXTURES : le nom de texture du segment (I_EFTEX###) est un paquet
+         d'assets D3D11 chargé par le pipeline existant (EditorProjectLoader.
+         LoadEffectTexture) ; l'entrée est .dds.phyre OU .png.phyre selon le
+         paquet. Passe de rendu dédiée (D3D11EffectQuad) : découpe UV depuis
+         data_04[0..3] (tout à zéro = texture entière ; valeurs > 1 = répétition ;
+         inversées = miroir), teinte = piste d0D, halo additif = piste d0E, alpha
+         prémultiplié, mélange depuis l'octet (data_02[4] >> 8) & 0xFF
+         (0x02 = additif, 0x04 = soustractif, sinon alpha), priorité de tri
+         (data_02[3] >> 8) & 0xFF puis distance à la caméra, profondeur lue mais
+         jamais écrite. Billboard = bit 0x10 de data_02[1] ; un segment marqué
+         conteneur (bit 0 de data_02[0]) place ses enfants sans se dessiner, et
+         un segment qui ne nomme aucune texture ne dessine rien.
+         GARDE-FOU : --verify-eff-textures <data> → PASS, 1071 effets, 9746
+         segments dessinés (289 sans texture), 161 textures distinctes, 161
+         chargées, 0 non résolue.
+[?]      La règle de l'outil Rust « un segment sans bit d'orientation (0x1C dans
+         data_02[1]) est invisible » N'A PAS été reprise : elle contredit le
+         corpus (les rideaux de pluie de rain00, visibles en jeu, ont
+         data_02[1] = 0) et compensait sa preview 2D, où un quad resté dans le
+         plan de base se voit par la tranche. En 3D le quad est légitimement
+         visible.
+[OK]     FENÊTRE "Effect editor" (Windows > Effect editor…) : liste des .eff du
+         jeu, arbre des segments (chaîné par les descripteurs de spawn), grille
+         des keyframes (temps, mode, valeur, seconde borne) et champs du segment
+         (nom, texture, modèle, durée de vie, gravité, vitesse, mots de flags),
+         curseur de temps, Save / Save As suivis par le projet de mod.
+         La PREVIEW est dans cette fenêtre (viewport D3D11 dédié, fond neutre et
+         grille, orbite + molette), plus dans le viewport de la scène : un effet
+         se juge seul.
+[OK]     ÉDITEUR DE CROP : bouton « Crop the texture » de la fenêtre eff. La
+         texture du segment est affichée à plat et le rectangle de découpe se
+         trace à la souris ; il s'écrit tel quel dans data_04[0..3] (coordonnées
+         de texture), un glisser inversé donnant une texture miroir comme le
+         format l'autorise, un simple clic remettant la texture entière.
+[OK]     Les éditeurs autonomes sont des FENÊTRES, pas des onglets, ouvertes
+         depuis la barre de menu (File : nouveau/ouvrir projet, ajouter un
+         script, export .zip ; Windows : Effect editor, Table editor ; Options).
+         Le panneau de droite de la fenêtre principale ne garde que la scène et
+         le script.
+[OK]     Crash corrigé : éditer une cellule puis cliquer sur une autre relançait
+         la reconstruction de la grille depuis sa propre notification de fin
+         d'édition (appel réentrant à SetCurrentCellAddressCore). Seule la
+         cellule éditée est réécrite, et l'arbre des segments n'est reconstruit
+         qu'après coup.
+[OK]     IMPORT DE TEXTURES CUSTOM, avec création du .pkg (bouton « Import
+         texture… » de la fenêtre eff) :
+         - PkgArchiveWriter : en-tête + table de 80 octets par entrée + données
+           à la suite, entrées NON compressées (le drapeau par entrée le dit, et
+           ça garde un compresseur hors de la chaîne de confiance des mods).
+         - PhyreTextureBuilder : un cluster de texture = un schéma constant pour
+           un format donné, puis l'objet PTexture2D (taille, nombre de mips,
+           chemin de l'image d'origine), puis les pixels. Le gabarit est DÉCOUPÉ
+           dans une texture que le jeu livre (fin du schéma = VramDataOffset des
+           fixups), et seuls ces champs sont réécrits. Le format voulu choisit le
+           paquet modèle (ARGB8 -> I_EFTEX000, DXT5 -> I_EFTEX003, DXT1 ->
+           I_EFTEX084, trouvés par balayage et mis en cache).
+           NOTE : l'outil Rust ne fait PAS autrement — il embarque trois blobs de
+           ~2,6 Ko (phyre_skel/argb8.bin, dxt5.bin, rgba8.bin) qui sont
+           exactement « les octets 0..pixels d'une vraie texture », et patche les
+           mêmes champs. Le sérialiseur Phyre (namespace, descripteurs de
+           classes, tables de fixups) n'est reversé ni ici ni là ; la seule
+           différence est que le gabarit vient du jeu installé au lieu d'être
+           collé dans le binaire — donc il colle toujours à la version du joueur
+           et le dépôt ne porte pas de blobs. Le chemin garde sa
+           graphie d'origine (casse et extension varient d'une texture à l'autre)
+           et seul le nom de fichier change ; le nombre de mips vient du tampon
+           fourni, toutes les textures du jeu n'ayant pas une chaîne complète.
+         - Encodage : image RGBA -> format du gabarit (ARGB8/RGBA8), lignes
+           retournées (le cluster stocke de bas en haut), chaîne de mips complète
+           par moyenne de 2x2.
+         GARDE-FOU : --verify-texture-import <data> reconstruit chaque paquet du
+         jeu depuis son propre gabarit et ses propres pixels et exige l'égalité
+         octet pour octet, réécrit le paquet et le relit entrée par entrée, puis
+         écrit une texture d'une AUTRE taille et la relit. PASS : 114 paquets sur
+         174 reconstruits à l'octet près ; les 60 autres sont en DXT1/DXT3/DXT5
+         ou L8, formats que l'éditeur ne sait pas encoder (ils sont signalés,
+         pas passés sous silence).
+[OK]     ENCODEUR DXT (BlockCompressor) : DXT1 et DXT5. Un bloc = 4x4 pixels,
+         deux couleurs (565) + 2 bits d'index par pixel, et pour DXT5 un bloc
+         alpha de 8 octets (deux bornes + 3 bits par pixel) devant. Les bornes
+         sont les extrêmes du bloc : exact pour un bloc uni, proche pour un
+         dégradé. Un décodeur accompagne l'encodeur, ce qui permet de mesurer.
+         GARDE-FOU (dans --verify-texture-import) : blocs unis -> écart max 7
+         (c'est la quantification 565 elle-même), dégradé -> écart max 15.
+[OK]     Le contrôle de reconstruction ne dépend PLUS du format : reconstruire
+         une texture réutilise ses propres pixels, aucun encodeur n'est
+         nécessaire. Corrigé -> 174 paquets sur 174 reconstruits à l'octet près
+         (au lieu de 114 « et 60 sautés »). Seuls DXT3 et L8 restent hors de
+         portée d'un IMPORT d'image.
+[OK]     CRÉATION EX NIHILO (EffAuthoring.CreateEffect / CreateSegment) : un
+         effet neuf, sans rien copier. Le segment est écrit depuis ce que dit le
+         format : dessiné et face caméra (data_02[1] = 0x11), une seconde de vie
+         (data_04[4]), coins du quad unitaire (data_08), une keyframe par piste
+         (position/rotation à zéro, échelle à 1, couleur blanche). Tout ce que le
+         projet n'a pas reversé reste à zéro — c'est ce qu'est un champ non
+         renseigné. Boutons « New effect » et « Add blank segment ».
+[OK]     Bug trouvé en écrivant un effet neuf : le writer n'émettait un bloc
+         optionnel que si l'objet le portait, alors que sa PRÉSENCE est décidée
+         par la version (data_05 pour la disposition PC) ou par le mot de flags.
+         Un segment neuf n'en portait aucun, donc 12 octets manquaient et tout ce
+         qui suivait glissait. Le writer suit maintenant la disposition et écrit
+         des zéros pour un bloc absent ; le corpus reste octet pour octet.
+[OK]     ÉDITION DE STRUCTURE (EffAuthoring + fenêtre eff) : « New from… » part
+         d'un effet du jeu, « Add segment » ajoute une COPIE du segment
+         sélectionné et le fait lancer par lui, « Remove segment » retire le segment et tout ce qu'il
+         lance, la liste « Spawned by » le déplace sous un autre parent, et le
+         nom s'édite dans la grille du segment.
+         Le point délicat : la place d'un segment dans l'arbre n'est pas stockée
+         sur le segment mais dans les descripteurs de spawn de celui qui le
+         lance, qui le désignent par son INDEX. Retirer un segment renumérote
+         donc tous les descripteurs qui pointent au-delà. Test « adds, removes
+         and moves effect segments » : chaînage, copie indépendante, refus d'un
+         cycle, renumérotation, et survie à un aller-retour d'écriture.
+[MANQUE] Les FORMES MAILLÉES sont dessinées en quad plat. La forme est
+         data_02[4] & 0xFF ; sur les 9746 segments dessinés du jeu, 6679 sont la
+         forme 0x00 (quad plat, le cas traité) et 2484 sont des formes maillées
+         (0x01/0x02/0x04/0x05/0x06/0x08 : cylindres, anneaux, demi-sphères) qui
+         lisent data_08 comme paramètres de maillage, avec le nombre de segments
+         dans les octets 2 et 3 de data_02[3]. Le reste (0x09..0x15, ~583) sont
+         des variantes de traînée.
+[OK]     L'ORDRE des Euler est celui de la routine du moteur : X, puis Y, puis Z
+         (reversé dans l'outil Rust : euler_apply / FUN_0042eb20), et non l'ordre
+         yaw-pitch-roll du helper du framework.
+[?]      Un émetteur sans fin (0xFF salves) est déroulé sur un nombre borné de
+         salves pour la preview (EffPreviewLimits) ; --dump-eff-nodes le signale.
+
+--- NOMS DES INSTRUCTIONS / LECTURE D'UNE SCENE ---
+[OK]     cs1_instructions.json : les opcodes dont le comportement est reversé ET
+         implémenté portent maintenant un nom, avec leurs opérandes nommés :
+         Set_Register / Set_Register2 (op10/18), Set_Flag / Reset_Flag (op12/13),
+         Entity_GetStatus / Entity_SetStatus / Entity_ClearStatus (op42/43/44),
+         Entity_SetNodeVisible (op32_0), Entity_SetAttachment (op37),
+         Entity_PlayAnimation (op34), Entity_SetFacialFrames / _Patterns /
+         _Command (op50_2/3/4), Effect_LoadSlot / _UnloadSlot / _Play / _Stop /
+         _Kill / _WaitCompletion / _Reset / _TestCompletion / _SetParameter
+         (op39_10..18). Le reste garde la forme générique OPxx_y : un nom ne se
+         pose que sur ce qui est établi. Aucun type ni rôle d'opérande n'a été
+         touché — renommer ne change pas la lecture d'un seul octet.
+         Le rejeu d'OP39 ne déduit plus le sélecteur du nom générique : il
+         distingue les variantes par leur nom.
+[OK]     BRANCHES : à un embranchement dont le script ne décide pas (condition
+         non évaluable), le rejeu prenait la branche séquentielle à l'aveugle,
+         donc parfois une branche que le lecteur ne regardait pas. Le bloc
+         SÉLECTIONNÉ tranche maintenant : la branche d'où il est atteignable
+         gagne. Un embranchement que le script décide reste décidé par le script.
+[OK]     Les instructions qui deviennent des points de la timeline couvrent
+         maintenant les effets (39), l'équipement (32/37) et les expressions
+         (50) : sans ça la lecture ne s'arrêtait jamais sur un effet.
+[OK]     LECTURE D'UNE SCENE ENTIÈRE en boucle : bouton « ▶ Play scene » de
+         l'éditeur (▪ Stop à côté). Construit la timeline de toute la fonction
+         (BuildFunctionTimeline) et la joue en boucle, attentes / déplacements /
+         animations / effets dans l'ordre du script.
+         La durée de la boucle est étendue par ce que la scène a lancé : clips
+         de personnage, animations de props, et désormais effets — un .eff dont
+         tous les segments ont une durée de vie donne sa durée exacte
+         (EffSimulation.FiniteDuration : chaîne des délais de spawn + durée de
+         vie la plus tardive), un .eff sans fin (émetteur 0xFF ou segment sans
+         durée de vie) n'étend rien.
+         Diagnostic : --dump-function-timeline <script> <fonction> (durée, budget
+         de temps par instruction, animations lancées).
+[OK]     SUIVI de la lecture : le bloc joué est sélectionné ET ramené dans la vue
+         (ScriptFlowPanel.FollowInstruction, qui ne défile que si le bloc est
+         sorti de l'écran, donc pas de tremblement) ; position affichée dans la
+         barre d'outils (« ▶ 12,3 / 335,5 s (18/532) ») ; vitesse de lecture
+         réglable (0,5x à 8x) ; bouton « ⏭ Next command » qui saute l'attente en
+         cours. La vitesse et le saut ne changent RIEN au minutage écrit dans le
+         script : ils ne déplacent que l'horloge de la preview.
+[OK]     Bug trouvé grâce aux noms d'opérandes : OP34 lisait son temps de
+         fondu dans le 5e octet de flags (u8) au lieu du f32 qui suit, et donc
+         ses trois paramètres de temps étaient décalés d'un cran.
+[OK]     UNITÉ D'Ani_Delay (OP16) = MILLISECONDES, et non des frames comme
+         l'éditeur le lisait — chaque attente durait 16,7 fois trop longtemps,
+         d'où « ça dure très longtemps » (EV_C05E14S02 : 335 s au lieu de 25 s).
+         Deux mesures indépendantes, toutes deux rejouables avec
+         --calibrate-delay-camera :
+           (a) une scène qui lance un mouvement de caméra puis attend sa fin
+               apparie les deux : caméra 3000 ms suivie d'un délai de 3000,
+               2000 ms -> 2000, 4000 ms -> 4000 (631 paires) ; un compteur de
+               frames à 60 Hz aurait donné ~180 pour 3000 ms.
+           (b) sur les 68904 délais des scripts de scénario, 66542 sont des
+               multiples de 100 (500, 1000, 300, 50, 1500...) : c'est ainsi qu'on
+               écrit des millisecondes, pas des frames.
+         Effet mesuré : le S-craft de Rean (ply000 AniBtlSCraft00) passe de
+         ~167 s à 10,0 s, ses délais étant 700 / 500 / 400 / 300 / 250 / 100 ms.
+         L'opérande d'OP16 s'appelle maintenant delay_ms.
+[?]      La règle du bit de poids faible reste celle du moteur (FUN_0064f420,
+         valeurs impaires > 1 stockées en (v-1)/2) et ne concerne que 106 délais
+         sur 68904 — mais elle est douteuse en millisecondes : AniBtlSCraft00
+         écrit un délai de 99 là où 100 est attendu, et la règle le ramènerait à
+         49 ms. À revoir sur le handler d'OP16 si un craft paraît saccadé.
+[?]      Les pauses restent « vides » dans l'éditeur : dans le jeu elles laissent
+         lire les dialogues (OP26 attend une entrée), que la preview n'affiche
+         pas. D'où la vitesse réglable et « ⏭ Next command ».
 
 --- GESTION DES FICHIERS DE MOD ---
 [OK]     Projet de mod (.ed8mod, JSON) + magasin local à côté du projet :

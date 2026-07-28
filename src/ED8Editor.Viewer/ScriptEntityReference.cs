@@ -1,4 +1,4 @@
-namespace ED8Editor.Viewer;
+﻿namespace ED8Editor.Viewer;
 
 internal enum ScriptEntityResolution
 {
@@ -16,6 +16,9 @@ internal sealed record ScriptEntityReference(
 
 internal static class ScriptEntityReferences
 {
+    /// <summary>The script's own actor: every ANI or craft script talks to -2.</summary>
+    public const int SelfEntityId = -2;
+
     public const string PlaceholderAssetId = "__ED8_ENTITY_PLACEHOLDER__";
     public const string PlaceholderSourceAssetId = "C_PLY000";
 

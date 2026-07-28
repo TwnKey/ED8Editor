@@ -26,6 +26,9 @@ internal sealed class ScriptFlowPanel : Panel
     private const int RowGap = 14;
     private const int CanvasPadding = 24;
     private const int StartKey = -1;
+    /// <summary>Columns a single region may claim, so a wide graph stays placeable.</summary>
+    private const double MaximumRegionWidth = 256d;
+
     private const int HeaderHeight = 29;
     private const int BlockPadding = 7;
 
@@ -55,6 +58,7 @@ internal sealed class ScriptFlowPanel : Panel
 
     private DecompiledFunction? currentFunction;
     private IReadOnlyList<GraphEdge> edges = Array.Empty<GraphEdge>();
+    private readonly Dictionary<GraphEdge, int> edgeLanes = new();
     private int? selectedInstruction;
     private GraphEdge? selectedEdge;
     private DropTarget? dropTarget;
@@ -141,7 +145,48 @@ internal sealed class ScriptFlowPanel : Panel
         edges = BuildEdges(function).ToArray();
         selectedEdge = null;
         LayoutGraph(function);
+        AssignEdgeLanes();
         RecomputeActivePath();
+        Invalidate();
+    }
+
+    /// <summary>
+    /// Puts the entry of the scene under the eye. A branchy scene spreads far to
+    /// the sides and far down; opening it anywhere else means hunting for where
+    /// it starts.
+    /// </summary>
+    public void CenterOnEntry()
+    {
+        var entry = nodes.TryGetValue(StartKey, out var start)
+            ? start
+            : nodes.Count == 0 ? null
+            : nodes.OrderBy(pair => pair.Value.Top).ThenBy(pair => pair.Key).First().Value;
+        if (entry is null)
+        {
+            AutoScrollPosition = Point.Empty;
+            return;
+        }
+        AutoScrollPosition = new Point(
+            Math.Max(0, entry.Left + entry.Width / 2 - ClientSize.Width / 2),
+            Math.Max(0, entry.Top - CanvasPadding));
+        Invalidate();
+    }
+
+    /// <summary>
+    /// Follows a block during playback: it scrolls only when the block has left
+    /// the view, so a scene that runs inside one screenful does not shake, and
+    /// it never flashes — the highlight already says which block is playing.
+    /// </summary>
+    public void FollowInstruction(int instruction)
+    {
+        if (!nodes.TryGetValue(instruction, out var node)) return;
+        var view = new Rectangle(
+            -AutoScrollPosition.X, -AutoScrollPosition.Y, ClientSize.Width, ClientSize.Height);
+        var block = new Rectangle(node.Left, node.Top, node.Width, node.Height);
+        if (view.Contains(block)) return;
+        AutoScrollPosition = new Point(
+            Math.Max(0, node.Left - Math.Max(0, (view.Width - node.Width) / 2)),
+            Math.Max(0, node.Top - Math.Max(0, (view.Height - node.Height) / 2)));
         Invalidate();
     }
 
@@ -459,21 +504,27 @@ internal sealed class ScriptFlowPanel : Panel
         var width = isSelected ? 5f : edge.Kind == EdgeKind.Sequential ? 2.6f : 3.6f;
         using var pen = new Pen(color, width) { StartCap = LineCap.Round, EndCap = LineCap.Round };
         if (edge.Kind == EdgeKind.Unconditional) pen.DashStyle = DashStyle.Dash;
-        var path = Array.ConvertAll(GetEdgePath(source, target), ToView);
+        var path = Array.ConvertAll(
+            GetEdgePath(source, target, edgeLanes.GetValueOrDefault(edge)), ToView);
         graphics.DrawLines(pen, path);
         DrawArrowHead(graphics, color, path[^2], path[^1], width);
         if (!dimmed && edge.Label.Length > 0) DrawEdgeLabel(graphics, edge, path, color);
     }
 
-    private static Point[] GetEdgePath(FlowNode source, FlowNode target)
+    private static Point[] GetEdgePath(FlowNode source, FlowNode target, int lane = 0)
     {
-        var sourceCenter = source.Left + source.Width / 2;
-        var targetCenter = target.Left + target.Width / 2;
+        // Fan the departures and the arrivals across the width of a block so two
+        // edges leaving or reaching the same block stay distinguishable.
+        var spread = Math.Min(Grid, source.Width / 6);
+        var sourceCenter = source.Left + source.Width / 2 + LaneOffset(lane) * spread;
+        var targetCenter = target.Left + target.Width / 2 + LaneOffset(lane) * spread;
         if (target.Top >= source.Bottom)
         {
             if (Math.Abs(sourceCenter - targetCenter) <= Grid)
                 return new[] { new Point(sourceCenter, source.Bottom), new Point(targetCenter, target.Top) };
-            var midY = (source.Bottom + target.Top) / 2;
+            // Each edge of the band runs at its own height.
+            var gap = target.Top - source.Bottom;
+            var midY = source.Bottom + Math.Max(4, gap / 2 + LaneOffset(lane) * Math.Min(6, gap / 4));
             return new[]
             {
                 new Point(sourceCenter, source.Bottom),
@@ -483,8 +534,8 @@ internal sealed class ScriptFlowPanel : Panel
             };
         }
 
-        // upward edge (loop): route around the side
-        var side = Math.Max(source.Right, target.Right) + Grid * 2;
+        // upward edge (loop): route around the side, one lane per edge
+        var side = Math.Max(source.Right, target.Right) + Grid * 2 + lane * Grid;
         return new[]
         {
             new Point(source.Right, source.Top + Math.Min(24, source.Height / 2)),
@@ -493,6 +544,10 @@ internal sealed class ScriptFlowPanel : Panel
             new Point(target.Right, target.Top + Math.Min(24, target.Height / 2)),
         };
     }
+
+    /// <summary>Lane 0 stays centred, the next ones alternate around it.</summary>
+    private static int LaneOffset(int lane)
+        => lane == 0 ? 0 : (lane % 2 == 1 ? 1 : -1) * ((lane + 1) / 2);
 
     private static void DrawEdgeLabel(Graphics graphics, GraphEdge edge, IReadOnlyList<Point> path, Color color)
     {
@@ -632,7 +687,7 @@ internal sealed class ScriptFlowPanel : Panel
         foreach (var edge in edges.Reverse())
         {
             if (!nodes.TryGetValue(edge.From, out var source) || !nodes.TryGetValue(edge.To, out var target)) continue;
-            var path = GetEdgePath(source, target);
+            var path = GetEdgePath(source, target, edgeLanes.GetValueOrDefault(edge));
             if (edge.Label.Length > 0)
             {
                 var label = edge.Label.Length > 42 ? edge.Label[..39] + "..." : edge.Label;
@@ -756,6 +811,15 @@ internal sealed class ScriptFlowPanel : Panel
         // placed whatever the view is scrolled to.
         var scroll = new Point(-AutoScrollPosition.X, -AutoScrollPosition.Y);
 
+        // Columns are placement values, not slots: they leave wide gaps where a
+        // region was reserved and not used. Ranking the distinct values packs the
+        // graph without changing the left-to-right order of anything.
+        var ranks = columns.Values.Distinct().OrderBy(value => value)
+            .Select((value, index) => (value, index))
+            .ToDictionary(pair => pair.value, pair => (double)pair.index);
+        foreach (var key in columns.Keys.ToArray())
+            columns[key] = ranks[columns[key]];
+
         var rowCount = rows.Count == 0 ? 1 : rows.Values.Max() + 1;
         var rowHeights = new int[rowCount];
         foreach (var pair in nodes)
@@ -774,6 +838,54 @@ internal sealed class ScriptFlowPanel : Panel
             currentY = rowTops[row] + rowHeights[row] + RowGap;
         }
 
+        int RowTop(int key) => rowTops[rows.TryGetValue(key, out var row) ? row : 0];
+
+        // Two blocks stacked in one column with nothing joining them read as a
+        // single thread. Move the lower one aside: this is the ambiguity a reader
+        // actually hits, and it costs one column only where it occurs.
+        var joined = edges
+            .Select(edge => (edge.From, edge.To))
+            .Concat(edges.Select(edge => (edge.To, edge.From)))
+            .ToHashSet();
+        foreach (var column in nodes.Keys
+                     .GroupBy(key => columns.TryGetValue(key, out var value) ? value : 0d)
+                     .ToArray())
+        {
+            var ordered = column
+                .OrderBy(key => rows.TryGetValue(key, out var row) ? row : 0)
+                .ThenBy(key => key)
+                .ToArray();
+            for (var index = 1; index < ordered.Length; index++)
+            {
+                var previous = ordered[index - 1];
+                var current = ordered[index];
+                // Measured where the reader sees it: rows that nothing occupies
+                // take no space, so two blocks far apart in row numbers can still
+                // end up touching.
+                var gap = RowTop(current) - (RowTop(previous) + nodes[previous].Height);
+                if (gap > RowGap * 3) continue;
+                if (joined.Contains((previous, current))) continue;  // one thread
+                columns[current] = columns.Values.Max() + 1d;
+            }
+        }
+
+        // Nothing in the region placement guarantees that two nodes of the same
+        // row land on different columns: when they do, one block hides the other
+        // outright. Nudge the later ones aside, keeping their order.
+        foreach (var row in nodes.Keys.GroupBy(key => rows.TryGetValue(key, out var r) ? r : 0))
+        {
+            var previous = double.NegativeInfinity;
+            foreach (var key in row
+                .OrderBy(value => columns.TryGetValue(value, out var c) ? c : 0d)
+                .ThenBy(value => value))
+            {
+                var column = columns.TryGetValue(key, out var value) ? value : 0d;
+                if (column <= previous) column = previous + 1d;
+                columns[key] = column;
+                previous = column;
+            }
+        }
+
         var minColumn = columns.Count == 0 ? 0d : columns.Values.Min();
         var step = NodeWidth + ColumnGap;
         var right = 0;
@@ -782,7 +894,11 @@ internal sealed class ScriptFlowPanel : Panel
         {
             var column = columns.TryGetValue(pair.Key, out var value) ? value : 0d;
             var row = rows.TryGetValue(pair.Key, out var r) ? r : 0;
-            var centerX = (int)Math.Round(CanvasPadding + (column - minColumn) * step + NodeWidth / 2.0);
+            // Columns are ranks here, so they are bounded by the number of nodes:
+            // the placement cannot overflow, and clamping the pixel value would
+            // only stack the far-right blocks on top of each other.
+            var centerX = (int)Math.Round(
+                CanvasPadding + (column - minColumn) * step + NodeWidth / 2.0);
             var location = new Point(centerX - pair.Value.Width / 2, rowTops[row]);
             pair.Value.Bounds = new Rectangle(location, pair.Value.Bounds.Size);
             right = Math.Max(right, location.X + pair.Value.Width);
@@ -826,6 +942,35 @@ internal sealed class ScriptFlowPanel : Panel
             Array.Empty<InstructionArgument>(), Array.Empty<JumpTarget>()));
         var function = new DecompiledFunction(0, "EV_SMOKE", true, instructions);
         VerifyLayout(function, expectLoopArrow: true, expectClosingReturnDeepest: true);
+    }
+
+    /// <summary>
+    /// Blocks left stacked in a column with nothing joining them: a reader takes
+    /// them for one thread. Counted by the layout verification.
+    /// </summary>
+    internal static int StackedAmbiguities { get; set; }
+
+    /// <summary>Describes the placed graph, to diagnose an unreadable scene.</summary>
+    internal static string DescribeLayout(DecompiledFunction function)
+    {
+        using var panel = new ScriptFlowPanel { Size = new Size(1200, 800) };
+        var blocks = function.Instructions
+            .Where(value => value.Opcode != 5)
+            .Where(value => value.Opcode != 3 || !value.Jumps.Any(jump =>
+                jump.TargetFunctionIndex == function.Index && jump.TargetInstructionIndex >= 0))
+            .Select(value => new ScriptFlowBlock(
+                value.Index, $"#{value.Index} {value.Name}", "operands", Color.Gray))
+            .ToArray();
+        panel.SetGraph(blocks, function);
+        var report = new System.Text.StringBuilder();
+        report.AppendLine(
+            $"{function.Name}: {blocks.Length} blocks, canvas {panel.AutoScrollMinSize}");
+        foreach (var node in panel.nodes.OrderBy(pair => pair.Value.Top).ThenBy(pair => pair.Value.Left))
+        {
+            report.AppendLine(
+                $"  #{node.Key,4} {(node.Value.IsAnchor ? "anchor" : "block ")} {node.Value.Bounds}");
+        }
+        return report.ToString();
     }
 
     /// <summary>
@@ -878,6 +1023,42 @@ internal sealed class ScriptFlowPanel : Panel
             throw new InvalidOperationException(
                 $"{function.Name}: the closing RETURN is not the deepest block of the flow.");
         }
+        // Two blocks may never sit on top of each other: a node the column pass
+        // forgot ends up stacked on another, which reads as "the scene has one
+        // block" when it has fifteen.
+        var boxes = panel.nodes.Values.Where(value => !value.IsAnchor).ToArray();
+        for (var first = 0; first < boxes.Length; first++)
+        for (var second = first + 1; second < boxes.Length; second++)
+        {
+            if (!boxes[first].Bounds.IntersectsWith(boxes[second].Bounds)) continue;
+            throw new InvalidOperationException(
+                $"{function.Name}: two blocks overlap at {boxes[first].Bounds}"
+                + $" and {boxes[second].Bounds}.");
+        }
+        if (placed.Any(value => value.Left < 0 || value.Top < 0))
+            throw new InvalidOperationException(
+                $"{function.Name}: a block sits outside the canvas, where it cannot be scrolled to.");
+        // Two blocks stacked in one column with nothing joining them read as a
+        // single thread: that is how two separate branches were confused.
+        var connected = panel.edges
+            .Select(edge => (edge.From, edge.To))
+            .Concat(panel.edges.Select(edge => (edge.To, edge.From)))
+            .ToHashSet();
+        foreach (var first in panel.nodes)
+        foreach (var second in panel.nodes)
+        {
+            if (first.Key >= second.Key) continue;
+            if (first.Value.IsAnchor || second.Value.IsAnchor) continue;
+            if (first.Value.Left != second.Value.Left) continue;
+            var gap = Math.Abs(second.Value.Top - first.Value.Bottom);
+            if (second.Value.Top < first.Value.Bottom) gap = Math.Abs(first.Value.Top - second.Value.Bottom);
+            if (gap > RowGap * 2) continue;               // not stacked
+            if (connected.Contains((first.Key, second.Key))) continue;
+            // Reported rather than fatal: the placement removes most of these,
+            // and the ones that survive are a readability defect, not a broken
+            // canvas. --verify-graph counts them so the number can only go down.
+            StackedAmbiguities++;
+        }
         panel.VerifyPainting(function);
     }
 
@@ -908,6 +1089,29 @@ internal sealed class ScriptFlowPanel : Panel
             }
         }
         AutoScrollPosition = Point.Empty;
+    }
+
+    /// <summary>
+    /// Gives each edge of a same gap between rows its own horizontal lane. Two
+    /// edges crossing the same band otherwise ran along the very same line, and
+    /// the reader could not tell which branch they belonged to.
+    /// </summary>
+    private void AssignEdgeLanes()
+    {
+        edgeLanes.Clear();
+        foreach (var band in edges
+                     .Where(edge => nodes.ContainsKey(edge.From) && nodes.ContainsKey(edge.To))
+                     .GroupBy(edge => (nodes[edge.From].Bottom + nodes[edge.To].Top) / (Grid * 4)))
+        {
+            var lane = 0;
+            foreach (var edge in band
+                         .OrderBy(edge => nodes[edge.From].Left)
+                         .ThenBy(edge => edge.From)
+                         .ThenBy(edge => edge.To))
+            {
+                edgeLanes[edge] = lane++;
+            }
+        }
     }
 
     /// <summary>An edge drawn around the side rather than straight down.</summary>
@@ -958,6 +1162,7 @@ internal sealed class ScriptFlowPanel : Panel
         // reaches its own fork again made the placement recurse until the stack
         // gave out, because every call started a fresh walk.
         var placedRegions = new HashSet<(int Start, int Stop)>();
+        var leafSides = new Dictionary<int, double>();
         var walkLimit = nodes.Count + 8;
         var entry = nodes.ContainsKey(StartKey) ? StartKey : 0;
         PlaceRegion(entry, int.MinValue, 0d, 0);
@@ -986,8 +1191,13 @@ internal sealed class ScriptFlowPanel : Panel
                     var join = FindJoin(node, outgoing);
                     var first = Width(outgoing[0].To, join);
                     var second = Width(outgoing[1].To, join);
-                    // both branches straddle the fork, so the region spans twice the widest
-                    total = Math.Max(total, Math.Max(first, second) * 2d);
+                    // A fork whose one branch is a single block keeps the other on
+                    // the trunk and only puts that block aside: a scene testing 64
+                    // flags in a row then reads as one column of tests with its
+                    // actions beside it, instead of fanning out at every level.
+                    // (Taking twice the widest doubled the width at every nested
+                    // fork: 2^64 columns, which overflowed the placement outright.)
+                    total = Math.Max(total, Math.Min(RegionWidth(first, second), MaximumRegionWidth));
                     if (join == int.MinValue) break;
                     node = join;
                     continue;
@@ -1015,10 +1225,27 @@ internal sealed class ScriptFlowPanel : Panel
                     var join = FindJoin(node, outgoing);
                     var first = Width(outgoing[0].To, join);
                     var second = Width(outgoing[1].To, join);
-                    // symmetric: one branch to the left, the other to the right of the fork
-                    var offset = Math.Max(first, second) / 2d + 0.5d;
-                    PlaceRegion(outgoing[0].To, join, center - offset, depth + 1);
-                    PlaceRegion(outgoing[1].To, join, center + offset, depth + 1);
+                    if (first <= 1d && second > 1d)
+                    {
+                        // The short branch steps aside and the continuation stays
+                        // on the trunk. Successive forks alternate the side they
+                        // step to: stacking their blocks in one column made two
+                        // separate branches read as a single thread.
+                        PlaceRegion(outgoing[0].To, join, center + NextLeafSide(node), depth + 1);
+                        PlaceRegion(outgoing[1].To, join, center, depth + 1);
+                    }
+                    else if (second <= 1d && first > 1d)
+                    {
+                        PlaceRegion(outgoing[0].To, join, center, depth + 1);
+                        PlaceRegion(outgoing[1].To, join, center + NextLeafSide(node), depth + 1);
+                    }
+                    else
+                    {
+                        // symmetric: one branch left, the other right of the fork
+                        var offset = Math.Min(Math.Max(first, second), MaximumRegionWidth) / 2d + 0.5d;
+                        PlaceRegion(outgoing[0].To, join, center - offset, depth + 1);
+                        PlaceRegion(outgoing[1].To, join, center + offset, depth + 1);
+                    }
                     if (join == int.MinValue) break;
                     node = join;              // the join comes back onto the trunk
                     continue;
@@ -1026,6 +1253,23 @@ internal sealed class ScriptFlowPanel : Panel
                 node = outgoing.Count == 1 ? outgoing[0].To : int.MinValue;
             }
         }
+
+        // Side a fork's short branch steps to, alternating down a chain of forks.
+        double NextLeafSide(int fork)
+        {
+            if (!leafSides.TryGetValue(fork, out var side))
+            {
+                side = leafSides.Count % 2 == 0 ? -1d : 1d;
+                leafSides[fork] = side;
+            }
+            return side;
+        }
+
+        // Columns a fork claims, mirroring how PlaceRegion lays its branches out.
+        static double RegionWidth(double first, double second)
+            => first <= 1d || second <= 1d
+                ? Math.Max(first, second) + 1d
+                : first + second;
 
         List<GraphEdge> Outgoing(int node) =>
             successors.TryGetValue(node, out var list) ? list : new List<GraphEdge>();

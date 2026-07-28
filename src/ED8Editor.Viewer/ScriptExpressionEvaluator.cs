@@ -1,4 +1,4 @@
-using ED8Editor.Decompiler;
+﻿using ED8Editor.Decompiler;
 
 namespace ED8Editor.Viewer;
 
@@ -38,7 +38,17 @@ internal sealed class ScriptVariableState
         else registers.Remove(index);
     }
 
-    public bool TryReadFlag(int index, out bool value) => flags.TryGetValue(index, out value);
+    /// <summary>
+    /// A scenario flag. The engine starts with its flags cleared and only the
+    /// story sets them, so a flag this replay never wrote reads FALSE rather than
+    /// unknown: taking the sequential branch instead asserted the exceptional
+    /// case (rain, alternate costume) and dressed actors for it.
+    /// </summary>
+    public bool TryReadFlag(int index, out bool value)
+    {
+        value = flags.TryGetValue(index, out var known) && known;
+        return true;
+    }
 
     public void WriteFlag(int index, bool value) => flags[index] = value;
 

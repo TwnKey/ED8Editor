@@ -80,6 +80,30 @@ public sealed class ScriptEditorForm : Form
         Text = "Active path conditions (double-click = other branch)",
     };
     private readonly ToolStrip editorTools = new() { GripStyle = ToolStripGripStyle.Hidden };
+    private readonly ToolStripButton playFunctionButton = new("▶ Play scene")
+    {
+        ToolTipText = "Run the whole scene on a loop, so waits, movements and effects play in order",
+    };
+    private readonly ToolStripButton stopPlaybackButton = new("■ Stop")
+    {
+        ToolTipText = "Stop the playback and go back to the selected instruction",
+    };
+    private readonly ToolStripButton skipWaitButton = new("⏭ Next command")
+    {
+        ToolTipText = "Jump to the next command instead of sitting through the wait before it",
+    };
+    private readonly ToolStripComboBox playbackSpeed = new()
+    {
+        DropDownStyle = ComboBoxStyle.DropDownList,
+        Width = 60,
+        ToolTipText = "How fast the scene runs; the script's own timing is unchanged",
+    };
+    private readonly ToolStripLabel playbackPosition = new(string.Empty)
+    {
+        AutoSize = false,
+        Width = 190,
+        TextAlign = ContentAlignment.MiddleLeft,
+    };
     private readonly ToolStripComboBox instructionTypes = new()
     {
         AutoSize = false,
@@ -162,6 +186,14 @@ public sealed class ScriptEditorForm : Form
     public event Action<int>? EntityActivated;
 
     /// <summary>Raised with the target path just before a script is written.</summary>
+    /// <summary>
+    /// Asks the host to open another script. Opening a .dat is not an editor-only
+    /// affair: the viewport's actor, the entity the script calls -2, its
+    /// animation library and the replay all belong to the file, so the host
+    /// switches the whole session instead of just swapping the text.
+    /// </summary>
+    public event Action<string>? OpenRequested;
+
     public event Action<string>? FileSaving;
 
     /// <summary>Raised with the target path once a script has been written.</summary>
@@ -185,6 +217,9 @@ public sealed class ScriptEditorForm : Form
                 PopulateScenes(functionIndex);
             }
             SelectInstruction(function, instruction);
+            // Playback drives the view here, and only here: the reader keeps
+            // control of the canvas the rest of the time.
+            blocks.FollowInstruction(instruction.Index);
         }
         finally
         {
@@ -192,6 +227,23 @@ public sealed class ScriptEditorForm : Form
             suppressFunctionSelected = false;
         }
     }
+
+    /// <summary>Where the playback stands, shown next to its controls.</summary>
+    public void ShowPlaybackPosition(string text)
+    {
+        playbackPosition.Text = text;
+        playFunctionButton.Enabled = text.Length == 0;
+    }
+
+    /// <summary>How fast the host should run the scene, as a multiplier.</summary>
+    public float PlaybackSpeed => playbackSpeed.SelectedItem is string label
+        && float.TryParse(
+            label.TrimEnd('x'),
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var value)
+            ? value
+            : 1f;
 
     public void SetRuntimeEntities(IReadOnlyList<ScriptEntityChoice> entities)
     {
@@ -273,6 +325,14 @@ public sealed class ScriptEditorForm : Form
         editorTools.Items.Add(moveDownButton);
         editorTools.Items.Add(deleteInstructionButton);
         editorTools.Items.Add(new ToolStripSeparator());
+        editorTools.Items.Add(playFunctionButton);
+        editorTools.Items.Add(stopPlaybackButton);
+        playbackSpeed.Items.AddRange(new object[] { "0.5x", "1x", "2x", "4x", "8x" });
+        playbackSpeed.SelectedItem = "1x";
+        editorTools.Items.Add(playbackSpeed);
+        editorTools.Items.Add(skipWaitButton);
+        editorTools.Items.Add(playbackPosition);
+        editorTools.Items.Add(new ToolStripSeparator());
         editorTools.Items.Add(new ToolStripLabel("Find:"));
         editorTools.Items.Add(blockSearch);
         editorTools.Items.Add(findNextButton);
@@ -299,6 +359,12 @@ public sealed class ScriptEditorForm : Form
             FindNextBlock();
             eventArgs.SuppressKeyPress = true;
         };
+        playFunctionButton.Click += (_, _) =>
+        {
+            if (GetSelectedFunction() is { } function) PlayFunctionRequested?.Invoke(function);
+        };
+        stopPlaybackButton.Click += (_, _) => StopPlaybackRequested?.Invoke();
+        skipWaitButton.Click += (_, _) => SkipToNextCommandRequested?.Invoke();
         findNextButton.Click += (_, _) => FindNextBlock();
         navigatorButton.Click += (_, _) => SetNavigatorVisible(navigationSplit.Panel1Collapsed);
         SetInstructionToolsEnabled(false);
@@ -392,13 +458,38 @@ public sealed class ScriptEditorForm : Form
         };
     }
 
+    /// <summary>Asks the host to run the whole scene, on a loop.</summary>
+    public event Action<DecompiledFunction>? PlayFunctionRequested;
+
+    /// <summary>Asks the host to stop whatever it is playing.</summary>
+    public event Action? StopPlaybackRequested;
+
+    /// <summary>
+    /// Asks the host to skip the wait it is sitting in. A scene is mostly
+    /// authored pauses that the game fills with dialogue the editor does not
+    /// display, so a reader needs to step from command to command.
+    /// </summary>
+    public event Action? SkipToNextCommandRequested;
+
+    /// <summary>The block the reader has selected, if any.</summary>
+    public int? SelectedInstruction => selectedInstructionIndex;
+
+    /// <summary>The scene the reader is looking at, if any.</summary>
+    private DecompiledFunction? GetSelectedFunction()
+        => scenesList.SelectedIndex >= 0 && scenesList.SelectedIndex < codeFunctions.Count
+            ? codeFunctions[scenesList.SelectedIndex]
+            : null;
+
     private void OpenDialog()
     {
         using var dialog = new OpenFileDialog
         {
             Filter = "CS1 scripts (*.dat)|*.dat|All files|*.*",
         };
-        if (dialog.ShowDialog(this) == DialogResult.OK) LoadDat(dialog.FileName);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        // With no host listening (the editor opened on its own), load it here.
+        if (OpenRequested is { } open) open(dialog.FileName);
+        else LoadDat(dialog.FileName);
     }
 
     public void LoadDat(string datPath)
@@ -412,6 +503,7 @@ public sealed class ScriptEditorForm : Form
         if (!ConfirmCloseDocument()) return;
 
         DialogEncoding = ScriptDialogText.ResolveEncoding(datPath);
+        voiceTable = null;
         ScriptEditorDocument loadedDocument;
         DecompiledScript loadedScript;
         try
@@ -619,6 +711,9 @@ public sealed class ScriptEditorForm : Form
     {
         if (scenesList.SelectedIndex < 0 || scenesList.SelectedIndex >= codeFunctions.Count) return;
         var function = codeFunctions[scenesList.SelectedIndex];
+        // Showing another scene starts reading it from its entry; refreshing the
+        // one already open keeps the reader where they were.
+        var isNewScene = selectedFunctionIndex != function.Index;
         selectedFunctionIndex = function.Index;
         selectedInstructionIndex = null;
         if (!suppressFunctionSelected)
@@ -652,6 +747,10 @@ public sealed class ScriptEditorForm : Form
                     GetInstructionColor(instruction.Name)));
             }
             blocks.SetGraph(newBlocks, function);
+            // Framing follows the reader, never the playback: centring on the
+            // entry each time a preview stepped into another scene made the view
+            // jump back on its own.
+            if (isNewScene && !suppressFunctionSelected) blocks.CenterOnEntry();
         }
         finally
         {
@@ -1089,15 +1188,17 @@ public sealed class ScriptEditorForm : Form
     }
 
     /// <summary>
-    /// Dialogue editor: the line is shown as text, its control codes as {XX}
-    /// escapes (0x11 opens the header carrying the message id, 0x02 closes a
-    /// page, 0x00 terminates) and its 0x01 line breaks as real new lines. Leave
-    /// the escapes untouched and the bytes come back exactly as they were.
+    /// Dialogue editor. One operand can hold several spoken lines, so each gets
+    /// its own voice clip and its own text: the voice id is what t_voice.tbl
+    /// resolves to an audio file, and the text keeps its control codes as {XX}
+    /// escapes (0x01 breaks a line, 0x02 closes a page, 0x00 terminates). Leave
+    /// the escapes alone and the operand comes back byte for byte.
     /// </summary>
     private Control BuildDialogEditor(
         DecompiledFunction function, DecompiledInstruction instruction, InstructionArgument argument)
     {
         var encoding = ScriptDialogText.ResolveEncoding(document?.SourcePath);
+        var lines = ScriptDialogText.Split(argument.Raw, encoding);
         var panel = new FlowLayoutPanel
         {
             AutoSize = true,
@@ -1111,29 +1212,86 @@ public sealed class ScriptEditorForm : Form
         {
             AutoSize = true,
             ForeColor = Color.Gainsboro,
-            Text = $"Dialogue ({argument.Raw.Length} bytes) — {{XX}} = control byte, kept as is",
+            Text = $"Dialogue ({argument.Raw.Length} bytes, {lines.Count} line(s))"
+                + " — {XX} = control byte, kept as is",
         });
-        var field = new TextBox
+
+        var voiceFields = new List<TextBox>();
+        var textFields = new List<TextBox>();
+        for (var index = 0; index < lines.Count; index++)
         {
-            Multiline = true,
-            ScrollBars = ScrollBars.Vertical,
-            AcceptsReturn = true,
-            Width = 460,
-            Height = 150,
-            Font = DialogFont,
-            // A multiline text box only breaks a line on CRLF; the decoder speaks
-            // in single new lines.
-            Text = ScriptDialogText.Decode(argument.Raw, encoding)
-                .Replace("\n", Environment.NewLine, StringComparison.Ordinal),
-        };
+            var line = lines[index];
+            var header = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
+            header.Controls.Add(new Label
+            {
+                AutoSize = true,
+                ForeColor = Color.Gainsboro,
+                Padding = new Padding(0, 6, 4, 0),
+                Text = $"Line {index + 1} — voice",
+            });
+            var voice = new TextBox
+            {
+                Width = 90,
+                Text = line.VoiceId?.ToString(CultureInfo.InvariantCulture) ?? string.Empty,
+            };
+            var clip = new Label
+            {
+                AutoSize = true,
+                ForeColor = Color.Gainsboro,
+                Padding = new Padding(6, 6, 0, 0),
+                Text = DescribeVoice(line.VoiceId),
+            };
+            voice.TextChanged += (_, _) => clip.Text = DescribeVoice(
+                int.TryParse(voice.Text, out var parsed) ? parsed : null);
+            var play = new Button { AutoSize = true, Text = "Play", Margin = new Padding(6, 0, 0, 0) };
+            play.Click += (_, _) => PlayVoice(
+                int.TryParse(voice.Text, out var parsed) ? parsed : null);
+            header.Controls.Add(voice);
+            header.Controls.Add(play);
+            header.Controls.Add(clip);
+            var field = new TextBox
+            {
+                Multiline = true,
+                ScrollBars = ScrollBars.Vertical,
+                AcceptsReturn = true,
+                Width = 460,
+                Height = Math.Clamp(lines.Count, 1, 3) > 1 ? 92 : 140,
+                Font = DialogFont,
+                // A multiline text box only breaks a line on CRLF; the decoder
+                // speaks in single new lines.
+                Text = line.Text.Replace("\n", Environment.NewLine, StringComparison.Ordinal),
+            };
+            voiceFields.Add(voice);
+            textFields.Add(field);
+            panel.Controls.Add(header);
+            panel.Controls.Add(field);
+        }
+
         var status = new Label { AutoSize = true, ForeColor = Color.Gainsboro, Text = string.Empty };
         var apply = new Button { AutoSize = true, Text = "Apply dialogue" };
         apply.Click += (_, _) =>
         {
+            var edited = new List<ScriptDialogLine>(lines.Count);
+            for (var index = 0; index < lines.Count; index++)
+            {
+                int? voiceId = null;
+                var typed = voiceFields[index].Text.Trim();
+                if (typed.Length != 0)
+                {
+                    if (!int.TryParse(typed, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+                        || parsed < 0)
+                    {
+                        status.Text = $"Line {index + 1}: '{typed}' is not a voice id.";
+                        return;
+                    }
+                    voiceId = parsed;
+                }
+                edited.Add(lines[index] with { VoiceId = voiceId, Text = textFields[index].Text });
+            }
             byte[] encoded;
             try
             {
-                encoded = ScriptDialogText.Encode(field.Text, encoding);
+                encoded = ScriptDialogText.Join(edited, encoding);
             }
             catch (EncoderFallbackException exception)
             {
@@ -1144,11 +1302,78 @@ public sealed class ScriptEditorForm : Form
                 () => document!.SetBytes(function.Index, instruction.Index, argument.Index, encoded),
                 instruction.Index);
         };
-        panel.Controls.Add(field);
         panel.Controls.Add(apply);
         panel.Controls.Add(status);
         return panel;
     }
+
+    private string DescribeVoice(int? voiceId)
+    {
+        if (voiceId is not { } id) return "no voice";
+        var file = VoiceTable.FindFile(id);
+        return file is null ? $"id {id} (not in t_voice.tbl)" : $"{file}";
+    }
+
+    private void PlayVoice(int? voiceId)
+    {
+        if (voiceId is not { } id || GameDataPath is not { } gameDataPath) return;
+        var path = VoiceTable.FindAudioPath(gameDataPath, id);
+        if (path is null)
+        {
+            MessageBox.Show(
+                this,
+                VoiceTable.FindFile(id) is { } missing
+                    ? $"'{missing}' was not found under data/voice."
+                    : $"Voice id {id} is not declared in t_voice.tbl.",
+                "No audio", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        try
+        {
+            if (path.EndsWith(".wav", StringComparison.OrdinalIgnoreCase))
+            {
+                // The shipped clips are plain WAV: play them in place.
+                var player = new System.Media.SoundPlayer(path);
+                player.Play();
+                return;
+            }
+            // Anything else is compressed audio the editor does not decode; hand
+            // it to whatever the system plays it with.
+            using var process = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true },
+            };
+            process.Start();
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception
+            or InvalidOperationException or IOException or FormatException)
+        {
+            MessageBox.Show(
+                this, exception.Message, "Cannot play", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    /// <summary>Game data directory the open script belongs to.</summary>
+    private string? GameDataPath
+    {
+        get
+        {
+            if (document is null) return null;
+            var directory = new DirectoryInfo(Path.GetDirectoryName(document.SourcePath)!);
+            while (directory is not null)
+            {
+                if (directory.Name.Equals("data", StringComparison.OrdinalIgnoreCase))
+                    return directory.FullName;
+                directory = directory.Parent;
+            }
+            return null;
+        }
+    }
+
+    private ScriptVoiceTable VoiceTable =>
+        voiceTable ??= ScriptVoiceTable.Load(GameDataPath, document?.SourcePath);
+
+    private ScriptVoiceTable? voiceTable;
 
     private Control BuildArgumentEditor(
         DecompiledFunction function, DecompiledInstruction instruction, InstructionArgument argument)

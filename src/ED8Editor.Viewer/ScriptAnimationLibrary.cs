@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text;
 using ED8Editor.Decompiler;
 using ED8Editor.Tables;
@@ -117,6 +117,37 @@ internal sealed class ScriptAnimationLibrary
             index = end + 1;
         }
         return result.ToString();
+    }
+
+    /// <summary>
+    /// Model of the character whose ANI script is <paramref name="scriptName"/>:
+    /// what a standalone animation or craft script is written for.
+    /// </summary>
+    public string? FindModelByAnimationScript(string scriptName)
+    {
+        if (string.IsNullOrWhiteSpace(scriptName)) return null;
+        // Look through the model-to-script map rather than the per-character one:
+        // it holds every model that declares this ANI script, NPCs included,
+        // where the character map keeps a single entry per character id.
+        var match = scriptsByModelAsset.FirstOrDefault(pair =>
+            Path.GetFileNameWithoutExtension(pair.Value)
+                .Equals(scriptName, StringComparison.OrdinalIgnoreCase));
+        return match.Key;
+    }
+
+    /// <summary>Character id a model belongs to, for the tables keyed by id.</summary>
+    public int? FindCharacterByModel(string? modelAssetId)
+    {
+        if (string.IsNullOrWhiteSpace(modelAssetId)) return null;
+        foreach (var character in characters.Values)
+        {
+            if (character.ModelAssetId.Equals(modelAssetId, StringComparison.OrdinalIgnoreCase)
+                || character.FieldAnimationAssetId.Equals(modelAssetId, StringComparison.OrdinalIgnoreCase))
+            {
+                return character.CharacterId;
+            }
+        }
+        return null;
     }
 
     public string ResolveDisplayName(string? modelAssetId, string fallback)

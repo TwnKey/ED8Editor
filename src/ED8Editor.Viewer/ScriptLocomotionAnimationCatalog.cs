@@ -1,4 +1,4 @@
-namespace ED8Editor.Viewer;
+﻿namespace ED8Editor.Viewer;
 
 /// <summary>
 /// Maps the movement-controller animation state used by entity movement opcodes
@@ -8,6 +8,27 @@ namespace ED8Editor.Viewer;
 /// </summary>
 internal static class ScriptLocomotionAnimationCatalog
 {
+    /// <summary>
+    /// The movement handler does not pick a clip: it calls the actor's own ANI
+    /// function (AniWalk / AniRun / AniDush), which is what selects the clip for
+    /// the actor's current mode — battle stance, umbrella, horse and so on.
+    /// </summary>
+    public static bool TryResolveAnimationFunction(int animationState, out string functionName)
+    {
+        functionName = animationState switch
+        {
+            1 => "AniWalk",
+            2 => "AniRun",
+            3 => "AniDush",
+            _ => string.Empty,
+        };
+        return functionName.Length != 0;
+    }
+
+    /// <summary>
+    /// Clip used when the actor has no ANI script to answer with: the plain
+    /// field locomotion every character declares.
+    /// </summary>
     public static bool TryResolveBaseClip(int animationState, out string clipName)
     {
         clipName = animationState switch

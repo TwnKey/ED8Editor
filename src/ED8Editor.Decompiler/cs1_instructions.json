@@ -153,16 +153,18 @@
       "verified": false
     },
     {
-      "name": "OP10",
+      "name": "Set_Register",
       "op": 10,
       "opname": "SET_REG",
       "selectors": [],
       "read": [
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "register_index"
         },
         {
-          "t": "expr"
+          "t": "expr",
+          "name": "value"
         }
       ],
       "verified": true
@@ -176,25 +178,27 @@
       "verified": false
     },
     {
-      "name": "OP12",
+      "name": "Set_Flag",
       "op": 12,
       "opname": "SET_FLAG",
       "selectors": [],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "flag_index"
         }
       ],
       "verified": true
     },
     {
-      "name": "OP13",
+      "name": "Reset_Flag",
       "op": 13,
       "opname": "RESET_FLAG",
       "selectors": [],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "flag_index"
         }
       ],
       "verified": true
@@ -240,7 +244,7 @@
       "read": [
         {
           "t": "s16",
-          "name": "delay_ticks"
+          "name": "delay_ms"
         }
       ],
       "verified": true
@@ -261,16 +265,18 @@
       "verified": false
     },
     {
-      "name": "OP18",
+      "name": "Set_Register2",
       "op": 18,
       "opname": "SET_REG2",
       "selectors": [],
       "read": [
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "register_index"
         },
         {
-          "t": "expr"
+          "t": "expr",
+          "name": "value"
         }
       ],
       "verified": true
@@ -958,7 +964,7 @@
       "verified": true
     },
     {
-      "name": "OP32_0",
+      "name": "Entity_SetNodeVisible",
       "op": 32,
       "opname": "OP32",
       "selectors": [
@@ -973,16 +979,20 @@
           "role": "selector"
         },
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
           "t": "string"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "node_name"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "visible"
         }
       ],
       "verified": true
@@ -1073,7 +1083,7 @@
       "verified": true
     },
     {
-      "name": "OP34",
+      "name": "Entity_PlayAnimation",
       "op": 34,
       "opname": "OP34",
       "selectors": [],
@@ -1171,49 +1181,63 @@
       "verified": true
     },
     {
-      "name": "OP37",
+      "name": "Entity_SetAttachment",
       "op": 37,
       "opname": "OP37",
       "selectors": [],
       "read": [
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "mode"
         },
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "model_asset"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "node_name"
         },
         {
-          "t": "s32"
+          "t": "s32",
+          "name": "offset_x"
         },
         {
-          "t": "s32"
+          "t": "s32",
+          "name": "offset_y"
         },
         {
-          "t": "s32"
+          "t": "s32",
+          "name": "offset_z"
         },
         {
-          "t": "s32"
+          "t": "s32",
+          "name": "rotation_x_deg"
         },
         {
-          "t": "s32"
+          "t": "s32",
+          "name": "rotation_y_deg"
         },
         {
-          "t": "s32"
+          "t": "s32",
+          "name": "rotation_z_deg"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "scale_x"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "scale_y"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "scale_z"
         }
       ],
       "verified": true
@@ -1236,7 +1260,7 @@
       "verified": true
     },
     {
-      "name": "OP39_10",
+      "name": "Effect_LoadSlot",
       "op": 39,
       "opname": "OP39",
       "selectors": [
@@ -1251,19 +1275,25 @@
           "role": "selector"
         },
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "slot"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "effect_file",
+          "sem": "file",
+          "sem_arg": "eff"
         }
       ],
       "verified": true
     },
     {
-      "name": "OP39_11",
+      "name": "Effect_UnloadSlot",
       "op": 39,
       "opname": "OP39",
       "selectors": [
@@ -1278,16 +1308,19 @@
           "role": "selector"
         },
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "slot"
         }
       ],
       "verified": true
     },
     {
-      "name": "OP39_12",
+      "name": "Effect_Play",
       "op": 39,
       "opname": "OP39",
       "selectors": [
@@ -1302,25 +1335,31 @@
           "role": "selector"
         },
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
+        },
+        {
+          "t": "s16",
+          "name": "slot"
+        },
+        {
+          "t": "s16",
+          "name": "anchor_entity_id",
+          "sem": "entity"
         },
         {
           "t": "s16"
         },
         {
-          "t": "s16"
+          "t": "string",
+          "name": "anchor_node"
         },
         {
-          "t": "s16"
-        },
-        {
-          "t": "string"
-        },
-        {
-          "t": "f32"
-        },
-        {
-          "t": "f32"
+          "t": "f32",
+          "name": "position",
+          "sem": "position",
+          "sem_span": 3
         },
         {
           "t": "f32"
@@ -1329,28 +1368,38 @@
           "t": "f32"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "rotation_x_deg"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "rotation_y_deg"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "rotation_z_deg"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "scale_x"
         },
         {
-          "t": "f32"
+          "t": "f32",
+          "name": "scale_y"
         },
         {
-          "t": "u8"
+          "t": "f32",
+          "name": "scale_z"
+        },
+        {
+          "t": "u8",
+          "name": "instance"
         }
       ],
       "verified": true
     },
     {
-      "name": "OP39_17",
+      "name": "Effect_TestCompletion",
       "op": 39,
       "opname": "OP39",
       "selectors": [
@@ -1365,16 +1414,19 @@
           "role": "selector"
         },
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "instance"
         }
       ],
       "verified": true
     },
     {
-      "name": "OP39_16",
+      "name": "Effect_Reset",
       "op": 39,
       "opname": "OP39",
       "selectors": [
@@ -1389,16 +1441,19 @@
           "role": "selector"
         },
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "instance"
         }
       ],
       "verified": true
     },
     {
-      "name": "OP39_15",
+      "name": "Effect_WaitCompletion",
       "op": 39,
       "opname": "OP39",
       "selectors": [
@@ -1413,16 +1468,19 @@
           "role": "selector"
         },
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "instance"
         }
       ],
       "verified": true
     },
     {
-      "name": "OP39_18",
+      "name": "Effect_SetParameter",
       "op": 39,
       "opname": "OP39",
       "selectors": [
@@ -1437,13 +1495,17 @@
           "role": "selector"
         },
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "instance"
         },
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "value_per_mille"
         }
       ],
       "verified": true
@@ -1545,7 +1607,7 @@
       "verified": true
     },
     {
-      "name": "OP39_13",
+      "name": "Effect_Stop",
       "op": 39,
       "opname": "OP39",
       "selectors": [
@@ -1560,16 +1622,19 @@
           "role": "selector"
         },
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "instance"
         }
       ],
       "verified": true
     },
     {
-      "name": "OP39_14",
+      "name": "Effect_Kill",
       "op": 39,
       "opname": "OP39",
       "selectors": [
@@ -1584,10 +1649,13 @@
           "role": "selector"
         },
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "instance"
         }
       ],
       "verified": true
@@ -3208,43 +3276,53 @@
       "verified": true
     },
     {
-      "name": "OP42",
+      "name": "Entity_GetStatus",
       "op": 42,
       "opname": "OP42",
       "selectors": [],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         }
       ],
       "verified": false
     },
     {
-      "name": "OP43",
+      "name": "Entity_SetStatus",
       "op": 43,
       "opname": "OP43",
       "selectors": [],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "s32"
+          "t": "s32",
+          "name": "status_mask",
+          "sem": "bitmask"
         }
       ],
       "verified": true
     },
     {
-      "name": "OP44",
+      "name": "Entity_ClearStatus",
       "op": 44,
       "opname": "OP44",
       "selectors": [],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         },
         {
-          "t": "s32"
+          "t": "s32",
+          "name": "status_mask",
+          "sem": "bitmask"
         }
       ],
       "verified": true
@@ -4842,7 +4920,7 @@
       "verified": true
     },
     {
-      "name": "OP50_2",
+      "name": "Entity_SetFacialFrames",
       "op": 50,
       "opname": "OP50",
       "selectors": [
@@ -4881,7 +4959,7 @@
       "verified": true
     },
     {
-      "name": "OP50_3",
+      "name": "Entity_SetFacialPatterns",
       "op": 50,
       "opname": "OP50",
       "selectors": [
@@ -4920,7 +4998,7 @@
       "verified": true
     },
     {
-      "name": "OP50_4",
+      "name": "Entity_SetFacialCommand",
       "op": 50,
       "opname": "OP50",
       "selectors": [
@@ -4941,7 +5019,7 @@
         },
         {
           "t": "string",
-          "name": "facial_expression"
+          "name": "command"
         }
       ],
       "verified": true

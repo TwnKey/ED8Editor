@@ -1,6 +1,14 @@
+﻿using System.Runtime.InteropServices;
 using System.Text;
 
 namespace ED8Editor.Viewer;
+
+/// <summary>
+/// One spoken line of a dialogue operand: the voice clip it plays (the id
+/// t_voice.tbl resolves to an audio file), its text, and the bytes that
+/// separated it from the previous line, kept so the operand round-trips.
+/// </summary>
+internal sealed record ScriptDialogLine(int? VoiceId, string Text, byte[] Separator);
 
 /// <summary>
 /// Converts a dialogue operand between its stored bytes and an editable text.
@@ -68,6 +76,16 @@ internal static class ScriptDialogText
 
     public static byte[] Encode(string text, Encoding encoding)
     {
+        var bytes = EncodeBody(text, encoding);
+        // The stream is length-delimited by its terminator: losing it while
+        // editing would make the next operand unreadable.
+        return bytes.Length != 0 && bytes[^1] == 0x00
+            ? bytes
+            : bytes.Append((byte)0x00).ToArray();
+    }
+
+    private static byte[] EncodeBody(string text, Encoding encoding)
+    {
         ArgumentNullException.ThrowIfNull(text);
         ArgumentNullException.ThrowIfNull(encoding);
         var bytes = new List<byte>(text.Length);
@@ -97,8 +115,85 @@ internal static class ScriptDialogText
             run.Append(value);
         }
         FlushText(run, bytes, encoding);
-        // The stream is length-delimited by its terminator: losing it while
-        // editing would make the next operand unreadable.
+        return bytes.ToArray();
+    }
+
+    /// <summary>
+    /// Splits the operand into the lines it holds. One dialogue operand can carry
+    /// several spoken lines, each opened by a 0x11 header naming its voice clip
+    /// in t_voice.tbl and closed by a page break, so each line gets its own voice
+    /// and its own text instead of being edited as one blob.
+    /// </summary>
+    public static IReadOnlyList<ScriptDialogLine> Split(ReadOnlySpan<byte> raw, Encoding encoding)
+    {
+        ArgumentNullException.ThrowIfNull(encoding);
+        var lines = new List<ScriptDialogLine>();
+        var body = new List<byte>();
+        int? voice = null;
+        var pending = new List<byte>();          // bytes between two lines
+        var separator = new List<byte>();
+        for (var index = 0; index < raw.Length; index++)
+        {
+            var value = raw[index];
+            if (value == Header && index + HeaderPayload < raw.Length)
+            {
+                if (voice is not null || body.Count != 0)
+                {
+                    lines.Add(new ScriptDialogLine(
+                        voice, Decode(CollectionsMarshal.AsSpan(body), encoding), separator.ToArray()));
+                    body.Clear();
+                    separator.Clear();
+                }
+                separator.AddRange(pending);
+                pending.Clear();
+                voice = raw[index + 1] | (raw[index + 2] << 8)
+                    | (raw[index + 3] << 16) | (raw[index + 4] << 24);
+                index += HeaderPayload;
+                continue;
+            }
+            // A terminator or a page break closes the line; what follows it belongs
+            // to the next one.
+            if (value is 0x00 or 0x03 && body.Count != 0)
+            {
+                pending.Add(value);
+                continue;
+            }
+            if (pending.Count != 0)
+            {
+                body.AddRange(pending);
+                pending.Clear();
+            }
+            body.Add(value);
+        }
+        if (voice is not null || body.Count != 0)
+        {
+            lines.Add(new ScriptDialogLine(
+                voice, Decode(CollectionsMarshal.AsSpan(body), encoding), separator.ToArray()));
+        }
+        return lines.Count == 0
+            ? new[] { new ScriptDialogLine(null, Decode(raw, encoding), Array.Empty<byte>()) }
+            : lines;
+    }
+
+    /// <summary>Rebuilds the operand from its lines.</summary>
+    public static byte[] Join(IReadOnlyList<ScriptDialogLine> lines, Encoding encoding)
+    {
+        ArgumentNullException.ThrowIfNull(lines);
+        ArgumentNullException.ThrowIfNull(encoding);
+        var bytes = new List<byte>();
+        foreach (var line in lines)
+        {
+            bytes.AddRange(line.Separator);
+            if (line.VoiceId is { } voice)
+            {
+                bytes.Add(Header);
+                bytes.Add((byte)voice);
+                bytes.Add((byte)(voice >> 8));
+                bytes.Add((byte)(voice >> 16));
+                bytes.Add((byte)(voice >> 24));
+            }
+            bytes.AddRange(EncodeBody(line.Text, encoding));
+        }
         if (bytes.Count == 0 || bytes[^1] != 0x00) bytes.Add(0x00);
         return bytes.ToArray();
     }
@@ -164,6 +259,24 @@ internal static class ScriptDialogText
             throw new InvalidOperationException("A cp932 dialogue lost its text.");
         if (!Encode(japaneseText, japanese).SequenceEqual(source))
             throw new InvalidOperationException("A cp932 dialogue did not round-trip byte for byte.");
+
+        // Two spoken lines in one operand: each keeps its own voice and text.
+        var pair = Convert.FromHexString(
+            "11FFF100002348233054592D596F75277265204D697374793F0203"
+            + "1100F2000023453223234D3046726F6D204162656E642054696D653F2102 00".Replace(" ", string.Empty));
+        var lines = Split(pair, utf8);
+        if (lines.Count != 2)
+            throw new InvalidOperationException($"A two-line dialogue split into {lines.Count} line(s).");
+        if (lines[0].VoiceId != 0xF1FF || lines[1].VoiceId != 0xF200)
+            throw new InvalidOperationException(
+                $"The voice ids were misread ({lines[0].VoiceId}, {lines[1].VoiceId}).");
+        if (!lines[0].Text.Contains("You're Misty?", StringComparison.Ordinal)
+            || !lines[1].Text.Contains("From Abend Time?!", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("A split line lost its text.");
+        }
+        if (!Join(lines, utf8).SequenceEqual(pair))
+            throw new InvalidOperationException("Splitting then joining a dialogue changed its bytes.");
     }
 
     private static void FlushRun(List<byte> run, StringBuilder text, Encoding encoding)
