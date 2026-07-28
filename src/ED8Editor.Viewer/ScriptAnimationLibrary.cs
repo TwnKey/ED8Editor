@@ -84,6 +84,9 @@ internal sealed class ScriptAnimationLibrary
         out ScriptCharacterDefinition definition)
         => characters.TryGetValue(characterId, out definition!);
 
+    public IReadOnlyList<ScriptCharacterDefinition> Characters
+        => characters.Values.OrderBy(value => value.CharacterId).ToArray();
+
     public string ResolveFacialAsset(int characterId, string? modelAssetId)
         => characters.TryGetValue(characterId, out var character)
             && !string.IsNullOrWhiteSpace(character.FacialAssetId)

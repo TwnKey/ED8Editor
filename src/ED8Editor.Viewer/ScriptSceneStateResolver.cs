@@ -438,6 +438,7 @@ internal static class ScriptSceneStateResolver
     internal static void VerifyReplaySmoke(DecompiledScript script)
     {
         ArgumentNullException.ThrowIfNull(script);
+        VerifySpawnLayoutSmoke();
         VerifyMovementControlSmoke();
         var spawnOwner = script.Functions
             .Where(value => value.IsCode)
@@ -486,6 +487,75 @@ internal static class ScriptSceneStateResolver
         }
     }
 
+    private static void VerifySpawnLayoutSmoke()
+    {
+        var spawn = new DecompiledInstruction(
+            0,
+            0,
+            "Entity_Spawn",
+            19,
+            new InstructionArgument[]
+            {
+                ScalarArgument(0, "s16", 123, sem: "entity"),
+                StringArgument(1, "C_TEST"),
+                StringArgument(2, "Test actor"),
+                StringArgument(3, "WAIT"),
+                ScalarArgument(4, "u8", 2),
+                ScalarArgument(5, "s32", 0x1234),
+                ScalarArgument(6, "f32", floatValue: 1.25),
+                ScalarArgument(7, "f32", floatValue: 2.5),
+                ScalarArgument(8, "f32", floatValue: 3.75),
+                ScalarArgument(9, "f32", floatValue: 45),
+                ScalarArgument(10, "f32", floatValue: 1.5),
+                ScalarArgument(11, "f32", floatValue: 1.6),
+                ScalarArgument(12, "f32", floatValue: 0.3),
+                StringArgument(13, "test_script"),
+                StringArgument(14, "Init"),
+                ScalarArgument(15, "s32", -1),
+                ScalarArgument(16, "u8", 7),
+                ScalarArgument(17, "s32", 8),
+                ScalarArgument(18, "s32", 9),
+                ScalarArgument(19, "s16", 10),
+            },
+            Array.Empty<JumpTarget>());
+        var function = new DecompiledFunction(
+            0,
+            "Init",
+            true,
+            new[]
+            {
+                spawn,
+                new DecompiledInstruction(
+                    1, 0, "OP1", 1,
+                    Array.Empty<InstructionArgument>(),
+                    Array.Empty<JumpTarget>()),
+            });
+        var script = new DecompiledScript("SpawnLayoutSmoke", new[] { function });
+        var state = Resolve(script, function, spawn.Index);
+        var entity = state.Entities[123];
+        if (entity.AssetId != "C_TEST"
+            || entity.DisplayName != "Test actor"
+            || entity.InitialAnimation != "WAIT"
+            || entity.EntityType != 2
+            || entity.Flags != 0x1234
+            || Vector3.Distance(entity.Position, new Vector3(1.25f, 2.5f, 3.75f)) > 0.0001f
+            || Math.Abs(entity.YawDegrees - 45f) > 0.0001f
+            || Math.Abs(entity.Scale - 1.5f) > 0.0001f
+            || Math.Abs(entity.CollisionHeight - 1.6f) > 0.0001f
+            || Math.Abs(entity.CollisionRadius - 0.3f) > 0.0001f
+            || entity.ScriptFile != "test_script"
+            || entity.InitFunction != "Init"
+            || entity.ScriptArgument != -1
+            || entity.UnknownBehavior != 7
+            || entity.UnknownParameter1 != 8
+            || entity.UnknownParameter2 != 9
+            || entity.UnknownParameter3 != 10)
+        {
+            throw new InvalidOperationException(
+                "Entity_Spawn operands were not mapped to the verified OP19 layout.");
+        }
+    }
+
     private static void VerifyMovementControlSmoke()
     {
         const int entityId = 7;
@@ -517,7 +587,9 @@ internal static class ScriptSceneStateResolver
         var stopFunction = CreateMovementSmokeFunction(
             new DecompiledInstruction(
                 3, 0, "OP16", 16,
-                new[] { ScalarArgument(0, "u16", 120) },
+                // OP16 is authored in milliseconds. Two seconds advances the
+                // 60 Hz preview by 120 frames, one third of this six-second move.
+                new[] { ScalarArgument(0, "u16", 2000) },
                 Array.Empty<JumpTarget>()),
             stopInstruction);
         var stopScript = new DecompiledScript("MovementStopSmoke", new[] { stopFunction });
@@ -702,6 +774,17 @@ internal static class ScriptSceneStateResolver
             Array.Empty<byte>(),
             null,
             Sem: sem);
+
+    private static InstructionArgument StringArgument(int index, string value)
+        => new(
+            index,
+            "string",
+            "string",
+            0,
+            0,
+            Encoding.Latin1.GetBytes(value + '\0'),
+            null,
+            Name: value);
 
     private sealed class Execution
     {
@@ -1425,13 +1508,13 @@ internal static class ScriptSceneStateResolver
                 arguments[4].IntValue,
                 arguments[5].IntValue,
                 new Vector3(
-                    (float)arguments[5].FloatValue,
                     (float)arguments[6].FloatValue,
-                    (float)arguments[7].FloatValue),
-                (float)arguments[8].FloatValue,
+                    (float)arguments[7].FloatValue,
+                    (float)arguments[8].FloatValue),
                 (float)arguments[9].FloatValue,
                 (float)arguments[10].FloatValue,
                 (float)arguments[11].FloatValue,
+                (float)arguments[12].FloatValue,
                 ReadArgumentString(arguments[13]),
                 ReadArgumentString(arguments[14]),
                 arguments[15].IntValue,

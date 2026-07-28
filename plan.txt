@@ -654,3 +654,53 @@ implémenté du tout.
       création d'une fonction + sérialisation + suppression = byte-perfect.
   dotnet run --project tests/ED8Editor.Tests
       dont le projet de mod (sauvegarde / restauration / export .zip).
+
+--- CREATE MONSTERS / STUDIOS (session autonome 2026-07-28) ---
+[OK]     Structure CreateMonsters vérifiée sur les fichiers réels : en-tête de
+         0x20 octets, enregistrements de rencontre de 0x94 octets, trailer
+         sentinelle de 0x1c octets. Une rencontre contient ID s32, 8 noms
+         largeur fixe 0x10, 8 poids u8 et 8 octets auxiliaires (ou un nom
+         auxiliaire largeur 12). Diagnostic :
+         ED8Editor.DecompilerProbe --dump-create-monsters <script.dat>.
+[OK]     OP19 de monstre de terrain : opérande 15 = INDEX DE LA FONCTION-table
+         CreateMonsters ; opérande 16 u8 = ID DE LA RENCONTRE dans cette table.
+         L'ancien reader ignorait ce second lien. Vérifié sur m0010 : la table
+         #1 porte les rencontres 0..3 et les OP19 choisissent bien 0/1/3.
+[OK]     Replay OP19 recalé sur le layout vérifié : position en opérandes 6..8,
+         yaw/scale/collision en 9..12. Un smoke dédié contrôle désormais chaque
+         champ du spawn pour empêcher un nouveau décalage silencieux.
+[OK]     Ajout/suppression structurels de rencontres dans le moteur natif, sans
+         reconstruire ni renommer les champs inconnus. Le trailer et les octets
+         auxiliaires restent intacts. Test aller-retour :
+         --create-monsters-edit-smoke m0010.dat ; ajouter puis supprimer rend le
+         fichier original byte-perfect.
+[OK]     Table editor : Add / Duplicate / Delete encounter. Un enregistrement
+         avec asset auxiliaire refuse la duplication tant que sa seconde forme
+         binaire n'a pas de clone structurel exact (aucune perte silencieuse).
+[OK]     Les monstres de terrain sont chargés en permanence sur la carte depuis
+         leurs OP19, avec leur modèle, position et cap ; sélection/focus et
+         suppression de l'instruction source sont pris en charge.
+[OK]     Placement d'un monstre : le dialogue choisit une table, une rencontre,
+         le modèle de représentation et l'ID, puis capture une surface. La
+         nouvelle OP19 est la copie exacte d'une OP19 réelle du script avant de
+         remplacer les champs établis — les opérandes inconnus ne sont jamais
+         inventés. Un script sans OP19 modèle ne propose donc pas de création.
+[OK]     Character Studio / Enemy Studio dans Windows : catalogues issus
+         respectivement de t_name/NameTableData et t_mons/status, preview D3D
+         texturée, pose skinnée, lecture d'un clip nommé explicitement,
+         inspection meshes/materials/textures/squelette et comparaison avec un
+         rig CS1 de référence choisi par l'utilisateur.
+[OK]     Catalogues vérifiés sur l'installation : 130 variantes de personnages
+         et 227 ennemis. Les ennemis utilisent les champs décodés script/model/
+         name de t_mons/status, sans reconnaissance par nom de fichier.
+[MANQUE] Writer .dae.phyre modèle/skinning/materials/shaders. Les commandes
+         d'import/export restent volontairement désactivées : l'éditeur ne
+         produit pas un faux fichier tant que le writer n'est pas vérifié.
+[OK]     Quest editor dédié : relation vérifiée QSTitle.unknown_short =
+         QSText.id, donc liste des 99 quêtes et de leurs 386 étapes de journal ;
+         édition du titre, demandeur et texte, les codes/flags inconnus restant
+         visibles et byte-preserved. t_quest.tbl contient aussi QSRank (15) et
+         QSChapter (8), encore accessibles dans l'éditeur TBL générique.
+[MANQUE] Sémantique des flags QSTitle/QSText, cycle de vie de quête côté script,
+         création/suppression structurelle de quêtes et association aux
+         fonctions de scénario.

@@ -10,6 +10,7 @@
 #include <map>
 #include <memory>
 #include <algorithm>
+#include <iterator>
 #include "cs1_editor.h"   // cs1ed::Doc + cs1::cs1_cstr/cs1_expr/cs1_dialog + CS1_API
 
 
@@ -682,10 +683,86 @@ CS1_API int32_t cs1i_table_set_field_bytes(IDoc* d,int32_t i,int32_t j,const uin
 CS1_API int32_t cs1i_table_field_insert(IDoc* d,int32_t i,int32_t at,const char* type,int32_t size){
   cs1tbl::Table*t=tbl(d,i); if(!t||!type||size<0)return 0; if(at<0)at=0; if(at>(int)t->fields.size())at=(int)t->fields.size();
   cs1tbl::TField f; f.type=type; f.raw.assign(size,0);
-  t->fields.insert(t->fields.begin()+at,f); t->dataEnd+=size; return 1; }
+  // dataEnd is an offset in the immutable source function used to recover its
+  // terminator/padding, not the current sum of editable field sizes.
+  t->fields.insert(t->fields.begin()+at,f); return 1; }
 CS1_API int32_t cs1i_table_field_delete(IDoc* d,int32_t i,int32_t j){
   cs1tbl::Table*t=tbl(d,i); if(!t||j<0||j>=(int)t->fields.size())return 0;
-  t->dataEnd-=(long)t->fields[j].raw.size(); t->fields.erase(t->fields.begin()+j); return 1; }
+  t->fields.erase(t->fields.begin()+j); return 1; }
+
+// CreateMonsters is not a counted schema table: it is a 0x20-byte header,
+// followed by 0x94-byte encounter records and a 0x1c-byte sentinel trailer.
+// Keep this structural operation beside the binary parser rather than making
+// the UI manufacture fill fields and unknown trailer bytes.
+CS1_API int32_t cs1i_create_monsters_encounter_add(
+    IDoc* d,int32_t i,int32_t at,int32_t encounterId){
+  cs1tbl::Table*t=tbl(d,i);
+  if(!t||t->kind!="CreateMonsters"||t->stale||t->fields.size()<9)return 0;
+  int first=9, count=0, cursor=first;
+  while(cursor<(int)t->fields.size()&&t->fields[cursor].type=="s32"){
+    int start=cursor++; bool valid=true;
+    for(int slot=0;slot<8&&valid;slot++){
+      valid=cursor+1<(int)t->fields.size()
+        &&t->fields[cursor].type=="string"
+        &&(t->fields[cursor+1].type=="fill"||t->fields[cursor+1].type=="bytes");
+      cursor+=2;
+    }
+    for(int slot=0;slot<8&&valid;slot++)
+      valid=cursor<(int)t->fields.size()&&t->fields[cursor++].type=="u8";
+    if(!valid||cursor>=(int)t->fields.size())return 0;
+    if(t->fields[cursor].type=="string")cursor+=2; else cursor++;
+    if(cursor>(int)t->fields.size())return 0;
+    count++;
+    if(cursor<=start)return 0;
+  }
+  if(at<0||at>count)at=count;
+  cursor=first;
+  for(int record=0;record<at;record++){
+    cursor++; cursor+=16; cursor+=8;
+    cursor+=t->fields[cursor].type=="string"?2:1;
+  }
+  std::vector<cs1tbl::TField> record;
+  cs1tbl::TField id; id.type="s32"; id.ival=encounterId;
+  id.raw={(uint8_t)(encounterId&0xff),(uint8_t)((encounterId>>8)&0xff),
+          (uint8_t)((encounterId>>16)&0xff),(uint8_t)((encounterId>>24)&0xff)};
+  record.push_back(std::move(id));
+  for(int slot=0;slot<8;slot++){
+    cs1tbl::TField name; name.type="string"; name.text=""; name.raw={0};
+    cs1tbl::TField fill; fill.type="fill"; fill.fill=0x10; fill.raw.assign(0x0f,0);
+    record.push_back(std::move(name)); record.push_back(std::move(fill));
+  }
+  for(int slot=0;slot<8;slot++){
+    cs1tbl::TField weight; weight.type="u8"; weight.raw={0}; weight.ival=0;
+    record.push_back(std::move(weight));
+  }
+  cs1tbl::TField auxiliary; auxiliary.type="bytes"; auxiliary.raw.assign(8,0);
+  record.push_back(std::move(auxiliary));
+  t->fields.insert(t->fields.begin()+cursor,
+                   std::make_move_iterator(record.begin()),
+                   std::make_move_iterator(record.end()));
+  return 1;
+}
+
+CS1_API int32_t cs1i_create_monsters_encounter_delete(IDoc* d,int32_t i,int32_t at){
+  cs1tbl::Table*t=tbl(d,i);
+  if(!t||t->kind!="CreateMonsters"||t->stale||at<0||t->fields.size()<9)return 0;
+  int cursor=9;
+  for(int record=0;record<at;record++){
+    if(cursor>=(int)t->fields.size()||t->fields[cursor].type!="s32")return 0;
+    cursor++; cursor+=16; cursor+=8;
+    if(cursor>=(int)t->fields.size())return 0;
+    cursor+=t->fields[cursor].type=="string"?2:1;
+  }
+  if(cursor>=(int)t->fields.size()||t->fields[cursor].type!="s32")return 0;
+  int start=cursor++; cursor+=16; cursor+=8;
+  if(cursor>=(int)t->fields.size())return 0;
+  cursor+=t->fields[cursor].type=="string"?2:1;
+  if(cursor>(int)t->fields.size())return 0;
+  long removed=0; for(int field=start;field<cursor;field++)removed+=(long)t->fields[field].raw.size();
+  if(removed!=0x94)return 0;
+  t->fields.erase(t->fields.begin()+start,t->fields.begin()+cursor);
+  return 1;
+}
 // Longueur (octets) d'un record de schema donne (pour dimensionner l'insertion d'une ligne).
 CS1_API int32_t cs1i_schema_record_len(const char* name){ if(!name)return -1; auto& s=cs1tbl::effSchema(name); int n=0; for(auto&f:s)n+=f.size; return n; }
 CS1_API int32_t cs1i_schema_field_count(const char* name){ if(!name)return -1; return (int)cs1tbl::effSchema(name).size(); }

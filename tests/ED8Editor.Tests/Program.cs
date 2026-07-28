@@ -1344,8 +1344,8 @@ static void BuildsSemanticTableChoices()
 static void FlattensTblSchemaFields()
 {
     var schemas = Cs1TableSchemaSet.Default;
-    if (schemas.Entries.Count != 46)
-        throw new Exception($"Expected 46 CS1 entry schemas, found {schemas.Entries.Count}.");
+    if (schemas.Entries.Count != 50)
+        throw new Exception($"Expected 50 CS1 entry schemas, found {schemas.Entries.Count}.");
     var fields = schemas.FindAtomicFields("item")
         ?? throw new Exception("The item schema was not loaded.");
     var names = fields.Select(value => value.Name).ToHashSet(StringComparer.Ordinal);

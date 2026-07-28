@@ -1,4 +1,5 @@
 ﻿using System.Globalization;
+using System.Numerics;
 using System.Text;
 using ED8Editor.Decompiler;
 using ED8Editor.Tables;
@@ -117,6 +118,10 @@ public sealed class ScriptEditorForm : Form
     private readonly ToolStripButton moveUpButton = new("Move up");
     private readonly ToolStripButton moveDownButton = new("Move down");
     private readonly ToolStripButton deleteInstructionButton = new("Delete");
+    private readonly ToolStripButton placeFieldMonsterButton = new("Place field monster…")
+    {
+        ToolTipText = "Duplicate a known field-monster instruction and place it on the map",
+    };
     private readonly ToolStripTextBox blockSearch = new()
     {
         AutoSize = false,
@@ -183,6 +188,12 @@ public sealed class ScriptEditorForm : Form
 
     public event Action<DecompiledFunction>? FunctionSelected;
 
+    /// <summary>
+    /// Raised after loading or structurally editing the active document. Hosts
+    /// use the immutable snapshot to refresh map-level script objects.
+    /// </summary>
+    public event Action<DecompiledScript>? ScriptChanged;
+
     public event Action<int>? EntityActivated;
 
     /// <summary>Raised with the target path just before a script is written.</summary>
@@ -200,6 +211,21 @@ public sealed class ScriptEditorForm : Form
     public event Action<string>? FileSaved;
 
     public DecompiledScript? CurrentScript => script;
+
+    public void DeleteFieldMonster(ScriptMonsterSpawn spawn)
+    {
+        ArgumentNullException.ThrowIfNull(spawn);
+        if (document is null || script is null)
+            throw new InvalidOperationException("No script is open.");
+        var function = script.Functions.FirstOrDefault(value => value.Index == spawn.SourceFunctionIndex);
+        var instruction = function?.Instructions.FirstOrDefault(value =>
+            value.Index == spawn.SourceInstructionIndex);
+        if (function is null || instruction is null || instruction.Opcode != 0x13)
+            throw new InvalidOperationException("The field-monster instruction no longer exists.");
+        RunEdit(
+            () => document.RemoveInstruction(spawn.SourceFunctionIndex, spawn.SourceInstructionIndex),
+            Math.Max(0, spawn.SourceInstructionIndex - 1));
+    }
 
     public void ShowPlaybackInstruction(int functionIndex, int instructionIndex)
     {
@@ -324,6 +350,7 @@ public sealed class ScriptEditorForm : Form
         editorTools.Items.Add(moveUpButton);
         editorTools.Items.Add(moveDownButton);
         editorTools.Items.Add(deleteInstructionButton);
+        editorTools.Items.Add(placeFieldMonsterButton);
         editorTools.Items.Add(new ToolStripSeparator());
         editorTools.Items.Add(playFunctionButton);
         editorTools.Items.Add(stopPlaybackButton);
@@ -353,6 +380,7 @@ public sealed class ScriptEditorForm : Form
         {
             if (GetSelectedInstruction() is { } instruction) RemoveInstruction(instruction);
         };
+        placeFieldMonsterButton.Click += (_, _) => BeginFieldMonsterPlacement();
         blockSearch.KeyDown += (_, eventArgs) =>
         {
             if (eventArgs.KeyCode != Keys.Enter) return;
@@ -653,6 +681,7 @@ public sealed class ScriptEditorForm : Form
         statusLabel.Text = $"{script.SceneName}: {codeFunctions.Count} scenes, " +
             $"{script.Functions.Count(function => function.Table is not null)} tables" +
             (document.IsDirty ? " — modified" : string.Empty);
+        ScriptChanged?.Invoke(script);
         if (selectedInstruction is { } index)
         {
             var function = script.Functions.FirstOrDefault(value => value.Index == selectedFunctionIndex);
@@ -2063,8 +2092,239 @@ public sealed class ScriptEditorForm : Form
     {
         instructionTypes.Enabled = enabled;
         addInstructionButton.Enabled = enabled;
+        placeFieldMonsterButton.Enabled = enabled
+            && script is not null
+            && ScriptMonsterSpawnReader.Read(script).Count > 0
+            && semanticContext?.BeginSurfacePositionCapture is not null;
         if (!enabled) SetSelectedInstructionToolsEnabled(-1, 0);
     }
+
+    private void BeginFieldMonsterPlacement()
+    {
+        if (document is null || script is null || selectedFunctionIndex < 0
+            || semanticContext?.BeginSurfacePositionCapture is not { } beginCapture)
+        {
+            return;
+        }
+        var templates = ScriptMonsterSpawnReader.Read(script);
+        if (templates.Count == 0)
+        {
+            MessageBox.Show(
+                this,
+                "This script has no field-monster Entity_Spawn instruction to use as an exact template.",
+                "Place field monster",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+        var tables = script.Functions
+            .Where(value => value.Table is not null
+                && CreateMonstersTableReader.TryRead(value.Table, out _))
+            .Select(value =>
+            {
+                CreateMonstersTableReader.TryRead(value.Table!, out var table);
+                return new FieldMonsterTableChoice(value.Index, value.Name, table!);
+            })
+            .ToArray();
+        if (tables.Length == 0) return;
+
+        using var dialog = new Form
+        {
+            Text = "Place field monster",
+            StartPosition = FormStartPosition.CenterParent,
+            ClientSize = new Size(520, 260),
+            MinimizeBox = false,
+            MaximizeBox = false,
+            ShowInTaskbar = false,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+        };
+        var layout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(10),
+            ColumnCount = 2,
+            RowCount = 6,
+        };
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 145));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        var templateList = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+        templateList.Items.AddRange(templates.Cast<object>().ToArray());
+        templateList.Format += (_, eventArgs) =>
+        {
+            if (eventArgs.ListItem is ScriptMonsterSpawn spawn)
+                eventArgs.Value = $"{spawn.AssetId} — entity {spawn.EntityId}";
+        };
+        var tableList = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+        tableList.Items.AddRange(tables.Cast<object>().ToArray());
+        var encounterList = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+        var assetList = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDown };
+        var entityId = new NumericUpDown
+        {
+            Dock = DockStyle.Left,
+            Minimum = short.MinValue,
+            Maximum = short.MaxValue,
+            Value = Math.Clamp(templates.Max(value => value.EntityId) + 1, short.MinValue, short.MaxValue),
+        };
+        var heading = new NumericUpDown
+        {
+            Dock = DockStyle.Left,
+            Minimum = -3600,
+            Maximum = 3600,
+            DecimalPlaces = 2,
+            Increment = 5,
+        };
+        AddRow(0, "Exact instruction template", templateList);
+        AddRow(1, "CreateMonsters table", tableList);
+        AddRow(2, "Encounter", encounterList);
+        AddRow(3, "Field model asset", assetList);
+        AddRow(4, "Entity ID", entityId);
+        AddRow(5, "Heading (degrees)", heading);
+        var ok = new Button { Text = "Place on map", AutoSize = true, DialogResult = DialogResult.OK };
+        var cancel = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
+        var buttons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 42,
+            FlowDirection = FlowDirection.RightToLeft,
+            Padding = new Padding(6),
+        };
+        buttons.Controls.Add(cancel);
+        buttons.Controls.Add(ok);
+        dialog.Controls.Add(layout);
+        dialog.Controls.Add(buttons);
+        dialog.AcceptButton = ok;
+        dialog.CancelButton = cancel;
+
+        void RefreshEncounterChoices()
+        {
+            encounterList.Items.Clear();
+            if (tableList.SelectedItem is not FieldMonsterTableChoice table) return;
+            encounterList.Items.AddRange(table.Table.Encounters.Cast<object>().ToArray());
+            encounterList.Format += (_, eventArgs) =>
+            {
+                if (eventArgs.ListItem is CreateMonstersEncounter encounter)
+                    eventArgs.Value = $"{encounter.Id} — "
+                        + string.Join(", ", encounter.MonsterAssets.Where(value => value.Length > 0).Distinct());
+            };
+            if (encounterList.Items.Count > 0) encounterList.SelectedIndex = 0;
+        }
+        void RefreshAssetChoices()
+        {
+            assetList.Items.Clear();
+            if (encounterList.SelectedItem is not CreateMonstersEncounter encounter) return;
+            assetList.Items.AddRange(encounter.MonsterAssets
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Cast<object>().ToArray());
+            if (assetList.Items.Count > 0) assetList.SelectedIndex = 0;
+        }
+        tableList.SelectedIndexChanged += (_, _) => RefreshEncounterChoices();
+        encounterList.SelectedIndexChanged += (_, _) => RefreshAssetChoices();
+        templateList.SelectedIndex = 0;
+        tableList.SelectedIndex = 0;
+        if (dialog.ShowDialog(this) != DialogResult.OK
+            || templateList.SelectedItem is not ScriptMonsterSpawn template
+            || tableList.SelectedItem is not FieldMonsterTableChoice tableChoice
+            || encounterList.SelectedItem is not CreateMonstersEncounter encounterChoice
+            || string.IsNullOrWhiteSpace(assetList.Text))
+        {
+            return;
+        }
+
+        var request = new FieldMonsterPlacementRequest(
+            template,
+            tableChoice.FunctionIndex,
+            encounterChoice.Id,
+            assetList.Text.Trim(),
+            decimal.ToInt32(entityId.Value),
+            (float)heading.Value,
+            selectedFunctionIndex);
+        beginCapture(position => InsertFieldMonster(request, position));
+
+        void AddRow(int row, string label, Control control)
+        {
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+            layout.Controls.Add(new Label
+            {
+                Text = label,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.MiddleLeft,
+            }, 0, row);
+            layout.Controls.Add(control, 1, row);
+        }
+    }
+
+    private void InsertFieldMonster(FieldMonsterPlacementRequest request, Vector3 position)
+    {
+        if (document is null || script is null) return;
+        var sourceFunction = script.Functions.FirstOrDefault(value =>
+            value.Index == request.Template.SourceFunctionIndex);
+        var source = sourceFunction?.Instructions.FirstOrDefault(value =>
+            value.Index == request.Template.SourceInstructionIndex);
+        var targetFunction = script.Functions.FirstOrDefault(value =>
+            value.Index == request.TargetFunctionIndex);
+        if (source is null || targetFunction is null || source.Opcode != 0x13)
+            throw new InvalidOperationException("The field-monster template is no longer available.");
+        var sourceArguments = source.Arguments.ToArray();
+        var insertion = LastExecutableIndex(targetFunction);
+        RunEdit(() =>
+        {
+            document.InsertInstruction(request.TargetFunctionIndex, insertion, source.Name);
+            for (var index = 0; index < sourceArguments.Length; index++)
+                CopyArgument(request.TargetFunctionIndex, insertion, sourceArguments[index]);
+            document.SetInteger(request.TargetFunctionIndex, insertion, 0, request.EntityId);
+            document.SetString(request.TargetFunctionIndex, insertion, 3, request.AssetId);
+            document.SetFloat(request.TargetFunctionIndex, insertion, 6, position.X);
+            document.SetFloat(request.TargetFunctionIndex, insertion, 7, position.Y);
+            document.SetFloat(request.TargetFunctionIndex, insertion, 8, position.Z);
+            document.SetFloat(request.TargetFunctionIndex, insertion, 9, request.HeadingDegrees);
+            document.SetInteger(
+                request.TargetFunctionIndex, insertion, 15, request.BattleFunctionIndex);
+            document.SetInteger(
+                request.TargetFunctionIndex, insertion, 16, request.EncounterId);
+        }, insertion);
+    }
+
+    private void CopyArgument(int function, int instruction, InstructionArgument argument)
+    {
+        if (document is null) return;
+        switch (argument.Kind)
+        {
+            case "scalar" when argument.Type == "f32":
+                document.SetFloat(function, instruction, argument.Index, argument.FloatValue);
+                break;
+            case "scalar":
+                document.SetInteger(function, instruction, argument.Index, argument.IntValue);
+                break;
+            case "string":
+                document.SetString(
+                    function,
+                    instruction,
+                    argument.Index,
+                    Encoding.Latin1.GetString(argument.Raw).TrimEnd('\0'));
+                break;
+            default:
+                document.SetBytes(function, instruction, argument.Index, argument.Raw);
+                break;
+        }
+    }
+
+    private sealed record FieldMonsterTableChoice(
+        int FunctionIndex,
+        string Name,
+        CreateMonstersTable Table)
+    {
+        public override string ToString() => $"#{FunctionIndex} {Name} — {Table.MapAsset}";
+    }
+
+    private sealed record FieldMonsterPlacementRequest(
+        ScriptMonsterSpawn Template,
+        int BattleFunctionIndex,
+        int EncounterId,
+        string AssetId,
+        int EntityId,
+        float HeadingDegrees,
+        int TargetFunctionIndex);
 
     private bool ForwardViewportKeyDown(Keys key)
     {

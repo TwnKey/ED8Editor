@@ -7,6 +7,7 @@ public enum SceneElementKind
 {
     Prop,
     ScriptCharacter,
+    FieldMonster,
     EntryVolume,
     GroupVolume,
     LookPoint,

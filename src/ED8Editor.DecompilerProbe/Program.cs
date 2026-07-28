@@ -237,7 +237,32 @@ if (args is ["--dump-monsters", var monsterPath])
     {
         Console.WriteLine($"entity={spawn.EntityId} asset={spawn.AssetId} "
             + $"position={spawn.Position.X:G9},{spawn.Position.Y:G9},{spawn.Position.Z:G9} "
-            + $"heading={spawn.HeadingDegrees:G9} battle=#{spawn.BattleFunctionIndex}");
+            + $"heading={spawn.HeadingDegrees:G9} battle=#{spawn.BattleFunctionIndex}"
+            + $" encounter={spawn.EncounterIndex}");
+    }
+    return 0;
+}
+
+if (args is ["--dump-create-monsters", var createMonstersPath])
+{
+    var createMonstersScript = ScriptDecompiler.Decompile(createMonstersPath);
+    foreach (var function in createMonstersScript.Functions.Where(value =>
+                 value.Table is not null
+                 && CreateMonstersTableReader.TryRead(value.Table, out _)))
+    {
+        CreateMonstersTableReader.TryRead(function.Table!, out var table);
+        Console.WriteLine($"function=#{function.Index} name={function.Name} "
+            + $"map={table!.MapAsset} encounters={table.Encounters.Count}");
+        Console.WriteLine("header=" + string.Join(", ", table.HeaderFields.Select(FormatTableField)));
+        foreach (var encounter in table.Encounters)
+        {
+            Console.WriteLine($"  encounter[{encounter.Index}] id={encounter.Id} "
+                + $"aux={encounter.AuxiliaryAsset ?? "<none>"}");
+            for (var slot = 0; slot < encounter.MonsterAssets.Count; slot++)
+                Console.WriteLine($"    slot[{slot}] asset={encounter.MonsterAssets[slot]} "
+                    + $"weight={encounter.Weights[slot]}");
+        }
+        Console.WriteLine("trailer=" + string.Join(", ", table.TrailerFields.Select(FormatTableField)));
     }
     return 0;
 }
@@ -271,6 +296,55 @@ if (args is ["--table-edit-smoke", var tableEditPath])
     }
 }
 
+if (args is ["--create-monsters-edit-smoke", var encounterEditPath])
+{
+    var temporaryPath = Path.Combine(Path.GetTempPath(), $"ed8editor-monsters-{Guid.NewGuid():N}.dat");
+    try
+    {
+        using var encounterDocument = ScriptEditorDocument.Open(encounterEditPath);
+        var function = encounterDocument.Snapshot.Functions.First(value =>
+            value.Table is not null && CreateMonstersTableReader.TryRead(value.Table, out _));
+        CreateMonstersTableReader.TryRead(function.Table!, out var original);
+        if (original!.Encounters.Count == 0)
+            throw new InvalidOperationException("The smoke test requires one encounter to clone.");
+        var insertedId = original.Encounters.Max(value => value.Id) + 1;
+        CreateMonstersTableEditor.DuplicateEncounter(
+            encounterDocument,
+            function.Index,
+            0,
+            original.Encounters.Count,
+            insertedId);
+        encounterDocument.Save(temporaryPath);
+        using (var reopened = ScriptEditorDocument.Open(temporaryPath))
+        {
+            var reopenedFunction = reopened.Snapshot.Functions[function.Index];
+            var edited = reopenedFunction.Table;
+            if (edited is null
+                || !CreateMonstersTableReader.TryRead(edited, out var parsed)
+                || parsed!.Encounters.Count != original.Encounters.Count + 1
+                || parsed.Encounters[^1].Id != insertedId)
+            {
+                throw new InvalidOperationException(
+                    "The inserted encounter did not survive serialization/reopen. "
+                    + $"function={reopenedFunction.Name}, sourceType={reopenedFunction.SourceType}, "
+                    + $"table={edited?.Kind ?? "<none>"}, raw={reopenedFunction.RawData?.Length ?? 0}.");
+            }
+        }
+        CreateMonstersTableEditor.RemoveEncounter(
+            encounterDocument, function.Index, original.Encounters.Count);
+        encounterDocument.Save(temporaryPath);
+        if (!File.ReadAllBytes(encounterEditPath).SequenceEqual(File.ReadAllBytes(temporaryPath)))
+            throw new InvalidOperationException(
+                "Adding and removing an encounter did not restore the original script bytes.");
+        Console.WriteLine($"PASS CreateMonsters add/remove/reopen: {Path.GetFileName(encounterEditPath)}");
+        return 0;
+    }
+    finally
+    {
+        if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+    }
+}
+
 if (args.Length < 1)
 {
     Console.Error.WriteLine("Usage: ED8Editor.DecompilerProbe <script.dat> [cs1_instructions.json]");
@@ -279,7 +353,9 @@ if (args.Length < 1)
     Console.Error.WriteLine("       ED8Editor.DecompilerProbe --find-table <directory> <kind>");
     Console.Error.WriteLine("       ED8Editor.DecompilerProbe --dump-code <script.dat>");
     Console.Error.WriteLine("       ED8Editor.DecompilerProbe --dump-monsters <script.dat>");
+    Console.Error.WriteLine("       ED8Editor.DecompilerProbe --dump-create-monsters <script.dat>");
     Console.Error.WriteLine("       ED8Editor.DecompilerProbe --table-edit-smoke <script.dat>");
+    Console.Error.WriteLine("       ED8Editor.DecompilerProbe --create-monsters-edit-smoke <script.dat>");
     return 2;
 }
 
@@ -333,3 +409,11 @@ static string FormatArgument(InstructionArgument argument)
             return $"{argument.Type}[{argument.Raw.Length}]={Convert.ToHexString(argument.Raw)}";
     }
 }
+
+static string FormatTableField(TableField field) => field.Type switch
+{
+    "string" => $"string=\"{field.Text}\"",
+    "f32" => $"f32={field.FloatValue:G9}",
+    "bytes" or "fill" => $"{field.Type}[{field.Raw.Length}]={Convert.ToHexString(field.Raw)}",
+    _ => $"{field.Type}={field.IntValue}",
+};

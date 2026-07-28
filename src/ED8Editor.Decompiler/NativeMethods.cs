@@ -109,6 +109,12 @@ internal static class NativeMethods
     public static extern int cs1i_table_field_delete(IntPtr doc, int f, int j);
 
     [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_create_monsters_encounter_add(IntPtr doc, int f, int at, int encounterId);
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_create_monsters_encounter_delete(IntPtr doc, int f, int at);
+
+    [DllImport(Dll, CallingConvention = Cc)]
     public static extern int cs1i_schema_record_len([MarshalAs(UnmanagedType.LPStr)] string name);
 
     [DllImport(Dll, CallingConvention = Cc)]

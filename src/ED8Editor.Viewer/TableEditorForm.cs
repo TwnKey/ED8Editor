@@ -18,6 +18,9 @@ internal sealed class TableEditorForm : Form
     };
     private readonly Button applyButton = new() { Text = "Apply", AutoSize = true };
     private readonly Button closeButton = new() { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
+    private readonly Button addEncounterButton = new() { Text = "Add encounter", AutoSize = true, Visible = false };
+    private readonly Button duplicateEncounterButton = new() { Text = "Duplicate encounter", AutoSize = true, Visible = false };
+    private readonly Button deleteEncounterButton = new() { Text = "Delete encounter", AutoSize = true, Visible = false };
 
     public TableEditorForm(ScriptEditorDocument document, int functionIndex)
     {
@@ -43,11 +46,25 @@ internal sealed class TableEditorForm : Form
         };
         buttons.Controls.Add(closeButton);
         buttons.Controls.Add(applyButton);
+        var structureButtons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            Height = 36,
+            Padding = new Padding(6, 3, 0, 0),
+        };
+        structureButtons.Controls.Add(addEncounterButton);
+        structureButtons.Controls.Add(duplicateEncounterButton);
+        structureButtons.Controls.Add(deleteEncounterButton);
         Controls.Add(fields);
         Controls.Add(buttons);
+        Controls.Add(structureButtons);
         Controls.Add(header);
         CancelButton = closeButton;
         applyButton.Click += (_, _) => ApplyChanges();
+        addEncounterButton.Click += (_, _) => RunStructureEdit(AddEncounter);
+        duplicateEncounterButton.Click += (_, _) => RunStructureEdit(DuplicateEncounter);
+        deleteEncounterButton.Click += (_, _) => RunStructureEdit(DeleteEncounter);
+        fields.SelectionChanged += (_, _) => UpdateEncounterButtons();
         LoadTable();
     }
 
@@ -61,6 +78,10 @@ internal sealed class TableEditorForm : Form
         Text = $"Table editor — {function.Name}";
         header.Text = $"{function.Name} — {table.Kind}" + (table.IsStale ? " (stale/malformed)" : string.Empty);
         applyButton.Enabled = !table.IsStale;
+        var isCreateMonsters = !table.IsStale && table.Kind == "CreateMonsters";
+        addEncounterButton.Visible = isCreateMonsters;
+        duplicateEncounterButton.Visible = isCreateMonsters;
+        deleteEncounterButton.Visible = isCreateMonsters;
         fields.Rows.Clear();
         foreach (var field in table.Fields)
         {
@@ -76,6 +97,101 @@ internal sealed class TableEditorForm : Form
                 row.Cells["value"].ReadOnly = true;
                 row.DefaultCellStyle.ForeColor = SystemColors.GrayText;
             }
+        }
+        UpdateEncounterButtons();
+    }
+
+    private void AddEncounter()
+    {
+        var table = ReadCreateMonsters();
+        var id = table.Encounters.Count == 0 ? 0 : table.Encounters.Max(value => value.Id) + 1;
+        CreateMonstersTableEditor.AddEncounter(
+            document, functionIndex, table.Encounters.Count, id,
+            Array.Empty<string>(), Array.Empty<int>());
+        ReloadAfterStructureChange();
+    }
+
+    private void DuplicateEncounter()
+    {
+        var table = ReadCreateMonsters();
+        var selected = SelectedEncounter(table);
+        if (selected is null) return;
+        var id = table.Encounters.Max(value => value.Id) + 1;
+        CreateMonstersTableEditor.DuplicateEncounter(
+            document, functionIndex, selected.Index, selected.Index + 1, id);
+        ReloadAfterStructureChange();
+    }
+
+    private void DeleteEncounter()
+    {
+        var table = ReadCreateMonsters();
+        var selected = SelectedEncounter(table);
+        if (selected is null) return;
+        if (MessageBox.Show(
+                this,
+                $"Delete encounter {selected.Id}?",
+                "Delete CreateMonsters encounter",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning) != DialogResult.Yes)
+        {
+            return;
+        }
+        CreateMonstersTableEditor.RemoveEncounter(document, functionIndex, selected.Index);
+        ReloadAfterStructureChange();
+    }
+
+    private void ReloadAfterStructureChange()
+    {
+        LoadTable();
+        TableChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void RunStructureEdit(Action edit)
+    {
+        try
+        {
+            edit();
+        }
+        catch (Exception exception) when (exception is ArgumentException
+            or InvalidOperationException or OverflowException)
+        {
+            MessageBox.Show(
+                this,
+                exception.Message,
+                "Cannot edit CreateMonsters",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+    }
+
+    private CreateMonstersTable ReadCreateMonsters()
+    {
+        var table = document.Snapshot.Functions[functionIndex].Table;
+        if (table is null || !CreateMonstersTableReader.TryRead(table, out var parsed) || parsed is null)
+            throw new InvalidOperationException("The selected function is not a valid CreateMonsters table.");
+        return parsed;
+    }
+
+    private CreateMonstersEncounter? SelectedEncounter(CreateMonstersTable table)
+    {
+        if (fields.CurrentRow?.Tag is not TableField field) return null;
+        return table.Encounters.FirstOrDefault(value =>
+            value.SourceFields.Any(source => source.Index == field.Index));
+    }
+
+    private void UpdateEncounterButtons()
+    {
+        if (!duplicateEncounterButton.Visible) return;
+        try
+        {
+            var selected = SelectedEncounter(ReadCreateMonsters());
+            duplicateEncounterButton.Enabled = selected is not null;
+            deleteEncounterButton.Enabled = selected is not null;
+        }
+        catch (InvalidOperationException)
+        {
+            duplicateEncounterButton.Enabled = false;
+            deleteEncounterButton.Enabled = false;
         }
     }
 

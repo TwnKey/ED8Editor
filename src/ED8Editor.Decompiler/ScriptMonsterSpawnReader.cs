@@ -13,6 +13,7 @@ public sealed record ScriptMonsterSpawn(
     Vector3 Position,
     float HeadingDegrees,
     int BattleFunctionIndex,
+    int EncounterIndex,
     int SourceFunctionIndex,
     int SourceInstructionIndex);
 
@@ -26,6 +27,7 @@ public static class ScriptMonsterSpawnReader
     private const int PositionZArgument = 8;
     private const int HeadingArgument = 9;
     private const int BattleFunctionArgument = 15;
+    private const int EncounterIndexArgument = 16;
 
     public static IReadOnlyList<ScriptMonsterSpawn> Read(DecompiledScript script)
     {
@@ -54,6 +56,7 @@ public static class ScriptMonsterSpawnReader
                         (float)instruction.Arguments[PositionZArgument].FloatValue),
                     (float)instruction.Arguments[HeadingArgument].FloatValue,
                     battleFunctionIndex,
+                    instruction.Arguments[EncounterIndexArgument].IntValue,
                     function.Index,
                     instruction.Index));
             }
@@ -62,14 +65,15 @@ public static class ScriptMonsterSpawnReader
     }
 
     private static bool HasCreateEntityLayout(IReadOnlyList<InstructionArgument> arguments)
-        => arguments.Count > BattleFunctionArgument
+        => arguments.Count > EncounterIndexArgument
             && arguments[EntityIdArgument].Type == "s16"
             && arguments[AssetArgument].Kind == "string"
             && arguments[PositionXArgument].Type == "f32"
             && arguments[PositionYArgument].Type == "f32"
             && arguments[PositionZArgument].Type == "f32"
             && arguments[HeadingArgument].Type == "f32"
-            && arguments[BattleFunctionArgument].Type == "s32";
+            && arguments[BattleFunctionArgument].Type == "s32"
+            && arguments[EncounterIndexArgument].Type == "u8";
 
     private static string ReadString(InstructionArgument argument)
         => Encoding.Latin1.GetString(argument.Raw).TrimEnd('\0');

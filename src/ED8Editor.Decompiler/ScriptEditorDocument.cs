@@ -134,6 +134,14 @@ public sealed class ScriptEditorDocument : IDisposable
             "update the table bytes");
     }
 
+    public void AddCreateMonstersEncounter(int function, int position, int encounterId) =>
+        Mutate(NativeMethods.cs1i_create_monsters_encounter_add(
+            Handle, function, position, encounterId), "add the CreateMonsters encounter");
+
+    public void RemoveCreateMonstersEncounter(int function, int position) =>
+        Mutate(NativeMethods.cs1i_create_monsters_encounter_delete(
+            Handle, function, position), "delete the CreateMonsters encounter");
+
     public void Save(string path)
     {
         if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("A path is required.", nameof(path));

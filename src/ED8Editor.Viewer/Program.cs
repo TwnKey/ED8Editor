@@ -28,6 +28,22 @@ internal static class Program
                 "PASS camera orbit, facial pattern, dialogue, script waits and graph layout");
             return;
         }
+        if (args is ["--dump-authoring-catalog", var catalogDataPath])
+        {
+            var library = new ScriptAnimationLibrary(catalogDataPath, null, null);
+            var characters = CharacterAuthoringCatalog.LoadCharacters(library);
+            var enemies = CharacterAuthoringCatalog.LoadEnemies(catalogDataPath);
+            Console.WriteLine(
+                $"characters={characters.Count}; enemies={enemies.Count}; "
+                + library.NameTableDiagnostics);
+            foreach (var entry in characters.Take(5).Concat(enemies.Take(5)))
+            {
+                Console.WriteLine(
+                    $"{entry.Kind}: {entry.DisplayName} | model={entry.ModelAssetId}"
+                    + $" | ani={entry.AnimationScript} | source={entry.SourceTable}");
+            }
+            return;
+        }
         if (args is ["--verify-eff", var effRoot])
         {
             Environment.ExitCode = VerifyEffects(effRoot);
@@ -158,6 +174,23 @@ internal static class Program
                 var ascii = string.Concat(first.Data.Take(72)
                     .Select(value => value is >= 0x20 and < 0x7f ? (char)value : '.'));
                 Console.WriteLine($"{group.Key,-28} {group.Count(),6} entries, {first.Data.Length,4} bytes: {ascii}");
+            }
+            return;
+        }
+        if (args is ["--dump-tbl-category", var decodedTblPath, var decodedCategory])
+        {
+            var codec = new ED8Editor.Tables.Cs1TableRecordCodec(
+                textEncoding: new UTF8Encoding(false, true));
+            var rows = ED8Editor.Tables.Cs1TableDocument.Read(decodedTblPath).Entries
+                .Where(value => value.Category.Equals(decodedCategory, StringComparison.Ordinal));
+            var index = 0;
+            foreach (var row in rows)
+            {
+                var values = codec.Decode(row);
+                Console.WriteLine($"[{index++}] " + (values is null
+                    ? Convert.ToHexString(row.Data)
+                    : string.Join(", ", values.Select(value =>
+                        $"{value.Field.Name}={value.Value}"))));
             }
             return;
         }

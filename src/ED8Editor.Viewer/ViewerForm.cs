@@ -218,11 +218,15 @@ public sealed class ViewerForm : Form
     private IReadOnlyList<D3D11SceneInstance> instances = Array.Empty<D3D11SceneInstance>();
     private IReadOnlyList<SceneModelInstance> sceneInstances = Array.Empty<SceneModelInstance>();
     private IReadOnlyList<SceneModelInstance> scriptMonsterInstances = Array.Empty<SceneModelInstance>();
+    private IReadOnlyList<SceneModelInstance> fieldMonsterInstances = Array.Empty<SceneModelInstance>();
+    private IReadOnlyDictionary<int, ScriptMonsterSpawn> fieldMonsterSpawns =
+        new Dictionary<int, ScriptMonsterSpawn>();
     private IReadOnlyDictionary<int, ScriptEntityState> activeScriptEntities =
         new Dictionary<int, ScriptEntityState>();
     private IReadOnlyDictionary<string, ScriptPropAnimation> activeScriptPropAnimations =
         new Dictionary<string, ScriptPropAnimation>(StringComparer.Ordinal);
     private int scriptEntityRefreshGeneration;
+    private int fieldMonsterRefreshGeneration;
     private MapScene? currentMap;
     private float sceneRadius = 10f;
     private float overlayMarkerSize = 0.3f;
@@ -648,10 +652,11 @@ public sealed class ViewerForm : Form
         {
             InitializeRenderer();
             InitializeAssetCatalog();
+            var monsterCount = await LoadFieldMonstersFromPathAsync(
+                session.Script.Header.SourcePath);
             effectMetadataStatus.Text = "Phyre effects: loading...";
             var effectCount = await LoadEffectMetadataAsync();
             if (IsDisposed) return;
-            const int monsterCount = 0;
             var modelCount = session.AssetModels.Values.Count(value => value.Model is not null);
             if (effectCount >= 0)
             {
@@ -1250,6 +1255,13 @@ public sealed class ViewerForm : Form
             "Effect editor…", null, (_, _) => ShowEffectEditor()));
         windows.DropDownItems.Add(new ToolStripMenuItem(
             "Table editor…", null, (_, _) => ShowTableEditor()));
+        windows.DropDownItems.Add(new ToolStripSeparator());
+        windows.DropDownItems.Add(new ToolStripMenuItem(
+            "Character studio…", null, (_, _) => ShowCharacterStudio(CharacterAuthoringKind.Character)));
+        windows.DropDownItems.Add(new ToolStripMenuItem(
+            "Enemy studio…", null, (_, _) => ShowCharacterStudio(CharacterAuthoringKind.Enemy)));
+        windows.DropDownItems.Add(new ToolStripMenuItem(
+            "Quest editor…", null, (_, _) => ShowQuestEditor()));
         mainMenu.Items.Add(windows);
 
         var options = new ToolStripMenuItem("Options");
@@ -1314,6 +1326,9 @@ public sealed class ViewerForm : Form
     private bool cameraAnimationLoops;
     private EffEditorWindow? effectEditorWindow;
     private TblEditorWindow? tableEditorWindow;
+    private CharacterStudioForm? characterStudioWindow;
+    private CharacterStudioForm? enemyStudioWindow;
+    private QuestEditorWindow? questEditorWindow;
     private D3D11EffectTextureResources? effectTextures;
     private readonly HashSet<string> unavailableEffectTextures =
         new(StringComparer.OrdinalIgnoreCase);
@@ -1388,6 +1403,7 @@ public sealed class ViewerForm : Form
             editor.ViewportKeyUp += key => pressedKeys.Remove(key);
             editor.InstructionSelected += ApplySelectedScriptCamera;
             editor.FunctionSelected += _ => ClearScriptEntityPreview();
+            editor.ScriptChanged += script => _ = RefreshFieldMonstersAsync(script);
             editor.EntityActivated += FocusScriptEntity;
             editor.StopPreview += () => { isCameraAnimating = false; cameraPlayButton.Enabled = true; };
             editor.OpenRequested += path => OpenScriptFile(path);
@@ -1406,6 +1422,85 @@ public sealed class ViewerForm : Form
         if (!string.IsNullOrEmpty(path) && System.IO.File.Exists(path))
         {
             editor.LoadDat(path);
+            if (editor.CurrentScript is { } script) _ = RefreshFieldMonstersAsync(script);
+        }
+    }
+
+    private async Task RefreshFieldMonstersAsync(DecompiledScript script)
+    {
+        var generation = ++fieldMonsterRefreshGeneration;
+        if (session.Script.GameDataPath is not { } gameDataPath || graphics is null)
+        {
+            fieldMonsterInstances = Array.Empty<SceneModelInstance>();
+            fieldMonsterSpawns = new Dictionary<int, ScriptMonsterSpawn>();
+            return;
+        }
+
+        var spawns = ScriptMonsterSpawnReader.Read(script);
+        foreach (var assetId in spawns
+                     .Select(value => value.AssetId)
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (generation != fieldMonsterRefreshGeneration || IsDisposed) return;
+            if (!loadedModelsByAsset.TryGetValue(assetId, out var model))
+            {
+                model = await LoadScriptEntityModelAsync(assetId, gameDataPath);
+                if (generation != fieldMonsterRefreshGeneration || IsDisposed) return;
+                if (model is null) continue;
+                loadedModelsByAsset[assetId] = model;
+            }
+            if (uploadedModels.All(value =>
+                    !value.AssetId.Equals(assetId, StringComparison.OrdinalIgnoreCase)))
+            {
+                uploadedModels.Add(new D3D11ModelUploader(graphics.Device).Upload(model));
+            }
+        }
+
+        var byInstance = new Dictionary<int, ScriptMonsterSpawn>();
+        var rendered = new List<SceneModelInstance>();
+        for (var index = 0; index < spawns.Count; index++)
+        {
+            var spawn = spawns[index];
+            if (!loadedModelsByAsset.TryGetValue(spawn.AssetId, out var model)) continue;
+            var instanceId = FieldMonsterSceneInstanceBase + index;
+            byInstance.Add(instanceId, spawn);
+            rendered.Add(new SceneModelInstance(
+                instanceId,
+                spawn.AssetId,
+                $"{spawn.AssetId} — encounter {spawn.EncounterIndex}",
+                model,
+                Matrix4x4.CreateRotationY(spawn.HeadingDegrees * MathF.PI / 180f)
+                    * Matrix4x4.CreateTranslation(spawn.Position),
+                Vector4.One,
+                Vector3.Zero,
+                SceneElementKind.FieldMonster));
+        }
+        if (generation != fieldMonsterRefreshGeneration || IsDisposed) return;
+        fieldMonsterSpawns = byInstance;
+        fieldMonsterInstances = rendered;
+        RefreshRenderInstances(
+            uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase));
+    }
+
+    private const int FieldMonsterSceneInstanceBase = int.MinValue + 400000;
+
+    private async Task<int> LoadFieldMonstersFromPathAsync(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return 0;
+        try
+        {
+            var script = await Task.Run(() =>
+                ScriptDecompiler.Decompile(path, instructionDefinitionsPath));
+            if (IsDisposed) return 0;
+            await RefreshFieldMonstersAsync(script);
+            return ScriptMonsterSpawnReader.Read(script).Count;
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException or InvalidOperationException
+            or DllNotFoundException or EntryPointNotFoundException)
+        {
+            Debug.WriteLine($"Could not load field monsters from '{path}': {exception}");
+            return 0;
         }
     }
 
@@ -3269,6 +3364,69 @@ public sealed class ViewerForm : Form
         window.Show(this);
     }
 
+    private void ShowCharacterStudio(CharacterAuthoringKind kind)
+    {
+        if (session.Script.GameDataPath is not { } gameDataPath
+            || graphics is null
+            || scriptAnimationLibrary is null)
+        {
+            MessageBox.Show(
+                this,
+                "The character studios require the game data directory and decoded character tables.",
+                kind == CharacterAuthoringKind.Character ? "Character studio" : "Enemy studio",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+        var existing = kind == CharacterAuthoringKind.Character
+            ? characterStudioWindow
+            : enemyStudioWindow;
+        if (existing is { IsDisposed: false })
+        {
+            existing.BringToFront();
+            existing.Focus();
+            return;
+        }
+        var window = new CharacterStudioForm(
+            gameDataPath, projectLoader, graphics, scriptAnimationLibrary, kind);
+        window.FormClosed += (_, _) =>
+        {
+            if (kind == CharacterAuthoringKind.Character) characterStudioWindow = null;
+            else enemyStudioWindow = null;
+        };
+        if (kind == CharacterAuthoringKind.Character) characterStudioWindow = window;
+        else enemyStudioWindow = window;
+        window.Show(this);
+    }
+
+    private void ShowQuestEditor()
+    {
+        if (questEditorWindow is { IsDisposed: false } opened)
+        {
+            opened.BringToFront();
+            opened.Focus();
+            return;
+        }
+        var directory = ResolveTableDirectory();
+        var path = directory is null ? null : Path.Combine(directory, "t_quest.tbl");
+        if (path is null || !File.Exists(path))
+        {
+            MessageBox.Show(
+                this,
+                "t_quest.tbl was not found for the current script locale.",
+                "Quest editor",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+        var window = new QuestEditorWindow(
+            path,
+            (target, beforeWrite) => TrackModSave(target, beforeWrite));
+        window.FormClosed += (_, _) => questEditorWindow = null;
+        questEditorWindow = window;
+        window.Show(this);
+    }
+
     /// <summary>
     /// The entries an operand can point at, read from the game's tables. The
     /// script's own path chooses the locale: a script under dat_us is the
@@ -3350,11 +3508,15 @@ public sealed class ViewerForm : Form
     {
         if (selection is null) return;
         cameraDollySmoother.Reset();
-        if (selection.Kind is SceneElementKind.Prop or SceneElementKind.ScriptCharacter)
+        if (selection.Kind is SceneElementKind.Prop
+            or SceneElementKind.ScriptCharacter
+            or SceneElementKind.FieldMonster)
         {
             var selected = selection.Kind == SceneElementKind.Prop
                 ? sceneInstances.FirstOrDefault(value => value.Id == selection.SourceIndex)
-                : scriptMonsterInstances.FirstOrDefault(value => value.Id == selection.SourceIndex);
+                : selection.Kind == SceneElementKind.ScriptCharacter
+                    ? scriptMonsterInstances.FirstOrDefault(value => value.Id == selection.SourceIndex)
+                    : fieldMonsterInstances.FirstOrDefault(value => value.Id == selection.SourceIndex);
             if (selected is not null)
             {
                 var bounds = new SceneBoundsCalculator().Calculate(new[] { selected });
@@ -3377,6 +3539,11 @@ public sealed class ViewerForm : Form
                     Math.Max(entity.CollisionHeight, entity.CollisionRadius * 2f) * entity.Scale,
                     sceneRadius * 0.01f);
                 cameraNavigation.Focus(entity.Position, Math.Max(entityRadius * 2.5f, 1f));
+            }
+            else if (selection.Kind == SceneElementKind.FieldMonster
+                     && fieldMonsterSpawns.TryGetValue(selection.SourceIndex, out var spawn))
+            {
+                cameraNavigation.Focus(spawn.Position, Math.Max(sceneRadius * 0.025f, 1f));
             }
             return;
         }
@@ -3415,6 +3582,8 @@ public sealed class ViewerForm : Form
             SceneElementKind.Prop => document.FindProp(selected)?.AssetId,
             SceneElementKind.ScriptCharacter => scriptMonsterInstances
                 .FirstOrDefault(value => value.Id == selected.SourceIndex)?.AssetId,
+            SceneElementKind.FieldMonster => fieldMonsterInstances
+                .FirstOrDefault(value => value.Id == selected.SourceIndex)?.AssetId,
             _ => null,
         };
         return assetId is null
@@ -3445,6 +3614,18 @@ public sealed class ViewerForm : Form
                     resourcesByAsset[value.AssetId],
                     value.Transform,
                     selection is { Kind: SceneElementKind.ScriptCharacter }
+                        && value.Id == selection.SourceIndex,
+                    MaterialDiffuse: value.MaterialDiffuse,
+                    MaterialEmission: value.MaterialEmission)));
+            rendered.AddRange(fieldMonsterInstances
+                .Where(value => resourcesByAsset.ContainsKey(value.AssetId))
+                .Where(value => !fieldMonsterSpawns.TryGetValue(value.Id, out var spawn)
+                    || !activeScriptEntities.ContainsKey(spawn.EntityId))
+                .Select(value => new D3D11SceneInstance(
+                    value.Id,
+                    resourcesByAsset[value.AssetId],
+                    value.Transform,
+                    selection is { Kind: SceneElementKind.FieldMonster }
                         && value.Id == selection.SourceIndex,
                     MaterialDiffuse: value.MaterialDiffuse,
                     MaterialEmission: value.MaterialEmission)));
@@ -4447,6 +4628,7 @@ public sealed class ViewerForm : Form
         InitializeAssetCatalog();
         _ = LoadEffectMetadataAsync();
         scriptEditor?.LoadDat(full);
+        _ = LoadFieldMonstersFromPathAsync(full);
         AddFileTab(full);
         _ = RefreshSubjectPreviewAsync();
         return true;
@@ -4628,8 +4810,40 @@ public sealed class ViewerForm : Form
     private void DeleteSelectedElement()
     {
         if (selection is not { } selected) return;
+        if (selected.Kind == SceneElementKind.FieldMonster)
+        {
+            DeleteSelectedFieldMonster(selected);
+            return;
+        }
         selection = null;
         if (document.DeleteElement(selected)) RefreshSceneFromDocument();
+    }
+
+    private void DeleteSelectedFieldMonster(SceneElementSelection selected)
+    {
+        if (!fieldMonsterSpawns.TryGetValue(selected.SourceIndex, out var spawn)) return;
+        if (MessageBox.Show(
+                this,
+                $"Delete field monster {spawn.AssetId} (entity {spawn.EntityId}) from the script?",
+                "Delete field monster",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning) != DialogResult.Yes)
+        {
+            return;
+        }
+        OpenScriptEditor();
+        try
+        {
+            scriptEditor!.DeleteFieldMonster(spawn);
+            selection = null;
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+            or ArgumentOutOfRangeException)
+        {
+            MessageBox.Show(
+                this, exception.Message, "Cannot delete field monster",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private void UpdatePlacement(Point location)
@@ -4843,7 +5057,7 @@ public sealed class ViewerForm : Form
         => sceneInstances
             .Where(value => SceneEnvironmentVariantSelector.IsVisible(value.Name, ActiveEnvironmentVariant))
             .Concat(showIndicatorsCheckBox.Checked
-                ? scriptMonsterInstances
+                ? scriptMonsterInstances.Concat(fieldMonsterInstances)
                 : Array.Empty<SceneModelInstance>())
             .ToArray();
 
