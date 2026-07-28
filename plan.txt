@@ -693,6 +693,9 @@ implémenté du tout.
 [OK]     Catalogues vérifiés sur l'installation : 130 variantes de personnages
          et 227 ennemis. Les ennemis utilisent les champs décodés script/model/
          name de t_mons/status, sans reconnaissance par nom de fichier.
+[OK]     Le studio peut copier vers une destination choisie le programme ANI
+         exact déclaré par la table du personnage/ennemi ; la copie passe par
+         le suivi des fichiers du projet de mod.
 [MANQUE] Writer .dae.phyre modèle/skinning/materials/shaders. Les commandes
          d'import/export restent volontairement désactivées : l'éditeur ne
          produit pas un faux fichier tant que le writer n'est pas vérifié.

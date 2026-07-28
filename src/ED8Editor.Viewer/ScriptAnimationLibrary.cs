@@ -87,6 +87,15 @@ internal sealed class ScriptAnimationLibrary
     public IReadOnlyList<ScriptCharacterDefinition> Characters
         => characters.Values.OrderBy(value => value.CharacterId).ToArray();
 
+    /// <summary>
+    /// Resolves a table-declared ANI program to the localized game file that
+    /// would be executed. No model-name fallback is introduced here.
+    /// </summary>
+    public string? FindAnimationScriptPath(string? scriptName)
+        => string.IsNullOrWhiteSpace(scriptName)
+            ? null
+            : ResolveAniPath(Path.GetFileNameWithoutExtension(scriptName));
+
     public string ResolveFacialAsset(int characterId, string? modelAssetId)
         => characters.TryGetValue(characterId, out var character)
             && !string.IsNullOrWhiteSpace(character.FacialAssetId)

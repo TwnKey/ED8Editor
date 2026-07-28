@@ -20,6 +20,7 @@ internal sealed class CharacterStudioForm : Form
     private readonly D3D11GraphicsDevice graphics;
     private readonly ScriptAnimationLibrary animationLibrary;
     private readonly CharacterAuthoringKind kind;
+    private readonly Action<string, bool> onSaving;
     private readonly IReadOnlyList<CharacterAuthoringEntry> catalog;
     private readonly ComboBox entries = new()
     {
@@ -44,6 +45,12 @@ internal sealed class CharacterStudioForm : Form
     private readonly TextBox animationName = new() { Width = 170, PlaceholderText = "Exact clip name" };
     private readonly Button loadAnimation = new() { Text = "Load clip", AutoSize = true };
     private readonly CheckBox loopAnimation = new() { Text = "Loop", Checked = true, AutoSize = true };
+    private readonly Button copyAnimationProgram = new()
+    {
+        Text = "Copy selected ANI program…",
+        AutoSize = true,
+        Enabled = false,
+    };
     private readonly Label status = new() { Dock = DockStyle.Bottom, Height = 24, AutoEllipsis = true };
     private readonly System.Windows.Forms.Timer renderTimer = new() { Interval = 16 };
     private readonly Dictionary<string, CpuModel> models = new(StringComparer.OrdinalIgnoreCase);
@@ -65,13 +72,15 @@ internal sealed class CharacterStudioForm : Form
         EditorProjectLoader loader,
         D3D11GraphicsDevice graphics,
         ScriptAnimationLibrary animationLibrary,
-        CharacterAuthoringKind kind)
+        CharacterAuthoringKind kind,
+        Action<string, bool> onSaving)
     {
         this.gameDataPath = gameDataPath ?? throw new ArgumentNullException(nameof(gameDataPath));
         this.loader = loader ?? throw new ArgumentNullException(nameof(loader));
         this.graphics = graphics ?? throw new ArgumentNullException(nameof(graphics));
         this.animationLibrary = animationLibrary ?? throw new ArgumentNullException(nameof(animationLibrary));
         this.kind = kind;
+        this.onSaving = onSaving ?? throw new ArgumentNullException(nameof(onSaving));
         catalog = kind == CharacterAuthoringKind.Character
             ? CharacterAuthoringCatalog.LoadCharacters(animationLibrary)
             : CharacterAuthoringCatalog.LoadEnemies(gameDataPath);
@@ -90,6 +99,7 @@ internal sealed class CharacterStudioForm : Form
         entries.SelectedIndexChanged += async (_, _) => await LoadSelectedAsync();
         referenceEntries.SelectedIndexChanged += async (_, _) => await UpdateRigComparisonAsync();
         loadAnimation.Click += async (_, _) => await LoadAnimationAsync();
+        copyAnimationProgram.Click += (_, _) => CopyAnimationProgram();
         previewHost.MouseWheel += (_, eventArgs) =>
             distance = Math.Clamp(distance * (eventArgs.Delta > 0 ? 0.85f : 1.18f), 0.15f, 500f);
         previewHost.MouseDown += (_, eventArgs) =>
@@ -153,7 +163,8 @@ internal sealed class CharacterStudioForm : Form
         });
         authoring.Controls.Add(new TextBox { Width = 360, PlaceholderText = "Future target asset ID" });
         authoring.Controls.Add(new Button { Text = "Import skinned model… (writer unavailable)", AutoSize = true, Enabled = false });
-        authoring.Controls.Add(new Button { Text = "Create/copy ANI… (writer unavailable)", AutoSize = true, Enabled = false });
+        authoring.Controls.Add(copyAnimationProgram);
+        authoring.Controls.Add(new Button { Text = "Create blank ANI… (format contract incomplete)", AutoSize = true, Enabled = false });
         authoring.Controls.Add(new Button { Text = "Write .dae.phyre… (writer unavailable)", AutoSize = true, Enabled = false });
         authoringTab.Controls.Add(authoring);
         inspectorTabs.TabPages.Add(authoringTab);
@@ -193,6 +204,8 @@ internal sealed class CharacterStudioForm : Form
         var generation = ++loadGeneration;
         status.Text = $"Loading {entry.ModelAssetId}…";
         currentClip = null;
+        copyAnimationProgram.Enabled =
+            animationLibrary.FindAnimationScriptPath(entry.AnimationScript) is not null;
         var model = await GetModelAsync(entry.ModelAssetId);
         if (generation != loadGeneration || IsDisposed) return;
         if (model is null)
@@ -217,6 +230,63 @@ internal sealed class CharacterStudioForm : Form
         await UpdateRigComparisonAsync();
         status.Text = $"{entry.ModelAssetId}: {model.Meshes.Count} meshes, "
             + $"{model.Materials.Count} materials, {model.Skeleton?.Joints.Count ?? 0} joints.";
+    }
+
+    private void CopyAnimationProgram()
+    {
+        if (entries.SelectedItem is not CharacterAuthoringEntry entry) return;
+        var source = animationLibrary.FindAnimationScriptPath(entry.AnimationScript);
+        if (source is null)
+        {
+            MessageBox.Show(
+                this,
+                $"The table-declared ANI program '{entry.AnimationScript}' was not found.",
+                "Copy ANI program",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Copy the selected ANI program",
+            Filter = "Cold Steel scripts (*.dat)|*.dat|All files (*.*)|*.*",
+            InitialDirectory = Path.GetDirectoryName(source),
+            FileName = Path.GetFileName(source),
+            DefaultExt = "dat",
+            AddExtension = true,
+            OverwritePrompt = true,
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        if (Path.GetFullPath(dialog.FileName).Equals(
+                Path.GetFullPath(source), StringComparison.OrdinalIgnoreCase))
+        {
+            MessageBox.Show(
+                this,
+                "Choose a destination different from the source ANI program.",
+                "Copy ANI program",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+        try
+        {
+            onSaving(dialog.FileName, true);
+            File.Copy(source, dialog.FileName, overwrite: true);
+            onSaving(dialog.FileName, false);
+            status.Text =
+                $"Copied {Path.GetFileName(source)} to {dialog.FileName}.";
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException or ArgumentException
+            or NotSupportedException)
+        {
+            MessageBox.Show(
+                this,
+                exception.Message,
+                "Cannot copy ANI program",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
     }
 
     private async Task<CpuModel?> GetModelAsync(string assetId)

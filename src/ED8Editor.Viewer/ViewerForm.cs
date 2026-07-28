@@ -3388,7 +3388,12 @@ public sealed class ViewerForm : Form
             return;
         }
         var window = new CharacterStudioForm(
-            gameDataPath, projectLoader, graphics, scriptAnimationLibrary, kind);
+            gameDataPath,
+            projectLoader,
+            graphics,
+            scriptAnimationLibrary,
+            kind,
+            (target, beforeWrite) => TrackModSave(target, beforeWrite));
         window.FormClosed += (_, _) =>
         {
             if (kind == CharacterAuthoringKind.Character) characterStudioWindow = null;
