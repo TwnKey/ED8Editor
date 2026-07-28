@@ -66,6 +66,8 @@ internal sealed class CharacterStudioForm : Form
     private Point previousMouse;
     private bool orbiting;
     private int loadGeneration;
+    private int rigComparisonGeneration;
+    private int animationLoadGeneration;
 
     public CharacterStudioForm(
         string gameDataPath,
@@ -202,6 +204,7 @@ internal sealed class CharacterStudioForm : Form
     {
         if (entries.SelectedItem is not CharacterAuthoringEntry entry) return;
         var generation = ++loadGeneration;
+        ++animationLoadGeneration;
         status.Text = $"Loading {entry.ModelAssetId}…";
         currentClip = null;
         copyAnimationProgram.Enabled =
@@ -294,8 +297,8 @@ internal sealed class CharacterStudioForm : Form
         if (models.TryGetValue(assetId, out var cached)) return cached;
         var load = await Task.Run(() => loader.LoadAsset(assetId, gameDataPath));
         if (load.Status != AssetModelLoadStatus.Loaded || load.Model is null) return null;
-        models.Add(assetId, load.Model);
-        return load.Model;
+        if (models.TryAdd(assetId, load.Model)) return load.Model;
+        return models[assetId];
     }
 
     private async Task LoadAnimationAsync()
@@ -306,9 +309,17 @@ internal sealed class CharacterStudioForm : Form
         {
             return;
         }
+        var generation = ++animationLoadGeneration;
+        var model = currentModel;
         status.Text = $"Loading clip {entry.ModelAssetId}:{animationName.Text.Trim()}…";
         var load = await Task.Run(() =>
             loader.LoadAnimationAsset(entry.ModelAssetId, animationName.Text.Trim(), gameDataPath));
+        if (generation != animationLoadGeneration
+            || IsDisposed
+            || !ReferenceEquals(model, currentModel))
+        {
+            return;
+        }
         if (load.Status != AssetAnimationLoadStatus.Loaded || load.Clip is null)
         {
             currentClip = null;
@@ -317,7 +328,7 @@ internal sealed class CharacterStudioForm : Form
         }
         try
         {
-            _ = new CpuSkeletonPoseEvaluator().Evaluate(currentModel.Skeleton, load.Clip, load.Clip.StartTime);
+            _ = new CpuSkeletonPoseEvaluator().Evaluate(model.Skeleton!, load.Clip, load.Clip.StartTime);
         }
         catch (InvalidDataException exception)
         {
@@ -338,13 +349,22 @@ internal sealed class CharacterStudioForm : Form
             rigReport.Text = "Select a model and an explicit CS1 reference rig.";
             return;
         }
+        var generation = ++rigComparisonGeneration;
+        var candidate = currentModel;
         var reference = await GetModelAsync(referenceEntry.ModelAssetId);
-        if (reference is null) return;
+        if (reference is null
+            || generation != rigComparisonGeneration
+            || IsDisposed
+            || !ReferenceEquals(candidate, currentModel)
+            || !ReferenceEquals(referenceEntry, referenceEntries.SelectedItem))
+        {
+            return;
+        }
         var profile = new Cs1CharacterRigProfile(referenceEntry.ModelAssetId, reference);
-        var result = profile.Compare(currentModel);
+        var result = profile.Compare(candidate);
         rigReport.Text =
             $"Reference: {profile.ReferenceAssetId} ({profile.ReferenceNodeCount} named nodes)\r\n"
-            + $"Candidate: {currentModel.AssetId}\r\n"
+            + $"Candidate: {candidate.AssetId}\r\n"
             + $"Shared: {result.SharedNodes}\r\n"
             + $"Missing reference nodes: {result.MissingReferenceNodes.Count}\r\n"
             + string.Join("\r\n", result.MissingReferenceNodes.Select(value => "  - " + value))
