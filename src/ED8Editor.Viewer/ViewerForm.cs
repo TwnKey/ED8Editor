@@ -1509,7 +1509,9 @@ public sealed class ViewerForm : Form
                 instructionDefinitionsPath,
                 monsterTableChoices,
                 GetBattleMapAssets(),
-                CreateBattleMapInf);
+                CreateBattleMapInf,
+                BattleScenarioCatalog.Load(session.Script.GameDataPath!),
+                OpenBattleScriptEditor);
             scriptEditor = editor;
             editor.TopLevel = false;
             editor.FormBorderStyle = FormBorderStyle.None;
@@ -1699,6 +1701,7 @@ public sealed class ViewerForm : Form
         StopScriptTimeline();
         var sceneState = ScriptSceneStateResolver.Resolve(
             script, function, instruction.Index, scriptAnimationLibrary, systemScript, scriptSubject);
+        ApplyScriptEnvironment(sceneState.EnvironmentProfile);
         activeScriptEntities = PrepareEntities(sceneState.Entities);
         scriptEditor?.SetRuntimeEntities(CreateScriptEntityChoices(sceneState.Entities));
         if (instruction.Opcode == 2
@@ -3158,6 +3161,7 @@ public sealed class ViewerForm : Form
 
     private void ApplyTimelineSceneState(ScriptSceneState state, bool applyCamera)
     {
+        ApplyScriptEnvironment(state.EnvironmentProfile);
         activeScriptEntities = PrepareEntities(state.Entities);
         activeScriptPropAnimations = state.PropAnimations;
         scriptEditor?.SetRuntimeEntities(CreateScriptEntityChoices(activeScriptEntities));
@@ -3166,6 +3170,25 @@ public sealed class ViewerForm : Form
         RefreshOverlay();
         if (applyCamera && ShouldApplyScriptCamera && state.Camera.HasViewValue)
             ApplyCameraState(state.Camera, state.Entities);
+    }
+
+    private void ApplyScriptEnvironment(int? profile)
+    {
+        if (profile is { } scriptProfile)
+        {
+            // Unknown engine values remain untouched and visible in the script
+            // editor. Guessing a renderer variant here would hide format
+            // information and make later research harder.
+            if (SceneEnvironmentVariantSelector.TryFromScriptProfile(
+                    scriptProfile, out var scriptedVariant))
+            {
+                SetEnvironmentVariant(scriptedVariant);
+            }
+            return;
+        }
+
+        SetEnvironmentVariant(SceneEnvironmentVariantSelector.FromProfileName(
+            currentMap?.DefaultEnvironment?.ProfileName));
     }
 
     private float GetScriptTimelineDurationFrames(ScriptSceneTimeline timeline)
@@ -3538,7 +3561,8 @@ public sealed class ViewerForm : Form
                 graphics,
                 scriptAnimationLibrary,
                 kind,
-                (target, beforeWrite) => TrackModSave(target, beforeWrite));
+                (target, beforeWrite) => TrackModSave(target, beforeWrite),
+                instructionDefinitionsPath);
         }
         catch (Exception exception) when (exception is IOException
             or InvalidDataException or InvalidOperationException
@@ -3562,6 +3586,34 @@ public sealed class ViewerForm : Form
         if (kind == CharacterAuthoringKind.Character) characterStudioWindow = window;
         else enemyStudioWindow = window;
         window.Show(this);
+    }
+
+    private void OpenBattleScriptEditor(int scenarioId)
+    {
+        if (session.Script.GameDataPath is not { } gameDataPath) return;
+        var entry = BattleScenarioCatalog.Find(
+            BattleScenarioCatalog.Load(gameDataPath),
+            scenarioId);
+        if (entry is null)
+        {
+            MessageBox.Show(
+                this,
+                $"btl{scenarioId:0000}.dat was not found.",
+                "Battle script",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+        var editor = new ScriptEditorForm(
+            instructionDefinitionsPath: instructionDefinitionsPath,
+            monsterChoices: monsterTableChoices,
+            battleScenarios: BattleScenarioCatalog.Load(gameDataPath),
+            openBattleScript: OpenBattleScriptEditor);
+        editor.FileSaving += path => TrackModSave(path, beforeWrite: true);
+        editor.FileSaved += path => TrackModSave(path, beforeWrite: false);
+        editor.FormClosed += (_, _) => editor.Dispose();
+        editor.LoadDat(entry.Path);
+        editor.Show(this);
     }
 
     private void ShowQuestEditor()
@@ -4045,7 +4097,9 @@ public sealed class ViewerForm : Form
                 // The effect runs on its own clock, started by the command that
                 // played it, exactly like an animation or a facial pattern.
                 var elapsedSeconds = scriptTimeline is null
-                    ? 0f
+                    ? instance.Space == ScriptEffectSpace.Camera
+                        ? (float)frameClock.Elapsed.TotalSeconds
+                        : 0f
                     : Math.Max(0f, scriptTimelineFrame - instance.StartFrame)
                         / ScriptWaitDuration.PreviewFramesPerSecond;
                 DrawEffect(quads, effect, elapsedSeconds, placement);
@@ -4068,11 +4122,16 @@ public sealed class ViewerForm : Form
     }
 
     /// <summary>
-    /// Where an effect hangs: on one of an actor's nodes, on the actor itself, or
-    /// in the world when the script anchored it to the scene.
+    /// Where an effect hangs: on one of an actor's nodes, on the actor itself, in
+    /// the world, or in camera space for the engine's single global scene effect
+    /// used by rain and mist.
     /// </summary>
     private Matrix4x4 ResolveEffectAnchor(ScriptEffectInstance instance)
     {
+        if (instance.Space == ScriptEffectSpace.Camera)
+        {
+            return CreateCameraEffectAnchor();
+        }
         if (!activeScriptEntities.TryGetValue(instance.AnchorEntityId, out var host))
             return Matrix4x4.Identity;
         if (instance.AnchorNode.Length > 0
@@ -4089,6 +4148,27 @@ public sealed class ViewerForm : Form
             : host.YawDegrees;
         return Matrix4x4.CreateRotationY(yaw * MathF.PI / 180f)
             * Matrix4x4.CreateTranslation(position);
+    }
+
+    /// <summary>
+    /// Converts the authored coordinates of a global scene effect to camera
+    /// space. Its local Z=0 plane is placed just beyond the current near plane,
+    /// while X/Y follow the camera axes. This is the renderer equivalent of the
+    /// engine's special global-effect owner: the weather follows camera motion
+    /// without becoming an ordinary billboard attached to a map object.
+    /// </summary>
+    private Matrix4x4 CreateCameraEffectAnchor()
+    {
+        var forward = cameraNavigation.Forward;
+        var right = cameraNavigation.ScreenRight;
+        var up = cameraNavigation.ScreenUp;
+        var nearPlane = Math.Max(0.01f, sceneRadius / 10000f);
+        var origin = cameraNavigation.Position + forward * (nearPlane * 2f);
+        return new Matrix4x4(
+            right.X, right.Y, right.Z, 0f,
+            up.X, up.Y, up.Z, 0f,
+            forward.X, forward.Y, forward.Z, 0f,
+            origin.X, origin.Y, origin.Z, 1f);
     }
 
     /// <summary>
@@ -5900,12 +5980,31 @@ public sealed class ViewerForm : Form
     private void ConfirmPlacement()
     {
         if (placement is not { Position: { } position } pending) return;
-        selection = pending.OpsProfile is not null
-            ? document.AddSpatialElement(pending.OpsProfile, position, pending.Inputs)
-            : document.AddProp(pending.AssetId!, pending.Name, pending.Model!, position);
-        placement = null;
-        RefreshSceneFromDocument();
-        Text = $"{baseTitle} - added: {selection.Name}";
+        try
+        {
+            if (pending.SpecializedOpsCreation is not null)
+                CompleteSpecializedOpsCreation(pending.SpecializedOpsCreation, position);
+            selection = pending.OpsProfile is not null
+                ? document.AddSpatialElement(pending.OpsProfile, position, pending.Inputs)
+                : document.AddProp(pending.AssetId!, pending.Name, pending.Model!, position);
+            placement = null;
+            RefreshSceneFromDocument();
+            Text = pending.SpecializedOpsCreation is null
+                ? $"{baseTitle} - added: {selection.Name}"
+                : $"{baseTitle} - added: {selection.Name}; save the script and OPS";
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException or InvalidOperationException
+            or ArgumentException or OverflowException
+            or UnauthorizedAccessException)
+        {
+            MessageBox.Show(
+                this,
+                exception.Message,
+                "Cannot create OPS interaction",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
     }
 
     private void CancelPlacement()
@@ -5921,6 +6020,19 @@ public sealed class ViewerForm : Form
         opsInputPanel.Controls.Clear();
         if (opsProfileList.SelectedItem is not OpsSpatialCreationProfile profile) return;
         opsProfileEvidence.Text = profile.Evidence;
+        if (profile.Specialization != OpsCreationSpecialization.None)
+        {
+            opsInputPanel.Controls.Add(new Label
+            {
+                AutoSize = true,
+                MaximumSize = new Size(
+                    Math.Max(220, opsInputPanel.ClientSize.Width - 20),
+                    0),
+                Text = "Click “Place OPS element” to configure the table and"
+                    + " script binding, then click a surface in the viewport.",
+            });
+            return;
+        }
         foreach (var input in profile.Inputs)
         {
             var row = new TableLayoutPanel
@@ -5963,12 +6075,28 @@ public sealed class ViewerForm : Form
         if (opsProfileList.SelectedItem is not OpsSpatialCreationProfile profile) return;
         try
         {
-            var inputs = opsInputFields.ToDictionary(
+            IReadOnlyDictionary<string, string> inputs = opsInputFields.ToDictionary(
                 pair => pair.Key,
                 pair => ReadOpsInputValue(pair.Value),
                 StringComparer.Ordinal);
+            SpecializedOpsCreation? specialized = null;
+            if (profile.Specialization != OpsCreationSpecialization.None)
+            {
+                var prepared = PrepareSpecializedOpsCreation(profile.Specialization);
+                if (prepared is null) return;
+                inputs = prepared.Value.Inputs;
+                specialized = prepared.Value.Creation;
+            }
             profile.ValidateInputs(inputs);
-            placement = new PlacementState(null, profile.DisplayName, null, profile, inputs, null, Vector3.UnitY);
+            placement = new PlacementState(
+                null,
+                profile.DisplayName,
+                null,
+                profile,
+                inputs,
+                null,
+                Vector3.UnitY,
+                specialized);
             var pointer = viewportHost.PointToClient(Cursor.Position);
             if (viewportHost.ClientRectangle.Contains(pointer)) UpdatePlacement(pointer);
             Text = $"{baseTitle} - place {profile.DisplayName}: click surface, Esc cancel";
@@ -5977,6 +6105,176 @@ public sealed class ViewerForm : Form
         {
             MessageBox.Show(exception.Message, "Cannot create OPS element", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
+    }
+
+    private (IReadOnlyDictionary<string, string> Inputs, SpecializedOpsCreation Creation)?
+        PrepareSpecializedOpsCreation(OpsCreationSpecialization specialization)
+    {
+        OpenScriptEditor(activateTab: false);
+        var currentScript = scriptEditor?.CurrentScript
+            ?? throw new InvalidOperationException("The current scenario script is not loaded.");
+        var tableDirectory = ResolveTableDirectory()
+            ?? throw new InvalidOperationException(
+                "The current script locale has no table directory.");
+        var functionNames = currentScript.Functions
+            .Where(value => value.IsCode)
+            .Select(value => value.Name)
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        if (specialization == OpsCreationSpecialization.Shop)
+        {
+            var path = Path.Combine(tableDirectory, "t_shop.tbl");
+            if (!File.Exists(path))
+                throw new FileNotFoundException("t_shop.tbl was not found.", path);
+            var table = Cs1ShopTable.Read(path);
+            var functionName = UniqueFunctionName(currentScript, "LP_Shop_Mod");
+            var suggestedId = NextSignedId(table.Titles.Select(value => value.Id));
+            using var dialog = new ShopCreationForm(
+                functionName,
+                suggestedId,
+                table.Titles,
+                functionNames,
+                activeScriptEntities.Values
+                    .OrderBy(value => value.EntityId)
+                    .Select(value => new ScriptEntityChoice(
+                        value.EntityId,
+                        value.AssetId,
+                        value.DisplayName))
+                    .ToArray());
+            if (dialog.ShowDialog(this) != DialogResult.OK) return null;
+            var options = dialog.ReadResult();
+            if (currentScript.Functions.Any(value =>
+                    value.Name.Equals(options.FunctionName, StringComparison.Ordinal)))
+            {
+                throw new InvalidOperationException(
+                    $"Function '{options.FunctionName}' already exists.");
+            }
+            if (table.Titles.Any(value => value.Id == options.ShopId))
+                throw new InvalidOperationException($"ShopTitle {options.ShopId} already exists.");
+            return (
+                new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["function"] = options.FunctionName,
+                },
+                new ShopOpsCreation(path, options));
+        }
+
+        if (specialization == OpsCreationSpecialization.FishingSpot)
+        {
+            var path = Path.Combine(tableDirectory, "t_fish.tbl");
+            if (!File.Exists(path))
+                throw new FileNotFoundException("t_fish.tbl was not found.", path);
+            var table = Cs1FishingPointTable.Read(path);
+            var functionName = UniqueFunctionName(currentScript, "LP_fishpoint_Mod");
+            var suggestedId = NextSignedId(table.Points.Select(value => value.Id));
+            using var dialog = new FishingCreationForm(
+                functionName,
+                suggestedId,
+                table.Points,
+                table.Fish);
+            if (dialog.ShowDialog(this) != DialogResult.OK) return null;
+            var options = dialog.ReadResult();
+            if (currentScript.Functions.Any(value =>
+                    value.Name.Equals(options.FunctionName, StringComparison.Ordinal)))
+            {
+                throw new InvalidOperationException(
+                    $"Function '{options.FunctionName}' already exists.");
+            }
+            if (table.Points.Any(value => value.Id == options.FishingPointId))
+            {
+                throw new InvalidOperationException(
+                    $"fish_pnt {options.FishingPointId} already exists.");
+            }
+            return (
+                new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["function"] = options.FunctionName,
+                    ["radius"] = options.Radius.ToString(
+                        "R", System.Globalization.CultureInfo.InvariantCulture),
+                    ["heading"] = options.HeadingDegrees.ToString(
+                        "R", System.Globalization.CultureInfo.InvariantCulture),
+                },
+                new FishingOpsCreation(path, options));
+        }
+
+        throw new ArgumentOutOfRangeException(nameof(specialization));
+    }
+
+    private void CompleteSpecializedOpsCreation(
+        SpecializedOpsCreation creation,
+        Vector3 position)
+    {
+        if (scriptEditor is null)
+            throw new InvalidOperationException("The scenario script editor is not available.");
+        switch (creation)
+        {
+            case ShopOpsCreation shop:
+            {
+                var table = Cs1ShopTable.Read(shop.TablePath);
+                table.AddTitle(
+                    shop.Options.ShopId,
+                    shop.Options.Title,
+                    shop.Options.TemplateShopId);
+                scriptEditor.CreateShopInteraction(
+                    shop.Options.FunctionName,
+                    shop.Options.ShopId,
+                    shop.Options.EntitySetupFunction,
+                    shop.Options.EntityId);
+                TrackModSave(shop.TablePath, beforeWrite: true);
+                table.Write();
+                TrackModSave(shop.TablePath, beforeWrite: false);
+                tableCatalog?.Invalidate(shop.TablePath);
+                break;
+            }
+            case FishingOpsCreation fishing:
+            {
+                var table = Cs1FishingPointTable.Read(fishing.TablePath);
+                table.AddPoint(
+                    fishing.Options.FishingPointId,
+                    fishing.Options.AvailabilitySourcePointId,
+                    fishing.Options.AvailableFishIds);
+                scriptEditor.CreateFishingInteraction(
+                    fishing.Options.FunctionName,
+                    fishing.Options.FishingPointId,
+                    position,
+                    fishing.Options.HeadingDegrees,
+                    position);
+                TrackModSave(fishing.TablePath, beforeWrite: true);
+                table.Write();
+                TrackModSave(fishing.TablePath, beforeWrite: false);
+                tableCatalog?.Invalidate(fishing.TablePath);
+                break;
+            }
+            default:
+                throw new ArgumentOutOfRangeException(nameof(creation));
+        }
+    }
+
+    private static string UniqueFunctionName(
+        DecompiledScript script,
+        string prefix)
+    {
+        var names = script.Functions
+            .Select(value => value.Name)
+            .ToHashSet(StringComparer.Ordinal);
+        for (var suffix = 1; suffix < 100000; suffix++)
+        {
+            var candidate = $"{prefix}{suffix:000}";
+            if (!names.Contains(candidate)) return candidate;
+        }
+        throw new InvalidOperationException(
+            $"No free function name remains for prefix '{prefix}'.");
+    }
+
+    private static int NextSignedId(IEnumerable<int> ids)
+    {
+        var used = ids.ToHashSet();
+        for (var value = 0; value <= short.MaxValue; value++)
+        {
+            if (!used.Contains(value)) return value;
+        }
+        throw new InvalidOperationException("No non-negative signed 16-bit ID remains.");
     }
 
     private Control CreateOpsInputEditor(OpsCreationInput input)
@@ -6394,7 +6692,20 @@ public sealed class ViewerForm : Form
         OpsSpatialCreationProfile? OpsProfile,
         IReadOnlyDictionary<string, string> Inputs,
         Vector3? Position,
-        Vector3 SurfaceNormal);
+        Vector3 SurfaceNormal,
+        SpecializedOpsCreation? SpecializedOpsCreation = null);
+
+    private abstract record SpecializedOpsCreation(string TablePath);
+
+    private sealed record ShopOpsCreation(
+        string TablePath,
+        ShopCreationOptions Options)
+        : SpecializedOpsCreation(TablePath);
+
+    private sealed record FishingOpsCreation(
+        string TablePath,
+        FishingCreationOptions Options)
+        : SpecializedOpsCreation(TablePath);
 
     private sealed record LoadedPropAnimation(
         CpuAnimationClip Clip,

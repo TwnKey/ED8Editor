@@ -734,3 +734,329 @@ implémenté du tout.
 [MANQUE] Sémantique des flags QSTitle/QSText, cycle de vie de quête côté script,
          création/suppression structurelle de quêtes et association aux
          fonctions de scénario.
+[PLAN]   Objectif retenu : importer un FBX (modèle, textures, animations) et
+         l'insérer en jeu comme nouveau personnage, sans que l'utilisateur ait
+         à désigner un personnage donneur. Donc modèle .dae.phyre écrit
+         intégralement, sans gabarit. Décisions : les shaders ne sont pas
+         compilés mais liés par leur hash ed8.fx#<hash> (ce qui oblige à
+         connaître la taille exacte des paramètres attendus) ; les animations
+         sont nécessaires dans les deux sens — clips custom depuis le FBX, et
+         adaptation des animations du jeu à un squelette maison (retarget
+         rotation locale, appariement par nom de bone, échec explicite).
+         Feuille de route détaillée : doc/phyre_modele_zero.md
+[OK]     Phase A du modèle de zéro : bibliothèque de schéma complète du jeu.
+         Mesure sur les 32 796 clusters livrés : 175 classes distinctes, 521
+         membres, et aucune classe décrite de deux façons différentes — une
+         définition de classe est une constante du moteur, pas une disposition
+         par fichier. PhyreSchemaLibrary parle donc en noms et résout les ids
+         selon PhyreNamespacePacked.cpp (type d'un membre : indice de type sous
+         le nombre de types, sinon classe[id - nbTypes - 1] ; superclasse :
+         espace séparé 1-based). Contrôle byte-exact : 32 796 namespaces
+         reconstruits depuis la seule bibliothèque, 0 écart avec le jeu.
+         Sondes : --schema-union, --emit-library, --library-check.
+[OK]     Phase B, préalable établi : la composition réelle d'un objet. Les
+         membres se cumulent le long de la chaîne d'héritage et un tableau fixe
+         compte une fois par élément (Size x max(FixedArraySize, 1)) ; ce que
+         les membres ne couvrent pas est nul dans le fichier. Mesure sur le
+         corpus : 5 171 709 objets, 181 570 432 octets, 23 415 015 hors membres
+         dont 155 seulement non nuls, tous dans PCameraOrthographic (125) et
+         PCameraPerspective (30). Écrire un objet = remplir de zéros puis poser
+         les membres. Sonde : --object-coverage.
+[MANQUE] Phase B : écrivain d'objets depuis une description structurée, plus la
+         section « header class » (sémantique toujours non établie).
+[OK]     Section « header class » élucidée : ce n'était pas un trou du conteneur
+         mais la description des paramètres de shader. Le moteur
+         (loadAndFixHeaderClasses) parcourt les groupes d'instances et, pour
+         chacun dont la classe porte PE_CLASS_DESCRIPTOR_HEADER (bit 0x4), lit
+         un compteur (4 o) puis autant d'enregistrements de 16 o
+         { type, offset dans le parent, drapeaux, nombre } décrivant les objets
+         posés à l'intérieur de l'objet en-tête. Sur ply000.dae.phyre : 32
+         instances, toutes PParameterBuffer, 1 546 enfants (22x48 + 10x49) ;
+         classe déclarée à 16 o, enfants jusqu'à l'offset 568. Sonde :
+         --header-class.
+[MANQUE] Prouver que ces enfants se déduisent des PShaderParameterDefinition du
+         tampon (m_tweakableShaderParameterDefinitions) en régénérant la section
+         entière depuis elles seules — même contrôle byte-exact. C'est le point
+         dur de la phase C (liaison d'un shader compilé) qui se joue là.
+[OK]     Section en-tête vérifiée sur le corpus (--header-class-check) : 7 937
+         clusters concernés, 47 572 instances ; 0 écart entre les groupes
+         marqués en-tête et le compte déclaré (la section s'indexe par simple
+         parcours des groupes), et 0 tampon de paramètres dont le nombre
+         d'enfants diffère du nombre de paramètres de shader déclarés — un
+         enfant par paramètre, sans exception. Deux classes en-tête dans tout le
+         jeu : PParameterBuffer (0xC = en-tête + pas de constructeur par défaut)
+         et PAnimationClipBinding (0x14 = en-tête + tightly packed), cette
+         dernière à produire aussi pour la phase F (animations).
+[MANQUE] Ordre des enfants : il suit l'ordre des paramètres du shader et non les
+         offsets, la charge étant rangée par taille d'élément. Sans importance
+         tant qu'on lie un shader existant (la disposition se reprend d'un
+         matériau livré qui l'utilise) ; à reverser si l'on veut un jeu de
+         paramètres inédit.
+[OK]     Zone d'objets entièrement rendue compte (--object-extent) : 212 220
+         groupes, 211 250 172 octets rangés, 181 570 432 couverts par les
+         tailles de classe. Les 29 679 740 restants tombent exactement sur les
+         deux classes en-tête — PParameterBuffer (24 744 208 sur 41 712 groupes)
+         et PAnimationClipBinding (4 935 532 sur 5 859) — et cette charge est
+         précisément ce que décrit la section en-tête. Toute autre classe range
+         ses objets à la taille exacte de sa classe. Correction de portée : la
+         mesure de couverture lisait chaque objet sur la taille de sa classe et
+         n'atteignait donc pas ces charges ; les deux mesures se complètent.
+[OK]     Phase B, noyau : PhyreObjectWriter écrit les objets d'une liste
+         d'instances depuis leur contenu (dimensionner, mettre à zéro, poser les
+         membres de toute la chaîne d'héritage, ajouter la charge d'une classe
+         en-tête). Contrôle --object-write sur le corpus : 32 796 clusters,
+         5 171 709 objets réécrits, 64 non identiques — 53 PCameraOrthographic
+         et 11 PCameraPerspective, exactement les objets désignés par la mesure
+         de couverture, atteints par un chemin indépendant. Aucune de ces deux
+         classes n'entre dans le chemin d'un personnage.
+[MANQUE] Phase B, suite : le graphe de pointeurs et les tableaux portés par les
+         objets (qui pointe vers quoi), puis l'assemblage d'un cluster modèle
+         complet depuis une description structurée.
+[OK]     Cluster entier assemblé depuis son contenu (PhyreClusterWriter.
+         RebuildFromContents + sonde --whole-cluster) : schéma issu de la
+         bibliothèque, objets de PhyreObjectWriter, tables de fixups
+         ré-encodées. Recopiés faute de forme structurée : données de tableaux,
+         section en-tête, en-têtes de listes d'instances, charge GPU.
+         Résultat : 32 534 clusters sur 32 796 reconstruits à l'octet près,
+         dont 7 664 modèles sur 7 926.
+[OK]     Empaquetage manquant trouvé : PE_PACKED_FIXUP_STRIDED (identifiants
+         régulièrement espacés écrits « premier, pas, longueur »). Le moteur ne
+         le retient que si la série couvre autant d'identifiants qu'il y a de
+         fixups — m_matchingCount étant le nombre de fixups, qui peuvent
+         partager des objets, un bloc à identifiants dupliqués est exclu. Sans
+         cette seconde condition on le choisit trop souvent (344 clusters
+         corrigés mais 837 cassés).
+[MANQUE] 262 clusters encore non identiques, tous localisés : 227 diffèrent dans
+         les fixups pointeurs à taille EGALE (départage entre deux encodages de
+         même longueur, plus aucune règle manquante), 35 dans les données
+         d'objets (les deux classes de caméra déjà connues).
+[?]      Les 227 clusters a fixups pointeurs non identiques : pousse jusqu'au
+         bout. L'ordre des fixups du bloc est le NOTRE a l'identique, et les
+         tailles concordent (7 165 octets des deux cotes sur npc499). Le seul
+         ecart : a l'interieur d'un meme objet source, le fichier livre place
+         dest 2 (arr 1) avant dest 1 (arr 0). Or CompareFixupByTarget
+         (PhyreFixupCompression.cpp:88) ordonne par identifiant de destination
+         croissant — le fichier livre n'est donc pas dans l'ordre que son propre
+         comparateur produit, et l'ordre interne ne suit ni la destination ni
+         l'index de tableau. Explication la plus probable, non prouvee : le tri
+         par identifiant d'objet source est INSTABLE (std::sort), donc la
+         permutation depend de l'implementation qui a construit les assets et
+         n'est pas derivable du format. Consequence pratique : l'identite
+         octet-pour-octet est hors d'atteinte pour ces 227 fichiers (0,7 % du
+         corpus), sans effet sur la validite — n'importe quel ordre se charge
+         pareil. Ne pas y remettre de temps. Reproduction :
+         --pointer-diff 999999 C_NPC499.pkg
+[OK]     Phase B, le graphe : question resolue, et par la negative — il n'y a
+         rien a deduire. Prealable etabli : dans une source de fixup, le bit de
+         poids fort signale un OFFSET BRUT ; sans lui, la valeur est
+         l'identifiant du membre, c'est-a-dire son index dans la table de
+         membres du namespace empaquete (PhyreNamespacePacked.cpp:1404), ce que
+         PhyreDataMember.Index contient deja. (J'avais lu la convention a
+         l'envers.) Une fois l'appariement correct, --graph-check trouve 24
+         membres porteurs de pointeurs sur ply000 et, surtout, AUCUN de leurs
+         986 champs n'est renseigne : ils valent tous zero dans le fichier. Un
+         pointeur n'est donc pas stocke dans l'objet, il est entierement decrit
+         par le fixup. Consequence : ecrire un cluster = ecrire les objets avec
+         des zeros aux champs pointeurs (ce que PhyreObjectWriter fait deja) et
+         emettre la liste de fixups depuis le graphe voulu. Les tables savent
+         deja s'ecrire a l'octet pres. Plus aucun reverse a faire ici.
+[MANQUE] Phase B, ce qui reste : exprimer le graphe voulu (quel objet pointe
+         vers quel autre) en termes de PhyreAuthoringSource, puis assembler un
+         cluster modele complet depuis cette description. Travail de
+         construction, plus d'analyse.
+[OK]     Phase B : l'assembleur existe. PhyreClusterContents decrit un cluster
+         sans octets d'emprunt (types, groupes = classe + objets + donnees de
+         tableaux, fixups, user fixups, section en-tete, charge) et
+         PhyreClusterAssembler.Assemble en produit le fichier : fermeture de la
+         liste de classes (celles instanciees, leurs ancetres, et les classes
+         que leurs membres referencent — via PhyreSchemaLibrary.Referenced),
+         disposition des objets, en-tetes de listes d'instances, compte des
+         fixups par groupe, puis composition par PhyreClusterWriter. Compile.
+[OK]     Assembleur CONTROLE (--assemble-check) : on decompose un cluster livre
+         en PhyreClusterContents, on assemble, on relit avec nos lecteurs et on
+         exige les memes groupes, les memes objets et le meme nombre de fixups.
+         L'identite octet-pour-octet avec le jeu n'est PAS le critere, car
+         l'assembleur ordonne les classes alphabetiquement quand un fichier
+         livre a son propre ordre. Resultat : 32 761 clusters sur 32 796,
+         modeles compris. Les 35 echecs sont exactement les clusters a
+         PCameraOrthographic/PCameraPerspective deja connus — meme chiffre que
+         le controle --whole-cluster, atteint par un troisieme chemin
+         independant.
+[MANQUE] Reste, pour ecrire un modele neuf : batir un PhyreClusterContents a
+         partir d'un PhyreModelSource (objets PMesh/PMeshSegment/PNode/PMaterial
+         et le graphe de fixups qui les relie), plus la geometrie packee dans la
+         charge. Plus aucune analyse de format en amont — c'est de la
+         construction.
+[OK]     Disposition des sommets des personnages relevee (--vertex-layout, 64
+         modeles ply00*) : le jeu n'INTERLEAVE PAS. Chaque attribut occupe son
+         propre flux, dont la foulee vaut exactement sa taille — Position
+         Float32x3 (12), Normal Float32x3 (12), Tangent Float32x3 (12),
+         Bitangent Float32x3 (12), TextureCoordinate Float32x2 (8), plus un
+         second jeu TextureCoordinate1/Bitangent1, et pour les 781 flux skinnes
+         JointIndices UInt8x4 (4) et JointWeights Float32x4 (16). Aucun format
+         exotique, aucun packing a reverser : ce sont des tableaux plats de
+         float, sauf les indices de jointures en octets. Consequence : ecrire
+         la geometrie se reduit a emettre un tableau par attribut, ce qui
+         supprime le risque de mauvais packing d'attribut identifie en phase D.
+[OK]     Phase D, le packer ecrit : PhyreModelGeometryPacker prend un
+         PhyreModelSource et rend un flux plat par attribut (Position/Normal/
+         Tangent/Bitangent Float32x3, TextureCoordinate Float32x2, et si le
+         maillage est skinne JointIndices UInt8x4 + JointWeights Float32x4),
+         plus un tampon d'index par segment, en 16 bits sous 65 536 sommets et
+         en 32 au-dela. Le bitangent n'est pas fourni en entree : il est
+         reconstruit comme troisieme jambe du repere, son signe venant de la
+         quatrieme composante de la tangente. Un indice de jointure hors d'un
+         octet est refuse explicitement plutot que tronque.
+[OK]     Packer CONTROLE contre les octets du jeu (--pack-check) : on relit un
+         maillage livre, on le remet sous la forme neutre PhyreModelSource, on
+         le re-packe et on compare chaque flux a celui d'ou il vient. Sur
+         ply000 : 96 flux sur 112 identiques, et six semantiques sur sept sont
+         parfaites — Position, Normal, Tangent, TextureCoordinate, JointIndices,
+         JointWeights, 16 sur 16 chacune. La disposition et tous les attributs
+         portes directement sont donc confirmes.
+[OK]     Bitangente corrigee : elle est desormais une ENTREE de
+         PhyreVertexSource plutot qu'un calcul. La reconstruction
+         cross(normal, tangent) * signe ne rendait pas celle du jeu (0 sur 16
+         mesure) ; elle n'est gardee qu'en repli pour un maillage qui n'en
+         fournit aucune. Resultat du controle apres correction : 112 flux sur
+         112 sur ply000, puis 6 016 sur 6 016 sur l'ensemble des personnages
+         jouables (C_PLY*), toutes semantiques a 100 %. Le packer est donc
+         verifie contre les octets du jeu.
+[!]      PhyreModelReplacement ECRIT MAIS SUSPECT — ne pas s'en servir tel quel.
+         Il suppose un maillage a tampon de sommets PARTAGE, les segments y
+         indexant. Or le jeu fait l'inverse : ply000 a 16 primitives et chacune
+         porte ses propres flux (16 buffers par primitive, 512 sommets pour
+         l'une, 681 pour une autre). La distribution des flux serait donc
+         fausse. Deux suites : soit PhyreModelSource devient une LISTE de
+         maillages, un par segment, avec ses propres sommets — ce qui colle a la
+         structure du jeu et a ce que tout exportateur sait produire ; soit
+         Replace regroupe. La premiere est la bonne : elle supprime une
+         conversion au lieu d'en ajouter une.
+         Controle a ecrire dans les deux cas : rendre a un modele son propre
+         maillage doit redonner le fichier a l'octet pres (--replace-check).
+[OK]     PhyreModelSource restructure : c'est desormais une LISTE de maillages
+         (PhyreMeshSource : materiau + ses propres sommets + ses indices), ce
+         qui epouse la structure du jeu — ply000 a 16 primitives, chacune avec
+         ses flux. Le packer packe par maillage. Controle --pack-check refait
+         apres restructuration : 6 016 flux sur 6 016, inchange.
+[OK]     PhyreModelReplacement + controle --replace-check ecrits : rendre a un
+         modele son propre maillage et exiger le fichier a l'octet pres.
+[OK]     Packer complet et verifie : un maillage porte SEIZE flux — Position,
+         Normal, JointIndices, JointWeights, plus QUATRE jeux d'UV ayant chacun
+         sa propre tangente ET sa bitangente. PhyreVertexSource porte donc une
+         liste de PhyreTexCoordSet (UV + tangente + bitangente). Controle
+         --pack-check : 256 flux sur 256 sur ply000, puis 11 932 sur 11 932 sur
+         l'ensemble des personnages jouables, toutes semantiques a 100 %.
+[OK]     Repli du produit vectoriel SUPPRIME. Il etait faux deux fois : il ne
+         reproduit pas le repere du jeu, et le jeu ecrit des ZEROS pour un jeu
+         d'UV qu'un maillage n'utilise pas — donc y mettre une valeur remplissait
+         un jeu inutilise de bruit. C'est ce qui faisait echouer Bitangent2
+         (0 sur 16) ; sans repli, tout passe.
+[OK]     Remplacement de geometrie BOUCLE ET VERIFIE. L'appariement se fait
+         desormais PAR SEMANTIQUE : le cluster declare ce que porte chacun de ses
+         tampons de sommets, on lit cette declaration et on y place le flux qui
+         correspond, jamais celui qui vient au meme rang. Un tampon pour lequel
+         le maillage n'a rien garde ce qu'il avait — ecrire des zeros serait une
+         modification silencieuse. Controle --replace-check : rendre a un modele
+         son propre maillage redonne le fichier a l'octet pres, 70 modeles sur
+         70 (tous les personnages jouables).
+         La chaine importer -> fichier du jeu est donc complete pour la
+         geometrie : PhyreModelSource (agnostique du format d'entree) -> packer
+         -> remplacement -> .dae.phyre valide, avec les materiaux et les shaders
+         du modele hote conserves.
+[MANQUE] Jamais teste EN JEU. Aucun fichier ecrit par cet outil n'a encore ete
+         charge par le moteur. C'est le prochain jalon, et il ne se remplace pas
+         par un controle byte-exact de plus.
+[MANQUE] EXIGENCE A NE PAS PERDRE : creer un nouveau personnage doit generer
+         automatiquement son script ANI, avec des fonctions de base
+         preremplies. Le fichier ANI est une table de tables : offsets de code
+         des fonctions (0x27) et offsets de leurs noms (0x517) en parallele —
+         Init, ReInit, AniReset, OnCampIn, OnCampOut, OnChangeSkin, AniClimbUp,
+         AniFieldChange, ShowEquip, EraseEquip, SpringOn, AniStartRainMode... —
+         et le meme reservoir de chaines porte les NOMS DE CLIPS (0001, 0002,
+         0003a, 0004b...). C'est donc la que le personnage declare les
+         animations qu'il utilise. Strategie recommandee : partir du script ANI
+         d'un personnage existant (le studio sait deja le copier) et n'y
+         remplacer que les noms de clips, plutot que de generer un script de
+         zero. Deux tables de l'en-tete (0x13c, 0x4f0) restent non identifiees.
+[OK]     PREMISSE DES ANIMATIONS VERIFIEE (--clip-targets). Le squelette de
+         ply000 compte 82 jointures ; ses clips ciblent par NOM et tout resout :
+         ply000_000 = 165 canaux sur 65 cibles, 65 sur 65 nomment une jointure ;
+         ply000_001 = 82 canaux sur 73 cibles, 72 sur 73 ; ply000_002 = 70 sur
+         71. La seule cible non-jointure est « locator10 », qui est un PLocator
+         du modele, pas une anomalie.
+         Consequence : un squelette portant les noms du jeu est pilote par TOUS
+         les clips existants, sans ecrire un octet d'animation. La route
+         « conformer le squelette » est donc ouverte et prouvee, pas supposee.
+[!]      MAIS les noms sont ceux de Falcom, pas une convention repandue :
+         up_point, Spine, Bag01, L_cat_point, R_cat_point, back1, back2,
+         center_point, BS01... Un rig importe d'un autre jeu ne matchera JAMAIS
+         par nom. La table de correspondance et l'etape de conformation ne sont
+         donc pas un filet de secours pour cas rares : c'est le chemin normal,
+         et l'interface doit etre concue pour ca. Prevoir aussi les locators
+         (points d'attache) en plus des jointures.
+[OK]     RETARGETING : le coeur est implemente et verifie.
+         PhyreSkeletonConform re-exprime un rig importe dans le repere du jeu :
+         chaque os apparie recoit l'ORIENTATION de repos du jeu tout en gardant
+         SA PROPRE POSITION (les proportions restent celles de l'auteur, une
+         rotation ignorant la longueur d'un os), puis les matrices de bind sont
+         corrigees pour que la peau ne bouge pas — exactement, pas
+         approximativement : le skinning evalue world x inverseBind, et poser
+         inverseBind' = W'^-1 x W x inverseBind laisse ce produit inchange.
+         Controle --conform-check : on monte un rig depuis le squelette d'un
+         personnage puis on le DESALIGNE volontairement (chaque os tourne d'un
+         angle different, aucun repere ne coincide plus), on conforme, et on
+         mesure le deplacement de la peau au repos. Resultat : 65 rigs, la peau
+         bouge d'au plus 1,4e-6 — du bruit de virgule flottante. Tester avec un
+         rig deja aligne n'aurait rien prouve, ne rien faire aurait passe.
+         Sont aussi rapportes : les os du rig qu'aucune correspondance ne couvre
+         (ils gardent leur repere et ne recoivent rien) et ceux que le jeu a et
+         que le rig n'a pas (typiquement les os de torsion).
+[MANQUE] Reste cote retargeting : l'appariement assiste (forme de la hierarchie,
+         propose et valide par l'utilisateur), le profil sauvegarde par rig, la
+         couverture des locators (points d'attache), et l'apercu — jouer un clip
+         du jeu sur le rig conforme dans le viewport.
+[PLAN]   Modeles non skinnes et auto-rigging, decision retenue :
+         1. Un maillage non skinne est le plus souvent un OBJET (arme,
+            accessoire, decor). Il se rattache par LOCATOR, ou par bind rigide
+            (tous les sommets sur une jointure, poids 1). Aucun travail :
+            le packer suit deja IsSkinned et n'emet pas les flux de skinning
+            sans squelette. Le jeu lui-meme a 9 maillages non skinnes sur 790.
+         2. Pinocchio (Baran & Popovic, SIGGRAPH 2007, MIT) : ne PAS le prendre
+            en bloc. Sa moitie fragile est le placement du squelette dans le
+            maillage — inutile ici, puisqu'on a deja le squelette du jeu, et que
+            l'utilisateur peut caler son maillage dessus dans le viewport. Sa
+            moitie solide est la ponderation par diffusion de chaleur (ce que
+            Blender expedie sous « With Automatic Weights »), implementable
+            depuis le papier sans heriter d'une base C++ de 2007.
+         3. L'auto-weighting est un REPLI, pas la route principale : des poids
+            peints dans un DCC seront toujours meilleurs, surtout aux epaules et
+            aux hanches. Le chemin normal reste « importe ton modele avec ses
+            poids ».
+[OK]     PhyreRigTransfer : un modele importe est deplace sur le VRAI squelette
+         du jeu, en gardant les poids peints par son auteur. C'est le geste
+         manuel du moddeur (supprimer le squelette et les groupes de poids,
+         re-rigger sur un squelette Falcom, reassigner les poids) dont les deux
+         tiers mecaniques sont calcules.
+         Pourquoi finir sur le squelette du jeu et non conformer celui de
+         l'auteur : le squelette du jeu porte des os qu'aucun rig etranger n'a
+         (Bag01, L_cat_point, BS01, les locators d'attache) ; les garder est la
+         seule facon que les attaches et accessoires fonctionnent.
+         Deux observations rendent l'automatisation possible : (1) le rig
+         etranger dit DEJA ou chaque os se trouve dans ce maillage, donc le
+         squelette du jeu se cale dessus sans aucune recherche geometrique —
+         pas besoin de Pinocchio ; (2) les poids ne sont pas repeints mais
+         re-adresses, le mapping envoyant chaque os etranger sur un os du jeu et
+         les poids etant sommes par cible puis renormalises.
+         Les orientations restent celles du JEU partout — c'est le repere dans
+         lequel ses clips sont ecrits ; seule la position des jointures change.
+         Controle --rig-transfer : rig renomme et ETIRE (x1,7, un personnage
+         plus grand), un sommet par os. Sur 65 modeles, les jointures se posent
+         a 1,8e-6 pres de la ou le rig les met — donc les proportions du
+         personnage sont reproduites, pas celles du jeu — et 0 poids sur la
+         mauvaise jointure. Un rig de meme taille aurait passe sans rien faire ;
+         l'etirement est ce qui rend le test probant.
+         Le rapport signale les jointures placees, celles derivees (torsion,
+         attaches), celles alimentees par PLUSIEURS os (fusion devinee, a
+         verifier en premier) et le poids perdu par la limite de quatre
+         jointures.

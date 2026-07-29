@@ -13,6 +13,13 @@ public enum OpsValueKind
     MapSoundSource,
 }
 
+public enum OpsCreationSpecialization
+{
+    None,
+    Shop,
+    FishingSpot,
+}
+
 public sealed record OpsCreationInput(
     string Name,
     string DisplayName,
@@ -74,13 +81,15 @@ public sealed class OpsSpatialCreationProfile
         string evidence,
         IReadOnlyList<OpsCreationInput> inputs,
         Func<IReadOnlyDictionary<string, string>, string> baseName,
-        Func<int, string, Vector3, IReadOnlyDictionary<string, string>, OpsSpatialElementDraft> factory)
+        Func<int, string, Vector3, IReadOnlyDictionary<string, string>, OpsSpatialElementDraft> factory,
+        OpsCreationSpecialization specialization = OpsCreationSpecialization.None)
     {
         Id = id;
         DisplayName = displayName;
         Kind = kind;
         Evidence = evidence;
         Inputs = inputs;
+        Specialization = specialization;
         this.baseName = baseName;
         this.factory = factory;
     }
@@ -90,6 +99,7 @@ public sealed class OpsSpatialCreationProfile
     public SceneElementKind Kind { get; }
     public string Evidence { get; }
     public IReadOnlyList<OpsCreationInput> Inputs { get; }
+    public OpsCreationSpecialization Specialization { get; }
 
     internal string CreateBaseName(IReadOnlyDictionary<string, string> values)
     {
@@ -128,6 +138,8 @@ public static class OpsSpatialCreationCatalog
         EventTriggerEntryBox(),
         GroupBox(),
         EventLookPoint(),
+        ShopLookPoint(),
+        FishingLookPoint(),
         MapCamera(),
         PointSound(),
         PointLight(),
@@ -262,6 +274,82 @@ public static class OpsSpatialCreationCatalog
                     selection, SceneTransformCapabilities.Translate,
                     new SceneTransform(position, Quaternion.Identity, Vector3.One), Point: point);
             });
+
+    private static OpsSpatialCreationProfile ShopLookPoint()
+        => SpecializedLookPoint(
+            "observed.c0110.look_point_type_5",
+            "Shop interaction (type 5)",
+            "Observed in c0110.ops: LP_Shop01; matching function reaches Shop_Open (OP114)",
+            "5",
+            OpsCreationSpecialization.Shop);
+
+    private static OpsSpatialCreationProfile FishingLookPoint()
+        => SpecializedLookPoint(
+            "observed.t1000.look_point_type_7",
+            "Fishing spot (type 7)",
+            "Observed in t1000.ops: LP_fishpoint00; matching function contains OP73 selector 1",
+            "7",
+            OpsCreationSpecialization.FishingSpot);
+
+    private static OpsSpatialCreationProfile SpecializedLookPoint(
+        string id,
+        string displayName,
+        string evidence,
+        string type,
+        OpsCreationSpecialization specialization)
+        => new(
+            id,
+            displayName,
+            SceneElementKind.LookPoint,
+            evidence,
+            new[]
+            {
+                new OpsCreationInput(
+                    "function", "Script function", OpsValueKind.Text),
+            },
+            values => values["function"].Trim(),
+            (sourceIndex, name, position, values) =>
+            {
+                var functionName = values["function"].Trim();
+                var radius = values.TryGetValue("radius", out var radiusText)
+                    && float.TryParse(
+                        radiusText,
+                        NumberStyles.Float,
+                        CultureInfo.InvariantCulture,
+                        out var parsedRadius)
+                        ? parsedRadius
+                        : 1.5f;
+                var heading = values.TryGetValue("heading", out var headingText)
+                    ? headingText
+                    : "0";
+                var attributes = new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["name"] = functionName,
+                    ["flag"] = type == "7" ? "0x3" : "0x1",
+                    ["type"] = type,
+                    ["pos"] = Position(position),
+                    ["markPos"] = type == "7" ? Position(position) : "0, 1, 0",
+                    ["radius"] = Number(radius),
+                    ["rotY"] = heading,
+                };
+                var point = new MapPoint(
+                    sourceIndex,
+                    MapPointKind.LookPoint,
+                    functionName,
+                    position,
+                    radius,
+                    attributes);
+                var selection = new SceneElementSelection(
+                    SceneElementKind.LookPoint,
+                    sourceIndex,
+                    functionName);
+                return new OpsSpatialElementDraft(
+                    selection,
+                    SceneTransformCapabilities.Translate,
+                    new SceneTransform(position, Quaternion.Identity, Vector3.One),
+                    Point: point);
+            },
+            specialization);
 
     private static OpsSpatialCreationProfile PointSound()
         => new(

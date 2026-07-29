@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ED8Editor.Models\ED8Editor.Models.csproj" />
+    <ProjectReference Include="..\..\src\ED8Editor.Phyre\ED8Editor.Phyre.csproj" />
+  </ItemGroup>
+</Project>

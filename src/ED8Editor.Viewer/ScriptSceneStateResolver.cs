@@ -54,7 +54,14 @@ internal sealed record ScriptEffectInstance(
     Vector3 Position,
     Vector3 RotationDegrees,
     Vector3 Scale,
-    int StartFrame);
+    int StartFrame,
+    ScriptEffectSpace Space = ScriptEffectSpace.World);
+
+internal enum ScriptEffectSpace
+{
+    World,
+    Camera,
+}
 
 /// <summary>
 /// Something hanging from one of an actor's skeleton nodes. OP37 attaches a model
@@ -177,7 +184,8 @@ internal sealed record ScriptSceneState(
     ScriptCameraState Camera,
     IReadOnlyDictionary<int, ScriptEntityState> Entities,
     IReadOnlyDictionary<string, ScriptPropAnimation> PropAnimations,
-    IReadOnlyList<UnresolvedScriptCall> UnresolvedCalls);
+    IReadOnlyList<UnresolvedScriptCall> UnresolvedCalls,
+    int? EnvironmentProfile);
 
 internal sealed record ScriptSceneTimelinePoint(
     int Frame,
@@ -440,6 +448,8 @@ internal static class ScriptSceneStateResolver
         ArgumentNullException.ThrowIfNull(script);
         VerifySpawnLayoutSmoke();
         VerifyMovementControlSmoke();
+        VerifyEnvironmentProfileSmoke();
+        VerifySceneEffectPlaybackSmoke();
         var spawnOwner = script.Functions
             .Where(value => value.IsCode)
             .SelectMany(function => function.Instructions
@@ -553,6 +563,130 @@ internal static class ScriptSceneStateResolver
         {
             throw new InvalidOperationException(
                 "Entity_Spawn operands were not mapped to the verified OP19 layout.");
+        }
+    }
+
+    private static void VerifyEnvironmentProfileSmoke()
+    {
+        var setNight = new DecompiledInstruction(
+            0,
+            0,
+            "Environment_SetProfile",
+            8,
+            new[]
+            {
+                new InstructionArgument(
+                    0,
+                    "expr",
+                    "expr",
+                    0,
+                    0,
+                    Array.Empty<byte>(),
+                    new[]
+                    {
+                        new ExprElement(0x00, "value", "push 2", 2, null),
+                        new ExprElement(0x13, "operator", "nop", 0, null),
+                        new ExprElement(0x01, "operator", "END", 0, null),
+                    },
+                    Name: "environment_profile"),
+            },
+            Array.Empty<JumpTarget>());
+        var function = new DecompiledFunction(
+            0,
+            "EnvironmentSmoke",
+            true,
+            new[]
+            {
+                setNight,
+                new DecompiledInstruction(
+                    1, 0, "Return", 1,
+                    Array.Empty<InstructionArgument>(),
+                    Array.Empty<JumpTarget>()),
+            });
+        var state = Resolve(
+            new DecompiledScript("EnvironmentSmoke", new[] { function }),
+            function,
+            setNight.Index);
+        if (state.EnvironmentProfile != 2)
+        {
+            throw new InvalidOperationException(
+                "Environment_SetProfile did not preserve the script profile value.");
+        }
+    }
+
+    private static void VerifySceneEffectPlaybackSmoke()
+    {
+        const int sceneOwnerId = -3;
+        const int rainSlot = 201;
+        var load = new DecompiledInstruction(
+            0,
+            0,
+            "Effect_LoadSlot",
+            39,
+            new InstructionArgument[]
+            {
+                ScalarArgument(0, "s16", sceneOwnerId, sem: "entity"),
+                ScalarArgument(1, "s32", rainSlot),
+                StringArgument(2, "system/rain00.eff"),
+            },
+            Array.Empty<JumpTarget>());
+        var play = new DecompiledInstruction(
+            1,
+            0,
+            "SceneEffect_PlayOrStop",
+            73,
+            new InstructionArgument[]
+            {
+                ScalarArgument(0, "u8", 0),
+                ScalarArgument(1, "s32", rainSlot),
+            },
+            Array.Empty<JumpTarget>());
+        var stop = new DecompiledInstruction(
+            2,
+            0,
+            "SceneEffect_PlayOrStop",
+            73,
+            new InstructionArgument[]
+            {
+                ScalarArgument(0, "u8", 1),
+                ScalarArgument(1, "s32", rainSlot),
+            },
+            Array.Empty<JumpTarget>());
+        var function = new DecompiledFunction(
+            0,
+            "WeatherSmoke",
+            true,
+            new[]
+            {
+                load,
+                play,
+                stop,
+                new DecompiledInstruction(
+                    3, 0, "Return", 1,
+                    Array.Empty<InstructionArgument>(),
+                    Array.Empty<JumpTarget>()),
+            });
+        var script = new DecompiledScript("WeatherSmoke", new[] { function });
+
+        var playing = Resolve(script, function, play.Index);
+        if (!playing.Entities.TryGetValue(sceneOwnerId, out var sceneOwner)
+            || sceneOwner.Effects is not { Count: 1 } effects
+            || effects.Values.Single() is not { } rain
+            || rain.Slot != rainSlot
+            || rain.EffectPath != "system/rain00.eff"
+            || rain.Space != ScriptEffectSpace.Camera)
+        {
+            throw new InvalidOperationException(
+                "SceneEffect_PlayOrStop did not start the loaded global rain effect.");
+        }
+
+        var stopped = Resolve(script, function, stop.Index);
+        if (stopped.Entities.TryGetValue(sceneOwnerId, out sceneOwner)
+            && sceneOwner.Effects?.Values.Any(
+                effect => effect.Space == ScriptEffectSpace.Camera) == true)
+        {
+            throw new InvalidOperationException(
+                "SceneEffect_PlayOrStop did not stop the global scene effect.");
         }
     }
 
@@ -801,6 +935,7 @@ internal static class ScriptSceneStateResolver
         private List<ScriptSceneTimelinePoint>? timelinePoints;
         private int executedInstructions;
         private int elapsedFrames;
+        private int? environmentProfile;
 
         /// <summary>The block the reader selected, used only to settle a fork.</summary>
         public int? PreferredInstruction { get; init; }
@@ -854,7 +989,8 @@ internal static class ScriptSceneStateResolver
             new Dictionary<int, ScriptEntityState>(entities),
             new Dictionary<string, ScriptPropAnimation>(
                 propAnimations, StringComparer.Ordinal),
-            unresolvedCalls.ToArray());
+            unresolvedCalls.ToArray(),
+            environmentProfile);
 
         /// <summary>
         /// Starts recording a preview. The clock restarts at zero, so a movement
@@ -953,6 +1089,7 @@ internal static class ScriptSceneStateResolver
 
             var before = timelinePoints is null ? null : Snapshot();
             ApplyVariableWrite(instruction, selfEntityId);
+            ApplyEnvironmentProfile(instruction, selfEntityId);
             EnsureReferencedEntities(instruction, selfEntityId);
             ApplyEntityInstruction(instruction, selfEntityId);
             ApplyFacialExpression(instruction, selfEntityId);
@@ -1163,6 +1300,37 @@ internal static class ScriptSceneStateResolver
             }
         }
 
+        private void ApplyEnvironmentProfile(
+            DecompiledInstruction instruction,
+            int? selfEntityId)
+        {
+            // SET_SYS is shared by several unrelated engine globals. Slot 5 is
+            // the environment profile; the value remains an expression so calls
+            // and register writes replay exactly like they do for other state.
+            if (instruction.Opcode != 8) return;
+
+            // A selector-aware registry consumes slot 5 structurally and exposes
+            // only the expression. Accept the former generic SET_SYS shape too,
+            // so scripts opened with an older user-supplied registry still replay.
+            var expression = instruction.Name.Equals(
+                    "Environment_SetProfile", StringComparison.Ordinal)
+                ? instruction.Arguments.FirstOrDefault(value => value.Kind == "expr")
+                : instruction.Arguments.Count >= 2
+                  && instruction.Arguments[0].IntValue == 5
+                    ? instruction.Arguments[1]
+                    : null;
+            if (expression is null) return;
+
+            if (ScriptExpressionEvaluator.TryEvaluate(
+                    expression.Expression,
+                    variables,
+                    selfEntityId,
+                    out var value))
+            {
+                environmentProfile = value;
+            }
+        }
+
         public bool CanResolveAnimationCall(DecompiledInstruction instruction)
         {
             if (instruction.Opcode != 47
@@ -1314,6 +1482,11 @@ internal static class ScriptSceneStateResolver
             if (instruction.Opcode == 39)
             {
                 ApplyEffect(instruction, selfEntityId);
+                return;
+            }
+            if (instruction.Opcode == 73)
+            {
+                ApplySceneEffectPlayback(instruction);
                 return;
             }
             if (instruction.Opcode == 37)
@@ -1664,8 +1837,22 @@ internal static class ScriptSceneStateResolver
                 case "Effect_LoadSlot" when arguments.Count >= 3:
                 {
                     var slots = CopyEffectSlots(owner);
-                    slots[arguments[1].IntValue] = ReadArgumentString(arguments[2]);
-                    entities[ownerId] = owner with { EffectSlots = slots };
+                    var slot = arguments[1].IntValue;
+                    var path = ReadArgumentString(arguments[2]);
+                    slots[slot] = path;
+                    var effects = CopyEffects(owner);
+                    foreach (var key in effects
+                                 .Where(pair => pair.Value.Slot == slot)
+                                 .Select(pair => pair.Key)
+                                 .ToArray())
+                    {
+                        effects[key] = effects[key] with { EffectPath = path };
+                    }
+                    entities[ownerId] = owner with
+                    {
+                        EffectSlots = slots,
+                        Effects = effects,
+                    };
                     return;
                 }
                 case "Effect_UnloadSlot":
@@ -1724,6 +1911,64 @@ internal static class ScriptSceneStateResolver
                 }
             }
         }
+
+        /// <summary>
+        /// OP73 selector 23 controls the one scene-wide effect instance. The
+        /// handler reads an operation byte and a 32-bit scene slot. Operation 0
+        /// calls the engine's global-effect constructor with that slot; every
+        /// other value calls its no-argument global-effect destructor (the slot
+        /// is parsed but not passed). Rain and mist use this exact path.
+        /// </summary>
+        private void ApplySceneEffectPlayback(DecompiledInstruction instruction)
+        {
+            if (!instruction.Name.Equals(
+                    "SceneEffect_PlayOrStop", StringComparison.Ordinal)
+                || instruction.Arguments.Count < 2)
+            {
+                return;
+            }
+
+            const int sceneOwnerId = -3;
+            var operation = instruction.Arguments[0].IntValue;
+            var slot = instruction.Arguments[1].IntValue;
+            if (!entities.TryGetValue(sceneOwnerId, out var owner))
+            {
+                owner = CreateReferencedEntity(sceneOwnerId);
+            }
+            var effects = CopyEffects(owner);
+            foreach (var key in effects
+                         .Where(pair => pair.Value.Space == ScriptEffectSpace.Camera)
+                         .Select(pair => pair.Key)
+                         .ToArray())
+            {
+                effects.Remove(key);
+            }
+            if (operation != 0)
+            {
+                entities[sceneOwnerId] = owner with { Effects = effects };
+                return;
+            }
+
+            var instanceId = SceneSlotInstanceId(slot);
+            effects[instanceId] = new ScriptEffectInstance(
+                instanceId,
+                slot,
+                owner.EffectSlots is { } slots
+                    && slots.TryGetValue(slot, out var path)
+                        ? path
+                        : string.Empty,
+                sceneOwnerId,
+                string.Empty,
+                Vector3.Zero,
+                Vector3.Zero,
+                Vector3.One,
+                elapsedFrames,
+                ScriptEffectSpace.Camera);
+            entities[sceneOwnerId] = owner with { Effects = effects };
+        }
+
+        private static int SceneSlotInstanceId(int slot)
+            => unchecked(int.MinValue + slot);
 
         private static Dictionary<int, string> CopyEffectSlots(ScriptEntityState entity)
             => entity.EffectSlots is null
@@ -2178,8 +2423,8 @@ internal static class ScriptSceneStateResolver
         /// in it — without them the playback never stops on an effect.
         /// </summary>
         private static bool IsTimelineInstruction(DecompiledInstruction instruction)
-            => instruction.Opcode is 2 or 16 or 19 or 32 or 34 or 35 or 36 or 37 or 39
-                or 45 or 46 or 47 or 50 or 54 or 55 or 56 or 69 or 95;
+            => instruction.Opcode is 2 or 8 or 16 or 19 or 32 or 34 or 35 or 36 or 37 or 39
+                or 45 or 46 or 47 or 50 or 54 or 55 or 56 or 69 or 73 or 95;
 
         private static bool IsFinite(Vector3 value)
             => float.IsFinite(value.X) && float.IsFinite(value.Y) && float.IsFinite(value.Z);

@@ -67,6 +67,14 @@ try
                 + $"scale=({sound.SourceScale.X:G6}, {sound.SourceScale.Y:G6}, {sound.SourceScale.Z:G6}) "
                 + $"name={sound.SoundName}");
         }
+        foreach (var point in map.Points.Where(value =>
+                     value.SourceAttributes.GetValueOrDefault("type") is "5" or "7"))
+        {
+            Console.WriteLine(
+                $"  LOOKPOINT [{point.SourceIndex}] {point.Name} "
+                + string.Join(" ", point.SourceAttributes.Select(value =>
+                    $"{value.Key}={value.Value}")));
+        }
         foreach (var light in map.Lights.OrderByDescending(value => value.OuterRange).Take(3))
         {
             Console.WriteLine($"  LIGHT [{light.SourceIndex}] range={light.OuterRange:G6}");

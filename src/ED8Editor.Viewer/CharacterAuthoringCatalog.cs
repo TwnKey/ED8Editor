@@ -15,6 +15,7 @@ internal sealed record CharacterAuthoringEntry(
     string DisplayName,
     string ModelAssetId,
     string AnimationScript,
+    string? BattleAiScript,
     string FacialAssetId,
     string SourceTable)
 {
@@ -44,51 +45,23 @@ internal static class CharacterAuthoringCatalog
                         : $"{character.DisplayName} ({pair.Label})",
                     pair.Model,
                     character.AnimationScript,
+                    null,
                     character.FacialAssetId,
                     "t_name.tbl / NameTableData")))
             .ToArray();
 
     public static IReadOnlyList<CharacterAuthoringEntry> LoadEnemies(string gameDataPath)
     {
-        var path = new[] { "dat_us", "dat" }
-            .Select(locale => Path.Combine(gameDataPath, "text", locale, "t_mons.tbl"))
-            .FirstOrDefault(File.Exists);
-        if (path is null) return Array.Empty<CharacterAuthoringEntry>();
-        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
-        var locale = Path.GetFileName(Path.GetDirectoryName(path)) ?? string.Empty;
-        var encoding = locale.Equals("dat", StringComparison.OrdinalIgnoreCase)
-            ? Encoding.GetEncoding(932)
-            : new UTF8Encoding(false, true);
-        var codec = new Cs1TableRecordCodec(textEncoding: encoding);
-        var result = new List<CharacterAuthoringEntry>();
-        foreach (var pair in Cs1TableDocument.Read(path).Entries
-                     .Select((entry, index) => (entry, index))
-                     .Where(value => value.entry.Category.Equals("status", StringComparison.Ordinal)))
-        {
-            var fields = codec.Decode(pair.entry);
-            if (fields is null) continue;
-            var values = fields.ToDictionary(
-                value => value.Field.Name,
-                value => value.Value,
-                StringComparer.Ordinal);
-            if (!values.TryGetValue("script", out var script)
-                || !values.TryGetValue("texture", out var modelAsset)
-                || !values.TryGetValue("name", out var name)
-                || string.IsNullOrWhiteSpace(script)
-                || string.IsNullOrWhiteSpace(modelAsset))
-            {
-                continue;
-            }
-            result.Add(new CharacterAuthoringEntry(
+        return EnemyBattleCatalog.LoadProfiles(gameDataPath)
+            .Select(profile => new CharacterAuthoringEntry(
                 CharacterAuthoringKind.Enemy,
-                null,
-                string.IsNullOrWhiteSpace(name) ? script : name,
-                modelAsset,
-                script,
+                profile.DocumentIndex,
+                profile.DisplayName,
+                profile.ModelAssetId,
+                profile.AnimationScriptName,
+                profile.AiScriptName,
                 string.Empty,
-                $"t_mons.tbl / status row {pair.index}"));
-        }
-        return result
+                $"t_mons.tbl / status row {profile.DocumentIndex}"))
             .DistinctBy(value => (value.AnimationScript, value.ModelAssetId))
             .OrderBy(value => value.AnimationScript, StringComparer.OrdinalIgnoreCase)
             .ToArray();

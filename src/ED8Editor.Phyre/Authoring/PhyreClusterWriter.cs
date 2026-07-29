@@ -135,6 +135,68 @@ public static class PhyreClusterWriter
         return header;
     }
 
+    /// <summary>
+    /// Rewrites a cluster the strong way: its schema comes from
+    /// <see cref="PhyreSchemaLibrary"/> rather than from the file, and its
+    /// objects are written by <see cref="PhyreObjectWriter"/> from what they
+    /// hold rather than copied.
+    ///
+    /// What is still carried over: the data of arrays, the header class section,
+    /// the instance list headers and the GPU payload. Those are the pieces that
+    /// have no structured form yet — so this says exactly how far authoring
+    /// reaches, and no further.
+    /// </summary>
+    public static byte[] RebuildFromContents(ReadOnlyMemory<byte> cluster)
+    {
+        var sections = PhyreClusterSectionReader.Read(cluster);
+        var fixups = new PhyreFixupReader().Read(cluster, sections.Metadata);
+        var data = new PhyreClusterReader().Read(cluster);
+        var metadata = sections.Metadata;
+
+        var classNames = metadata.Classes.Select(value => value.Name).ToArray();
+        var descriptors = PhyreSchemaLibrary.Descriptors(metadata.Types, classNames);
+        var packedNamespace = PhyreNamespaceWriter.Write(
+            metadata.Types,
+            descriptors,
+            PhyreNamespaceWriter.ReadUnmodelledHeader(sections.PackedNamespace));
+
+        // Only the objects are rewritten; whatever a group holds after them —
+        // array data, and any padding the group carries — stays where it was.
+        var objectData = sections.ObjectData.ToArray();
+        var groupOffset = 0L;
+        foreach (var group in metadata.InstanceGroups)
+        {
+            var size = group.Count == 0 ? 0 : (int)(group.ObjectsSize / group.Count);
+            if (group.Count != 0 && size != 0
+                && group.ClassId != 0 && group.ClassId <= descriptors.Length)
+            {
+                var className = descriptors[(int)group.ClassId - 1].Name;
+                var stored = data.GetGroupObjectsData(group.Index).Span;
+                for (uint id = 0; id < group.Count; id++)
+                {
+                    var at = (int)(id * size);
+                    var contents = PhyreObjectWriter.ReadObject(
+                        stored.Slice(at, size), className, descriptors);
+                    PhyreObjectWriter.WriteObject(contents, descriptors, size)
+                        .CopyTo(objectData.AsSpan((int)groupOffset + at));
+                }
+            }
+            groupOffset += group.Size;
+        }
+
+        var written = Write(
+            metadata,
+            fixups,
+            objectData,
+            sections.HeaderClasses,
+            sections.InstanceHeaders,
+            packedNamespace,
+            sections.Payload);
+        var named = 17 * sizeof(uint);
+        sections.Header.Span[named..].CopyTo(written.AsSpan(named));
+        return written;
+    }
+
     /// <summary>Rewrites a cluster from what it holds, keeping its trailing words.</summary>
     public static byte[] Rebuild(ReadOnlyMemory<byte> cluster)
     {

@@ -46,6 +46,35 @@ internal static class Program
             }
             return;
         }
+        if (args is ["--verify-battle-catalog", var battleDataPath])
+        {
+            var enemies = EnemyBattleCatalog.LoadProfiles(battleDataPath);
+            var analyses = enemies
+                .Select(enemy => EnemyBattleCatalog.Analyze(
+                    battleDataPath, enemy, null))
+                .ToArray();
+            var scenarios = BattleScenarioCatalog.Load(battleDataPath);
+            var scenarioAnalyses = scenarios
+                .Select(scenario => BattleScenarioCatalog.Analyze(scenario, null))
+                .ToArray();
+            Console.WriteLine(
+                $"enemies={enemies.Count}; actions={analyses.Sum(value => value.Actions.Count)}; "
+                + $"rules={analyses.Sum(value => value.Rules.Count)}; "
+                + $"supplemental={analyses.Sum(value => value.SupplementalTables.Count)}; "
+                + $"battle_scenarios={scenarios.Count}; "
+                + $"lifecycle_functions={scenarioAnalyses.Sum(value => value.Lifecycle.Count)}");
+            foreach (var diagnostic in analyses
+                         .SelectMany((analysis, index) => analysis.Diagnostics.Select(value =>
+                             $"{enemies[index].AssetId}: {value}"))
+                         .Concat(scenarioAnalyses.SelectMany(value =>
+                             value.Diagnostics.Select(diagnostic =>
+                                 $"{value.Entry.Label}: {diagnostic}")))
+                         .Take(25))
+            {
+                Console.WriteLine(diagnostic);
+            }
+            return;
+        }
         if (args is ["--verify-model-asset", var modelAssetId, var modelDataPath])
         {
             var modelLoader = new EditorProjectLoader(
@@ -595,6 +624,7 @@ internal static class Program
                 + $" pos={segment.Position.Count} rot={segment.Rotation.Count}"
                 + $" scale={segment.Scale.Count} rot2={segment.Rotation2.Count}"
                 + $" mul={segment.ColorMultiply.Count} add={segment.ColorAdd.Count}"
+                + $" quad=[{string.Join(" ", segment.Data08.Select(value => value.ToString("0.###", CultureInfo.InvariantCulture)))}]"
                 + $" children={segment.Children.Count}");
         }
     }
@@ -1262,10 +1292,12 @@ internal static class Program
         foreach (var node in frame.Nodes.Take(40))
         {
             var segment = effect.Segments[node.SegmentIndex];
+            var normal = Vector3.TransformNormal(Vector3.UnitZ, node.Rotation);
             Console.WriteLine(
                 $"  {new string(' ', node.Depth * 2)}#{node.SegmentIndex} {segment.Name}"
                 + $" t={node.LocalTime:0.###} at {node.Position:0.##} scale={node.Scale:0.##}"
-                + $" tint={node.ColorMultiply:0.##}{(node.Drawn ? string.Empty : " (container)")}");
+                + $" normal={normal:0.##} tint={node.ColorMultiply:0.##}"
+                + $"{(node.Drawn ? string.Empty : " (container)")}");
         }
     }
 

@@ -1,6 +1,81 @@
 using System.Text;
 using ED8Editor.Decompiler;
 
+if (args is ["--scan-script-text", var scriptDirectory, var query])
+{
+    var matches = 0;
+    foreach (var path in Directory.EnumerateFiles(
+                 scriptDirectory, "*.dat", SearchOption.AllDirectories))
+    {
+        DecompiledScript scannedScript;
+        try
+        {
+            scannedScript = ScriptDecompiler.Decompile(path);
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException or InvalidOperationException)
+        {
+            Console.Error.WriteLine($"SKIP {path}: {exception.Message}");
+            continue;
+        }
+        foreach (var function in scannedScript.Functions.Where(value => value.IsCode))
+        foreach (var instruction in function.Instructions)
+        foreach (var argument in instruction.Arguments.Where(value =>
+                     value.Kind == "string"))
+        {
+            var value = Encoding.UTF8.GetString(argument.Raw).TrimEnd('\0');
+            if (!value.Contains(query, StringComparison.OrdinalIgnoreCase)) continue;
+            Console.WriteLine(
+                $"{path}|{function.Index}:{function.Name}|"
+                + $"{instruction.Index}:{instruction.Opcode}:{instruction.Name}|"
+                + $"{argument.Index}:{value}");
+            matches++;
+        }
+    }
+    Console.WriteLine($"matches={matches}");
+    return 0;
+}
+
+if (args is ["--scan-environment-commands", var environmentScriptDirectory])
+{
+    var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+    foreach (var path in Directory.EnumerateFiles(
+                 environmentScriptDirectory, "*.dat", SearchOption.AllDirectories))
+    {
+        DecompiledScript scannedScript;
+        try
+        {
+            scannedScript = ScriptDecompiler.Decompile(path);
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException or InvalidOperationException)
+        {
+            Console.Error.WriteLine($"SKIP {path}: {exception.Message}");
+            continue;
+        }
+        foreach (var function in scannedScript.Functions.Where(value => value.IsCode))
+        foreach (var instruction in function.Instructions.Where(value =>
+                     value.Opcode == 8
+                     && value.Arguments.Count >= 2
+                     && value.Arguments[0].Kind == "scalar"
+                     && value.Arguments[0].IntValue == 5))
+        {
+            var expression = instruction.Arguments[1].Expression;
+            var label = expression is null
+                ? Convert.ToHexString(instruction.Arguments[1].Raw)
+                : string.Join(" ", expression.Select(value => value.Label));
+            counts[label] = counts.GetValueOrDefault(label) + 1;
+            Console.WriteLine(
+                $"{path}|{function.Index}:{function.Name}|"
+                + $"{instruction.Index}:{instruction.Name}|{label}");
+        }
+    }
+    Console.WriteLine("summary:");
+    foreach (var pair in counts.OrderBy(value => value.Key, StringComparer.Ordinal))
+        Console.WriteLine($"{pair.Key}={pair.Value}");
+    return 0;
+}
+
 if (args is ["--dump-shop", var shopScriptPath, var entryFunction])
 {
     var shopScript = ScriptDecompiler.Decompile(shopScriptPath);

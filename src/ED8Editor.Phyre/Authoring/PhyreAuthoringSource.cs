@@ -14,24 +14,48 @@ public sealed record PhyreTextureSource(
     string Format,
     byte[] Rgba);
 
+/// <summary>A texture coordinate and the tangent frame that goes with it.</summary>
+/// <param name="Bitangent">
+/// Asked for rather than worked out, and written exactly as given. Rebuilding it
+/// as the cross product of the normal and the tangent does not give back what
+/// the game stores — measured, 0 of 16 streams — and the game writes zeros for a
+/// set a mesh does not use, so standing a value in there would fill an unused
+/// set with noise.
+/// </param>
+public sealed record PhyreTexCoordSet(
+    Vector2 TexCoord,
+    Vector3 Tangent,
+    Vector3 Bitangent = default);
+
 /// <summary>One vertex of a mesh being brought in.</summary>
 /// <param name="Joints">Up to four skeleton joints this vertex follows.</param>
 /// <param name="Weights">How much of each joint it follows, summing to one.</param>
+/// <param name="TexCoords">
+/// One entry per set of texture coordinates, each with its own tangent frame.
+/// The game's character meshes carry four — that is what sixteen streams a mesh
+/// come to, next to position, normal and the two skinning streams — and a frame
+/// belongs to a set rather than to the vertex, since it is derived from that
+/// set's own layout.
+/// </param>
 public sealed record PhyreVertexSource(
     Vector3 Position,
     Vector3 Normal,
-    Vector2 TexCoord,
-    Vector4 Tangent,
+    IReadOnlyList<PhyreTexCoordSet> TexCoords,
     int[] Joints,
     float[] Weights);
 
 /// <summary>
-/// A run of triangles drawn with one material. The material is named, not
-/// described: a mesh brought into Cold Steel binds a material the game already
-/// compiled a shader for.
+/// One run of triangles drawn with one material, with the vertices it uses.
+///
+/// The vertices belong to the mesh, not to the model: that is how the game
+/// stores them — ply000 holds sixteen of these, each with its own streams and
+/// its own vertex count — and it is also what an exporter produces, one mesh per
+/// material. Sharing one vertex buffer across materials would be a conversion
+/// in both directions, so it is not asked for.
 /// </summary>
-public sealed record PhyreMeshSegmentSource(
+public sealed record PhyreMeshSource(
     string MaterialName,
+    IReadOnlyList<PhyreVertexSource> Vertices,
     int[] Indices);
 
 /// <summary>A joint of the skeleton a mesh is skinned to.</summary>
@@ -42,16 +66,16 @@ public sealed record PhyreJointSource(
     Matrix4x4 InverseBindTransform);
 
 /// <summary>
-/// A model to write as a model cluster: what an FBX import produces, stripped of
-/// everything the format of the exchange file adds.
+/// A model to write as a model cluster: what an import produces, stripped of
+/// everything the exchange file adds.
 ///
-/// This is the boundary of the black box. Whoever reads the FBX fills this in;
-/// nothing here knows about FBX, and nothing here knows about the editor.
+/// This is the boundary of the black box. Whoever reads the FBX — or the glTF,
+/// or anything else — fills this in; nothing here knows about any of them, and
+/// nothing here knows about the editor.
 /// </summary>
 public sealed record PhyreModelSource(
     string AssetName,
-    IReadOnlyList<PhyreVertexSource> Vertices,
-    IReadOnlyList<PhyreMeshSegmentSource> Segments,
+    IReadOnlyList<PhyreMeshSource> Meshes,
     IReadOnlyList<PhyreJointSource> Joints)
 {
     /// <summary>Whether the model follows a skeleton.</summary>
@@ -64,36 +88,39 @@ public sealed record PhyreModelSource(
     public IReadOnlyList<string> Problems()
     {
         var problems = new List<string>();
-        if (Vertices.Count == 0) problems.Add("the model has no vertices");
-        if (Segments.Count == 0) problems.Add("the model has no triangles");
-        foreach (var segment in Segments)
+        if (Meshes.Count == 0) problems.Add("the model has no meshes");
+        foreach (var mesh in Meshes)
         {
-            if (segment.Indices.Length % 3 != 0)
+            if (mesh.Vertices.Count == 0)
             {
-                problems.Add($"segment '{segment.MaterialName}' has a partial triangle");
+                problems.Add($"mesh '{mesh.MaterialName}' has no vertices");
             }
-            if (segment.Indices.Any(index => index < 0 || index >= Vertices.Count))
+            if (mesh.Indices.Length % 3 != 0)
             {
-                problems.Add($"segment '{segment.MaterialName}' points at a vertex that is not there");
+                problems.Add($"mesh '{mesh.MaterialName}' has a partial triangle");
             }
-        }
-        foreach (var vertex in Vertices)
-        {
-            if (vertex.Joints.Length != vertex.Weights.Length)
+            if (mesh.Indices.Any(index => index < 0 || index >= mesh.Vertices.Count))
             {
-                problems.Add("a vertex has more joints than weights");
-                break;
+                problems.Add($"mesh '{mesh.MaterialName}' points at a vertex that is not there");
             }
-            if (vertex.Joints.Any(joint => joint < 0 || joint >= Joints.Count))
+            foreach (var vertex in mesh.Vertices)
             {
-                problems.Add("a vertex follows a joint the skeleton does not have");
-                break;
+                if (vertex.Joints.Length != vertex.Weights.Length)
+                {
+                    problems.Add($"a vertex of '{mesh.MaterialName}' has more joints than weights");
+                    break;
+                }
+                if (vertex.Joints.Any(joint => joint < 0 || joint >= Joints.Count))
+                {
+                    problems.Add(
+                        $"a vertex of '{mesh.MaterialName}' follows a joint the skeleton does not have");
+                    break;
+                }
             }
         }
         for (var index = 0; index < Joints.Count; index++)
         {
-            var parent = Joints[index].ParentIndex;
-            if (parent >= index)
+            if (Joints[index].ParentIndex >= index)
             {
                 problems.Add($"joint '{Joints[index].Name}' comes before its own parent");
             }

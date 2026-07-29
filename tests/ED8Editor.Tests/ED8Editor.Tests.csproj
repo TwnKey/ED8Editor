@@ -14,5 +14,6 @@
     <ProjectReference Include="..\..\src\ED8Editor.Scene\ED8Editor.Scene.csproj" />
     <ProjectReference Include="..\..\src\ED8Editor.Tables\ED8Editor.Tables.csproj" />
     <ProjectReference Include="..\..\src\ED8Editor.Decompiler\ED8Editor.Decompiler.csproj" />
+    <ProjectReference Include="..\..\src\ED8Editor.Models\ED8Editor.Models.csproj" />
   </ItemGroup>
 </Project>

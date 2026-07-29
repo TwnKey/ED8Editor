@@ -171,6 +171,8 @@ public sealed class ScriptEditorForm : Form
     private readonly IReadOnlyList<MonsterTableChoice> monsterChoices;
     private readonly IReadOnlyList<BattleMapAssetEntry> battleMapAssets;
     private readonly Func<IWin32Window, BattleMapAssetEntry?>? createBattleMapAsset;
+    private readonly IReadOnlyList<BattleScenarioEntry> battleScenarios;
+    private readonly Action<int>? openBattleScript;
     private readonly Dictionary<string, Dictionary<int, Dictionary<string, string>>> bitmaskDefs = new();
 
     public ScriptEditorForm(
@@ -179,7 +181,9 @@ public sealed class ScriptEditorForm : Form
         string? instructionDefinitionsPath = null,
         IReadOnlyList<MonsterTableChoice>? monsterChoices = null,
         IReadOnlyList<BattleMapAssetEntry>? battleMapAssets = null,
-        Func<IWin32Window, BattleMapAssetEntry?>? createBattleMapAsset = null)
+        Func<IWin32Window, BattleMapAssetEntry?>? createBattleMapAsset = null,
+        IReadOnlyList<BattleScenarioEntry>? battleScenarios = null,
+        Action<int>? openBattleScript = null)
     {
         this.tableChoices = tableChoices;
         this.semanticContext = semanticContext;
@@ -187,6 +191,8 @@ public sealed class ScriptEditorForm : Form
         this.monsterChoices = monsterChoices ?? Array.Empty<MonsterTableChoice>();
         this.battleMapAssets = battleMapAssets ?? Array.Empty<BattleMapAssetEntry>();
         this.createBattleMapAsset = createBattleMapAsset;
+        this.battleScenarios = battleScenarios ?? Array.Empty<BattleScenarioEntry>();
+        this.openBattleScript = openBattleScript;
         LoadBitmaskDefs();
         KeyPreview = true;
         BuildUi();
@@ -252,7 +258,9 @@ public sealed class ScriptEditorForm : Form
             function.Index,
             monsterChoices,
             battleMapAssets: battleMapAssets,
-            createBattleMapAsset: createBattleMapAsset);
+            createBattleMapAsset: createBattleMapAsset,
+            battleScenarios: battleScenarios,
+            openBattleScript: openBattleScript);
         editor.TableChanged += (_, _) =>
             RefreshDocument(selectedFunctionIndex, selectedInstructionIndex);
         editor.ShowDialog(this);
@@ -282,7 +290,9 @@ public sealed class ScriptEditorForm : Form
             monsterChoices,
             encounterIndex,
             battleMapAssets,
-            createBattleMapAsset);
+            createBattleMapAsset,
+            battleScenarios,
+            openBattleScript);
         editor.TableChanged += (_, _) =>
             RefreshDocument(selectedFunctionIndex, selectedInstructionIndex);
         editor.ShowDialog(this);
@@ -727,6 +737,143 @@ public sealed class ScriptEditorForm : Form
         script is null
             ? Array.Empty<ShopScriptBinding>()
             : ShopScriptBinding.Read(script, functionName);
+
+    public void CreateShopInteraction(
+        string functionName,
+        int shopId,
+        string? entitySetupFunction = null,
+        int? entityId = null)
+    {
+        if (document is null || script is null)
+            throw new InvalidOperationException("No script is loaded.");
+        ValidateNewFunctionName(functionName);
+        if (shopId is < short.MinValue or > short.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(shopId));
+        if ((entitySetupFunction is null) != (entityId is null))
+        {
+            throw new ArgumentException(
+                "An optional NPC binding requires both a setup function and an entity ID.");
+        }
+        var setup = entitySetupFunction is null
+            ? null
+            : script.Functions.FirstOrDefault(value =>
+                value.IsCode
+                && value.Name.Equals(entitySetupFunction, StringComparison.Ordinal))
+                ?? throw new InvalidOperationException(
+                    $"Setup function '{entitySetupFunction}' does not exist.");
+
+        var createdFunction = -1;
+        int? insertedBinding = null;
+        try
+        {
+            createdFunction = document.AddCodeFunction(functionName);
+            document.InsertInstruction(createdFunction, 0, "Shop_Open");
+            var created = document.Snapshot.Functions.First(value =>
+                value.Index == createdFunction).Instructions[0];
+            var shopArgument = created.Arguments.FirstOrDefault(value =>
+                value.Kind == "scalar")
+                ?? throw new InvalidDataException("Shop_Open has no scalar shop ID.");
+            document.SetInteger(
+                createdFunction, created.Index, shopArgument.Index, shopId);
+
+            if (setup is not null && entityId is not null)
+            {
+                var position = setup.Instructions.Count > 0
+                    && setup.Instructions[^1].Name.Equals(
+                        "Return", StringComparison.Ordinal)
+                        ? setup.Instructions.Count - 1
+                        : setup.Instructions.Count;
+                document.InsertInstruction(
+                    setup.Index, position, "LookPoint_BindEntity");
+                insertedBinding = position;
+                var binding = document.Snapshot.Functions.First(value =>
+                    value.Index == setup.Index).Instructions[position];
+                var nameArgument = binding.Arguments.FirstOrDefault(value =>
+                    value.Kind == "string")
+                    ?? throw new InvalidDataException(
+                        "LookPoint_BindEntity has no LookPoint-name operand.");
+                var entityArgument = binding.Arguments.FirstOrDefault(value =>
+                    value.Kind == "scalar")
+                    ?? throw new InvalidDataException(
+                        "LookPoint_BindEntity has no entity-ID operand.");
+                document.SetString(
+                    setup.Index, binding.Index, nameArgument.Index, functionName);
+                document.SetInteger(
+                    setup.Index, binding.Index, entityArgument.Index, entityId.Value);
+            }
+        }
+        catch
+        {
+            if (insertedBinding is not null && setup is not null)
+            {
+                try { document.RemoveInstruction(setup.Index, insertedBinding.Value); }
+                catch { /* Preserve the original creation error. */ }
+            }
+            if (createdFunction >= 0)
+            {
+                try { document.RemoveFunction(createdFunction); }
+                catch { /* Preserve the original creation error. */ }
+            }
+            throw;
+        }
+
+        RefreshDocument(createdFunction, 0);
+    }
+
+    public void CreateFishingInteraction(
+        string functionName,
+        int fishingPointId,
+        Vector3 playerPosition,
+        float headingDegrees,
+        Vector3 waterTarget)
+    {
+        if (document is null || script is null)
+            throw new InvalidOperationException("No script is loaded.");
+        ValidateNewFunctionName(functionName);
+        var payload = new FishingSpotScriptBinding(
+            -1, functionName, -1, -1, fishingPointId,
+            playerPosition, headingDegrees, waterTarget).EncodePayload();
+
+        var createdFunction = -1;
+        try
+        {
+            createdFunction = document.AddCodeFunction(functionName);
+            document.InsertInstruction(createdFunction, 0, "OP73_1");
+            var created = document.Snapshot.Functions.First(value =>
+                value.Index == createdFunction).Instructions[0];
+            var bytesArgument = created.Arguments.FirstOrDefault(value =>
+                value.Kind == "bytes"
+                && value.Type == "bytes"
+                && value.Raw.Length == FishingSpotScriptBinding.PayloadSize)
+                ?? throw new InvalidDataException(
+                    "OP73_1 has no established 32-byte fishing payload.");
+            document.SetBytes(
+                createdFunction, created.Index, bytesArgument.Index, payload);
+        }
+        catch
+        {
+            if (createdFunction >= 0)
+            {
+                try { document.RemoveFunction(createdFunction); }
+                catch { /* Preserve the original creation error. */ }
+            }
+            throw;
+        }
+
+        RefreshDocument(createdFunction, 0);
+    }
+
+    private void ValidateNewFunctionName(string functionName)
+    {
+        if (string.IsNullOrWhiteSpace(functionName))
+            throw new ArgumentException("A script function name is required.", nameof(functionName));
+        if (script!.Functions.Any(value =>
+                value.Name.Equals(functionName, StringComparison.Ordinal)))
+        {
+            throw new InvalidOperationException(
+                $"Function '{functionName}' already exists.");
+        }
+    }
 
     public void UpdateShopBinding(ShopScriptBinding binding, int shopId)
     {

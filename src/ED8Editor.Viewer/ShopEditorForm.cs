@@ -39,7 +39,7 @@ internal sealed class ShopEditorForm : Form
         AutoEllipsis = true,
     };
     private readonly Cs1ShopTable table;
-    private readonly IReadOnlyDictionary<int, string> itemNames;
+    private readonly IReadOnlyList<ShopItemChoice> itemChoices;
     private bool refreshing;
 
     public ShopEditorForm(
@@ -50,13 +50,32 @@ internal sealed class ShopEditorForm : Form
     {
         this.table = table;
         var codec = new Cs1TableRecordCodec();
-        itemNames = itemChoices
+        var resolvedItems = itemChoices
+            .Where(value => value.Value is >= ushort.MinValue and <= ushort.MaxValue)
             .GroupBy(value => value.Value)
-            .ToDictionary(
-                group => group.Key,
-                group => codec.Decode(group.First().Entry)?
+            .Select(group =>
+            {
+                var choice = group.First();
+                var name = codec.Decode(choice.Entry)?
                     .FirstOrDefault(value => value.Field.Name == "name")?.Value
-                    ?? group.First().Label);
+                    ?? choice.Label;
+                return new ShopItemChoice(choice.Value, name);
+            })
+            .ToList();
+        var knownIds = resolvedItems.Select(value => value.Id).ToHashSet();
+        foreach (var unresolvedId in table.Titles
+                     .SelectMany(value => table.Items(value.Id))
+                     .Select(value => (int)value.ItemId)
+                     .Distinct()
+                     .Where(value => !knownIds.Contains(value)))
+        {
+            resolvedItems.Add(new ShopItemChoice(
+                unresolvedId,
+                $"Unresolved item #{unresolvedId}"));
+        }
+        this.itemChoices = resolvedItems
+            .OrderBy(value => value.Id)
+            .ToArray();
         Text = $"Shop — {pointName}";
         StartPosition = FormStartPosition.CenterParent;
         ClientSize = new Size(860, 650);
@@ -69,17 +88,23 @@ internal sealed class ShopEditorForm : Form
         shops.ValueMember = nameof(Cs1ShopTitle.Id);
         shops.DataSource = table.Titles.ToArray();
 
-        inventory.Columns.Add("ItemId", "Item ID");
-        inventory.Columns.Add("ItemName", "Resolved item");
-        inventory.Columns.Add("UnknownValue", "Unknown u16");
-        inventory.Columns[0].FillWeight = 20;
-        inventory.Columns[1].FillWeight = 60;
-        inventory.Columns[2].FillWeight = 20;
-        inventory.Columns[1].ReadOnly = true;
-        inventory.CellEndEdit += (_, eventArgs) =>
+        inventory.Columns.Add(new DataGridViewComboBoxColumn
         {
-            if (eventArgs.ColumnIndex == 0) RefreshItemName(eventArgs.RowIndex);
-        };
+            Name = "Item",
+            HeaderText = "Item",
+            DisplayMember = nameof(ShopItemChoice.Label),
+            ValueMember = nameof(ShopItemChoice.Id),
+            DataSource = this.itemChoices.ToArray(),
+            DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton,
+            FlatStyle = FlatStyle.Flat,
+            FillWeight = 80,
+        });
+        inventory.Columns.Add(new DataGridViewTextBoxColumn
+        {
+            Name = "UnknownValue",
+            HeaderText = "Unknown u16",
+            FillWeight = 20,
+        });
 
         var add = new Button { AutoSize = true, Text = "Add item" };
         var remove = new Button { AutoSize = true, Text = "Remove selected" };
@@ -172,8 +197,8 @@ internal sealed class ShopEditorForm : Form
         var values = new List<Cs1ShopItemValue>(inventory.Rows.Count);
         foreach (DataGridViewRow row in inventory.Rows)
         {
-            var itemId = ParseUInt16(row.Cells[0].Value, "Item ID");
-            var unknown = ParseUInt16(row.Cells[2].Value, "Unknown ShopItem value");
+            var itemId = ParseUInt16(row.Cells[0].Value, "Item");
+            var unknown = ParseUInt16(row.Cells[1].Value, "Unknown ShopItem value");
             values.Add(new Cs1ShopItemValue(itemId, unknown));
         }
         return new ShopEditResult(binding, shop.Id, title.Text, values);
@@ -206,7 +231,7 @@ internal sealed class ShopEditorForm : Form
         title.Text = shop.Name;
         inventory.Rows.Clear();
         foreach (var item in table.Items(shop.Id))
-            inventory.Rows.Add(item.ItemId, ResolveItemName(item.ItemId), item.UnknownValue);
+            inventory.Rows.Add((int)item.ItemId, item.UnknownValue);
         SetEditorsEnabled(true);
         status.Text =
             $"Shop {shop.Id}: {inventory.Rows.Count} item(s) · {System.IO.Path.GetFileName(table.Path)}";
@@ -214,24 +239,15 @@ internal sealed class ShopEditorForm : Form
 
     private void AddItem()
     {
-        var itemId = itemNames.Keys.Order().FirstOrDefault();
-        var row = inventory.Rows.Add(itemId, ResolveItemName(itemId), 0);
+        if (itemChoices.Count == 0)
+        {
+            status.Text = "No item entry could be loaded from t_item.tbl.";
+            return;
+        }
+        var row = inventory.Rows.Add(itemChoices[0].Id, 0);
         inventory.CurrentCell = inventory.Rows[row].Cells[0];
-        inventory.BeginEdit(selectAll: true);
+        inventory.BeginEdit(selectAll: false);
     }
-
-    private void RefreshItemName(int rowIndex)
-    {
-        if (rowIndex < 0 || rowIndex >= inventory.Rows.Count) return;
-        var cell = inventory.Rows[rowIndex].Cells[0];
-        inventory.Rows[rowIndex].Cells[1].Value =
-            ushort.TryParse(cell.Value?.ToString(), out var id)
-                ? ResolveItemName(id)
-                : "Invalid item ID";
-    }
-
-    private string ResolveItemName(int itemId) =>
-        itemNames.TryGetValue(itemId, out var name) ? name : "(unresolved)";
 
     private void SetEditorsEnabled(bool enabled)
     {
@@ -256,5 +272,10 @@ internal sealed class ShopEditorForm : Form
             Padding = new Padding(0, 7, 8, 0),
         }, 0, row);
         layout.Controls.Add(editor, 1, row);
+    }
+
+    private sealed record ShopItemChoice(int Id, string Name)
+    {
+        public string Label => $"{Name} (ID {Id})";
     }
 }

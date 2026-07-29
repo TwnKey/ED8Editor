@@ -12,6 +12,8 @@ using ED8Editor.Rendering;
 using ED8Editor.Scene;
 using ED8Editor.Tables;
 using ED8Editor.Decompiler;
+using ED8Editor.Models;
+using ED8Editor.Phyre.Authoring;
 
 if (args.Length is 2 or 3 && args[0] == "--script-summary")
 {
@@ -902,6 +904,13 @@ var tests = new (string Name, Action Run)[]
     ("encodes the established fishing spot payload exactly", EncodesFishingSpotPayload),
     ("follows exact local shop calls to OP114", ResolvesShopScriptBinding),
     ("edits shop titles and inventory without losing unknown words", EditsShopTable),
+    ("creates a shop title by preserving an explicit binary template", CreatesShopTitleFromTemplate),
+    ("creates a fishing point by preserving an explicit binary template", CreatesFishingPointFromTemplate),
+    ("catalogs ambiguous model packages without guessing", CatalogsModelImportCandidates),
+    ("imports textured OBJ into the canonical model scene", ImportsCanonicalObjModel),
+    ("resolves a uniquely identified package texture", ResolvesUniquePackageTexture),
+    ("adapts canonical skinning explicitly for Phyre", AdaptsCanonicalSkinningForPhyre),
+    ("adapts canonical geometry and animation for preview", AdaptsCanonicalModelForPreview),
     ("resolves semantic TBL references by category", ResolvesSemanticTableReferences),
     ("builds semantic choices from the requested TBL category", BuildsSemanticTableChoices),
     ("flattens repeated and referenced TBL schema fields", FlattensTblSchemaFields),
@@ -933,6 +942,261 @@ foreach (var test in tests)
 }
 
 return failures == 0 ? 0 : 1;
+
+static void CatalogsModelImportCandidates()
+{
+    var directory = Path.Combine(Path.GetTempPath(), $"ed8-model-catalog-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(directory);
+    try
+    {
+        File.WriteAllBytes(Path.Combine(directory, "model.fbx"), new byte[] { 1 });
+        File.WriteAllBytes(Path.Combine(directory, "model.dae"), new byte[] { 2 });
+        File.WriteAllBytes(Path.Combine(directory, "texture.png"), new byte[] { 3 });
+        var candidates = ModelImportCatalog.Find(directory);
+        if (candidates.Count != 2
+            || candidates.Select(value => Path.GetExtension(value.Path))
+                .OrderBy(value => value)
+                .SequenceEqual(new[] { ".dae", ".fbx" }) == false)
+        {
+            throw new InvalidOperationException(
+                "A package with FBX and COLLADA did not expose both explicit choices.");
+        }
+    }
+    finally
+    {
+        Directory.Delete(directory, recursive: true);
+    }
+}
+
+static void ImportsCanonicalObjModel()
+{
+    var directory = Path.Combine(Path.GetTempPath(), $"ed8-model-import-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var obj = Path.Combine(directory, "triangle.obj");
+        File.WriteAllText(
+            obj,
+            """
+            mtllib triangle.mtl
+            o Triangle
+            v 0 0 0
+            v 1 0 0
+            v 0 1 0
+            vt 0 0
+            vt 1 0
+            vt 0 1
+            vn 0 0 1
+            usemtl Surface
+            f 1/1/1 2/2/1 3/3/1
+            """);
+        File.WriteAllText(
+            Path.Combine(directory, "triangle.mtl"),
+            """
+            newmtl Surface
+            Kd 1 1 1
+            map_Kd albedo.png
+            """);
+        var textureBytes = new byte[] { 0x89, 0x50, 0x4E, 0x47 };
+        File.WriteAllBytes(Path.Combine(directory, "albedo.png"), textureBytes);
+
+        var scene = new ModelImportService().Import(obj, directory);
+        if (scene.Meshes.Count != 1
+            || scene.Meshes[0].Vertices.Count != 3
+            || scene.Meshes[0].Indices.Length != 3
+            || scene.Materials.Count == 0
+            || scene.Textures.Count != 1
+            || !scene.Textures[0].EncodedData.SequenceEqual(textureBytes)
+            || scene.Diagnostics.Any(value =>
+                value.Severity == ImportedDiagnosticSeverity.Error))
+        {
+            throw new InvalidOperationException(
+                "The OBJ did not survive canonical geometry/material/texture import.");
+        }
+    }
+    finally
+    {
+        Directory.Delete(directory, recursive: true);
+    }
+}
+
+static void ResolvesUniquePackageTexture()
+{
+    var directory = Path.Combine(Path.GetTempPath(), $"ed8-model-package-{Guid.NewGuid():N}");
+    var modelDirectory = Path.Combine(directory, "model");
+    var textureDirectory = Path.Combine(directory, "textures");
+    Directory.CreateDirectory(modelDirectory);
+    Directory.CreateDirectory(textureDirectory);
+    try
+    {
+        var obj = Path.Combine(modelDirectory, "triangle.obj");
+        File.WriteAllText(
+            obj,
+            """
+            mtllib triangle.mtl
+            o Triangle
+            v 0 0 0
+            v 1 0 0
+            v 0 1 0
+            usemtl Surface
+            f 1 2 3
+            """);
+        File.WriteAllText(
+            Path.Combine(modelDirectory, "triangle.mtl"),
+            """
+            newmtl Surface
+            Kd 1 1 1
+            map_Kd obsolete/export/path/albedo.png
+            """);
+        var expected = new byte[] { 0x89, 0x50, 0x4E, 0x47, 1, 2, 3 };
+        var actualPath = Path.Combine(textureDirectory, "albedo.png");
+        File.WriteAllBytes(actualPath, expected);
+
+        var scene = new ModelImportService().Import(obj, directory);
+        var texture = scene.Textures.Single();
+        if (!Path.GetFullPath(actualPath).Equals(
+                texture.SourcePath, StringComparison.OrdinalIgnoreCase)
+            || !texture.EncodedData.SequenceEqual(expected)
+            || scene.Diagnostics.Any(value => value.Code == "missing-texture"))
+        {
+            throw new InvalidOperationException(
+                "A unique texture elsewhere in the selected package was not resolved exactly.");
+        }
+    }
+    finally
+    {
+        Directory.Delete(directory, recursive: true);
+    }
+}
+
+static void AdaptsCanonicalSkinningForPhyre()
+{
+    var nodes = Enumerable.Range(0, 6)
+        .Select(index => new ImportedSceneNode(
+            $"joint{index}",
+            index - 1,
+            Matrix4x4.CreateTranslation(index, 0, 0),
+            index == 0 ? new[] { 0 } : Array.Empty<int>()))
+        .ToArray();
+    var influences = Enumerable.Range(1, 5)
+        .Select(index => new ImportedVertexInfluence(index, index))
+        .ToArray();
+    var vertex = new ImportedVertex(
+        new Vector3(100, 0, 0),
+        Vector3.UnitY,
+        Vector3.UnitX,
+        Vector3.UnitZ,
+        new[] { Vector2.Zero },
+        Array.Empty<Vector4>(),
+        influences);
+    var skin = new ImportedSkin(
+        Enumerable.Range(1, 5).ToDictionary(index => index, _ => Matrix4x4.Identity));
+    var scene = new ImportedModelScene(
+        "Skin",
+        "memory",
+        new ImportedCoordinateSystem(true, ImportedUpAxis.Y, 0.01f),
+        nodes,
+        new[] { new ImportedMesh("mesh", new[] { vertex, vertex, vertex }, new[] { 0, 1, 2 }, 0, skin) },
+        new[]
+        {
+            new ImportedMaterial(
+                "material", Vector4.One, Vector3.Zero, 0f, 1f, 1f, false,
+                new Dictionary<ImportedTextureUsage, int>(),
+                new Dictionary<string, string>()),
+        },
+        Array.Empty<ImportedTexture>(),
+        Array.Empty<ImportedAnimationClip>(),
+        Array.Empty<ImportedModelDiagnostic>());
+    var converted = ImportedModelPhyreAdapter.Convert(scene);
+    var convertedVertex = converted.Meshes.Single().Vertices[0];
+    if (convertedVertex.Joints.Length != 4
+        || convertedVertex.Joints.SequenceEqual(new[] { 5, 4, 3, 2 }) == false
+        || Math.Abs(convertedVertex.Weights.Sum() - 1f) > 0.0001f
+        || Vector3.Distance(convertedVertex.Position, Vector3.UnitX) > 0.0001f)
+    {
+        throw new InvalidOperationException(
+            "The Phyre adapter did not explicitly trim/normalize skinning and units.");
+    }
+}
+
+static void AdaptsCanonicalModelForPreview()
+{
+    var nodes = new[]
+    {
+        new ImportedSceneNode("root", -1, Matrix4x4.CreateTranslation(100, 0, 0), new[] { 0 }),
+        new ImportedSceneNode("bone", 0, Matrix4x4.CreateTranslation(0, 100, 0), Array.Empty<int>()),
+    };
+    var vertices = Enumerable.Range(0, 3)
+        .Select(index => new ImportedVertex(
+            new Vector3(index * 100, 0, 0),
+            Vector3.UnitY,
+            Vector3.UnitX,
+            Vector3.UnitZ,
+            new[] { Vector2.Zero },
+            Array.Empty<Vector4>(),
+            new[] { new ImportedVertexInfluence(1, 1f) }))
+        .ToArray();
+    var scene = new ImportedModelScene(
+        "Preview",
+        "preview.fbx",
+        new ImportedCoordinateSystem(true, ImportedUpAxis.Y, 0.01f),
+        nodes,
+        new[]
+        {
+            new ImportedMesh(
+                "mesh",
+                vertices,
+                new[] { 0, 1, 2 },
+                0,
+                new ImportedSkin(new Dictionary<int, Matrix4x4>
+                {
+                    [1] = Matrix4x4.Identity,
+                })),
+        },
+        new[]
+        {
+            new ImportedMaterial(
+                "material", Vector4.One, Vector3.Zero, 0f, 1f, 1f, false,
+                new Dictionary<ImportedTextureUsage, int>(),
+                new Dictionary<string, string>()),
+        },
+        Array.Empty<ImportedTexture>(),
+        new[]
+        {
+            new ImportedAnimationClip(
+                "move",
+                1d,
+                new[]
+                {
+                    new ImportedAnimationChannel(
+                        1,
+                        new[]
+                        {
+                            new ImportedVectorKey(0d, new Vector3(0, 100, 0)),
+                            new ImportedVectorKey(1d, new Vector3(0, 200, 0)),
+                        },
+                        Array.Empty<ImportedQuaternionKey>(),
+                        Array.Empty<ImportedVectorKey>()),
+                }),
+        },
+        Array.Empty<ImportedModelDiagnostic>());
+
+    var result = ImportedModelCpuAdapter.Convert(scene);
+    var positionData = result.Model.Meshes.Single().Primitives.Single()
+        .VertexBuffers.Single(value =>
+            value.Attributes.Single().Semantic == VertexSemantic.Position).Data;
+    var clip = result.Animations.Single();
+    if (result.Model.Skeleton?.Joints.Count != 2
+        || result.Model.Skeleton.Joints[0].DefaultLocalTransform.M41 != 1f
+        || BitConverter.ToSingle(positionData, 12) != 1f
+        || clip.Channels.Single().Values[1].Y != 2f)
+    {
+        throw new InvalidOperationException(
+            "Preview adaptation did not preserve the rig/animation while converting source units.");
+    }
+    _ = new CpuSkeletonPoseEvaluator().Evaluate(
+        result.Model.Skeleton, clip, clip.EndTime);
+}
 
 static void EncodesFishingSpotPayload()
 {
@@ -1022,6 +1286,98 @@ static void EditsShopTable()
             || reopenedItems[1].UnknownValue != 3)
         {
             throw new Exception("The shop table edit did not preserve its unknown data.");
+        }
+    }
+    finally
+    {
+        Directory.Delete(directory, recursive: true);
+    }
+}
+
+static void CreatesShopTitleFromTemplate()
+{
+    var directory = Path.Combine(
+        Path.GetTempPath(), "ed8editor-shop-create-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    var path = Path.Combine(directory, "t_shop.tbl");
+    try
+    {
+        var title = new byte[]
+        {
+            110, 0, 7, (byte)'O', (byte)'l', (byte)'d', 0,
+            1, 2, 3, 4, 5, 6, 7, 8,
+        };
+        new Cs1TableDocumentBuilder()
+            .WithEntry("ShopTitle", title)
+            .Build()
+            .Write(path);
+        var table = Cs1ShopTable.Read(path);
+        table.AddTitle(111, "Created", 110);
+        table.Write();
+
+        var created = Cs1ShopTable.Read(path).Titles.Single(value => value.Id == 111);
+        if (created.Name != "Created"
+            || created.UnknownByte != 7
+            || !created.UnknownSuffix.SequenceEqual(
+                new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 }))
+        {
+            throw new Exception("The cloned ShopTitle lost undocumented template bytes.");
+        }
+    }
+    finally
+    {
+        Directory.Delete(directory, recursive: true);
+    }
+}
+
+static void CreatesFishingPointFromTemplate()
+{
+    var directory = Path.Combine(
+        Path.GetTempPath(), "ed8editor-fish-create-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    var path = Path.Combine(directory, "t_fish.tbl");
+    try
+    {
+        var payload = Enumerable.Range(0, Cs1FishingPointTable.RecordSize)
+            .Select(value => (byte)value)
+            .ToArray();
+        BinaryPrimitives.WriteInt16LittleEndian(payload, 12);
+        for (var field = 5; field < 18; field++)
+            BinaryPrimitives.WriteInt16LittleEndian(
+                payload.AsSpan(field * sizeof(short), sizeof(short)),
+                -1);
+        BinaryPrimitives.WriteInt16LittleEndian(
+            payload.AsSpan(5 * sizeof(short), sizeof(short)),
+            2);
+        new Cs1TableDocumentBuilder()
+            .WithEntry("fish_pnt", payload)
+            .Build()
+            .Write(path);
+        var fishName = new byte[2 + "Kasagin".Length + 1];
+        BinaryPrimitives.WriteInt16LittleEndian(fishName, 2);
+        Encoding.UTF8.GetBytes("Kasagin").CopyTo(fishName, 2);
+        new Cs1TableDocumentBuilder()
+            .WithEntry("QSFish", fishName)
+            .Build()
+            .Write(Path.Combine(directory, "t_notefish.tbl"));
+        var table = Cs1FishingPointTable.Read(path);
+        if (table.Fish.Single().Name != "Kasagin"
+            || table.Points.Single().FishNames.Single() != "Kasagin")
+        {
+            throw new Exception("Fishing species IDs were not resolved through t_notefish.tbl.");
+        }
+        table.AddPoint(13, 12, new[] { 2 });
+        table.Write();
+
+        var document = Cs1TableDocument.Read(path);
+        var records = document.Entries
+            .Where(value => value.Category == "fish_pnt")
+            .ToArray();
+        if (records.Length != 2
+            || BinaryPrimitives.ReadInt16LittleEndian(records[1].Data) != 13
+            || !records[1].Data.AsSpan(2).SequenceEqual(payload.AsSpan(2)))
+        {
+            throw new Exception("The cloned fish_pnt lost undocumented template bytes.");
         }
     }
     finally
@@ -2427,6 +2783,23 @@ static void SelectsAuthoredEnvironmentVariants()
 {
     Equal(SceneEnvironmentVariant.Daylight, SceneEnvironmentVariantSelector.FromProfileName("default"));
     Equal(SceneEnvironmentVariant.Evening, SceneEnvironmentVariantSelector.FromProfileName("evening"));
+    Equal(true, SceneEnvironmentVariantSelector.TryFromScriptProfile(
+        0, out var daylightProfile));
+    Equal(SceneEnvironmentVariant.Daylight, daylightProfile);
+    Equal(true, SceneEnvironmentVariantSelector.TryFromScriptProfile(
+        1, out var eveningProfile));
+    Equal(SceneEnvironmentVariant.Evening, eveningProfile);
+    Equal(true, SceneEnvironmentVariantSelector.TryFromScriptProfile(
+        2, out var nightProfile));
+    Equal(SceneEnvironmentVariant.Night, nightProfile);
+    Equal(true, SceneEnvironmentVariantSelector.TryFromScriptProfile(
+        3, out var morningProfile));
+    Equal(SceneEnvironmentVariant.Morning, morningProfile);
+    Equal(true, SceneEnvironmentVariantSelector.TryFromScriptProfile(
+        4, out var rainProfile));
+    Equal(SceneEnvironmentVariant.Rain, rainProfile);
+    Equal(false, SceneEnvironmentVariantSelector.TryFromScriptProfile(
+        5, out _));
     Equal(SceneEnvironmentVariant.Night, SceneEnvironmentVariantSelector.GetAuthoredVariant("light_night")!.Value);
     Equal(true, SceneEnvironmentVariantSelector.IsVisible("lamp", SceneEnvironmentVariant.Daylight));
     Equal(true, SceneEnvironmentVariantSelector.IsVisible("light_daylight", SceneEnvironmentVariant.Daylight));

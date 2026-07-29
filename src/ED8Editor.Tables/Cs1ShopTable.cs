@@ -37,6 +37,49 @@ public sealed class Cs1ShopTable
         .Where(value => value.ShopId == shopId)
         .ToArray();
 
+    /// <summary>
+    /// Adds a new ShopTitle by cloning the complete binary shape of an explicit
+    /// template. Only the understood ID and displayed title are replaced; the
+    /// undocumented byte and eight-byte suffix remain byte-for-byte identical.
+    /// </summary>
+    public void AddTitle(int shopId, string name, int templateShopId)
+    {
+        if (shopId is < short.MinValue or > short.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(shopId));
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException("A shop title is required.", nameof(name));
+        if (name.IndexOf('\0') >= 0)
+            throw new ArgumentException("A shop title cannot contain NUL.", nameof(name));
+        if (Titles.Any(value => value.Id == shopId))
+            throw new InvalidOperationException($"ShopTitle {shopId} already exists.");
+
+        var templateIndex = document.Entries
+            .Select((entry, index) => new { Entry = entry, Index = index })
+            .FirstOrDefault(value =>
+                value.Entry.Category.Equals("ShopTitle", StringComparison.Ordinal)
+                && ReadInt16(value.Entry.Data, 0, "ShopTitle ID") == templateShopId)
+            ?? throw new InvalidDataException(
+                $"Template ShopTitle {templateShopId} does not exist.");
+        var template = DecodeTitle(templateIndex.Entry);
+        var encoded = Utf8.GetBytes(name);
+        var payload = new byte[3 + encoded.Length + 1 + template.UnknownSuffix.Length];
+        BinaryPrimitives.WriteInt16LittleEndian(payload, checked((short)shopId));
+        payload[2] = template.UnknownByte;
+        encoded.CopyTo(payload.AsSpan(3));
+        template.UnknownSuffix.CopyTo(payload.AsSpan(4 + encoded.Length));
+
+        var insertionIndex = document.Entries
+            .Select((entry, index) => new { Entry = entry, Index = index })
+            .Where(value => value.Entry.Category.Equals(
+                "ShopTitle", StringComparison.Ordinal))
+            .Select(value => value.Index + 1)
+            .DefaultIfEmpty(templateIndex.Index + 1)
+            .Max();
+        document.Entries.Insert(
+            insertionIndex,
+            new Cs1TableEntry("ShopTitle", payload));
+    }
+
     public void SetTitleName(int shopId, string name)
     {
         if (name.IndexOf('\0') >= 0)

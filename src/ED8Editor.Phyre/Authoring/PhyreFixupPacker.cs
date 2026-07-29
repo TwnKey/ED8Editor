@@ -62,7 +62,10 @@ internal static class PhyreFixupPacker
         var mask = CommonMask(fixups, objectCount, pointer);
         var shapes = new Dictionary<byte, byte[]>();
         foreach (var packing in new[]
-                 { PackAll, PackGroupedTargets, PackBitmask, PackInclusive, PackExclusive, PackRaw })
+                 {
+                     PackAll, PackGroupedTargets, PackBitmask, PackInclusive, PackExclusive,
+                     PackStrided, PackRaw,
+                 })
         {
             if (TryPack(packing, fixups, objectCount, pointer, mask) is { } bytes)
             {
@@ -86,8 +89,13 @@ internal static class PhyreFixupPacker
         }
         else
         {
+            // The engine's own order: raw holds the seat, then the bitmask, the
+            // inclusive list and the exclusive list each take it only by being
+            // strictly shorter — and the strided shape is weighed last, against
+            // whichever of them is sitting there (PhyreFixupCompression.cpp,
+            // selectPackType).
             chosen = PackRaw;
-            foreach (var candidate in new[] { PackBitmask, PackInclusive, PackExclusive })
+            foreach (var candidate in new[] { PackBitmask, PackInclusive, PackExclusive, PackStrided })
             {
                 if (shapes.TryGetValue(candidate, out var bytes)
                     && bytes.Length < shapes[chosen].Length)
@@ -139,6 +147,31 @@ internal static class PhyreFixupPacker
         return mask;
     }
 
+    /// <summary>
+    /// The run of evenly spaced object ids a block covers, or nothing when they
+    /// are not evenly spaced.
+    ///
+    /// The engine walks the ids in order, takes the step between the first two,
+    /// and counts how far that step keeps holding (PhyreFixupCompression.cpp,
+    /// selectPackType). The shape is only usable when the run reaches every id
+    /// the block has — a series that stops short describes only part of them.
+    /// </summary>
+    private static (uint First, uint Stride, uint Length)? Series(IReadOnlyList<uint> ids)
+    {
+        var ordered = ids.Distinct().Order().ToArray();
+        if (ordered.Length < 2) return null;
+        var stride = ordered[1] - ordered[0];
+        var length = 2u;
+        var last = ordered[1];
+        for (var index = 2; index < ordered.Length; index++)
+        {
+            if (ordered[index] - last != stride) break;
+            length++;
+            last = ordered[index];
+        }
+        return length == ordered.Length ? (ordered[0], stride, length) : null;
+    }
+
     private static byte[]? TryPack(
         byte packing,
         IReadOnlyList<PhyreFixup> fixups,
@@ -159,12 +192,22 @@ internal static class PhyreFixupPacker
             case PackBitmask when !noDuplicates:
             case PackInclusive when !noDuplicates:
             case PackExclusive when !noDuplicates:
+            // The engine asks that the run reach as far as there are fixups —
+            // "the number of matching fixups, which could share objects". Two
+            // fixups on one object make the run of distinct ids fall short of
+            // that count, so the shape is out.
+            case PackStrided when !noDuplicates:
                 return null;
         }
 
         // The block is re-sorted by object before being packed — every shape,
         // the raw one included. It is what makes the object list and the
-        // payloads that follow it line up.
+        // payloads that follow it line up, and a shipped raw block reads back
+        // with its object ids ascending, so the raw shape wants it too.
+        //
+        // The sort has to be stable: within one source object the fixups keep
+        // the order the engine's own sort gave them, and that order is not
+        // recoverable from the object id alone.
         var ordered = fixups.OrderBy(value => value.SourceObjectId).ToArray();
 
         var output = new MemoryStream();
@@ -206,6 +249,15 @@ internal static class PhyreFixupPacker
                     .ToArray();
                 PhyreVariableLength.Write(output, (uint)excluded.Length);
                 foreach (var id in excluded) WriteObjectId(output, id, objectCount);
+                break;
+            case PackStrided:
+                // Objects at a fixed step: where the series starts, its step and
+                // how long it runs, in place of a list.
+                var series = Series(ids);
+                if (series is null) return null;
+                PhyreVariableLength.Write(output, series.Value.First);
+                PhyreVariableLength.Write(output, series.Value.Stride);
+                PhyreVariableLength.Write(output, series.Value.Length);
                 break;
             case PackRaw:
                 PhyreVariableLength.Write(output, (uint)fixups.Count);

@@ -134,16 +134,46 @@
       "verified": true
     },
     {
-      "name": "OP8",
+      "name": "Environment_SetProfile",
       "op": 8,
       "opname": "SET_SYS",
-      "selectors": [],
+      "selectors": [
+        {
+          "value": 5,
+          "kind": "selector"
+        }
+      ],
       "read": [
         {
-          "t": "u8"
+          "t": "u8",
+          "role": "selector",
+          "name": "system_slot"
         },
         {
-          "t": "expr"
+          "t": "expr",
+          "name": "environment_profile"
+        }
+      ],
+      "verified": true
+    },
+    {
+      "name": "System_SetValue",
+      "op": 8,
+      "opname": "SET_SYS",
+      "selectors": [
+        {
+          "value": "other",
+          "kind": "selector"
+        }
+      ],
+      "read": [
+        {
+          "t": "u8",
+          "name": "system_slot"
+        },
+        {
+          "t": "expr",
+          "name": "value"
         }
       ],
       "verified": true
@@ -6656,7 +6686,7 @@
       "verified": true
     },
     {
-      "name": "OP73_23",
+      "name": "SceneEffect_PlayOrStop",
       "op": 73,
       "opname": "OP73",
       "selectors": [
@@ -6671,8 +6701,12 @@
           "role": "selector"
         },
         {
-          "t": "bytes",
-          "size": 5
+          "t": "u8",
+          "name": "operation"
+        },
+        {
+          "t": "s32",
+          "name": "slot"
         }
       ],
       "verified": true
@@ -7350,16 +7384,19 @@
       "verified": true
     },
     {
-      "name": "OP86",
+      "name": "LookPoint_BindEntity",
       "op": 86,
       "opname": "OP86",
       "selectors": [],
       "read": [
         {
-          "t": "string"
+          "t": "string",
+          "name": "look_point_name"
         },
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "entity_id",
+          "sem": "entity"
         }
       ],
       "verified": true

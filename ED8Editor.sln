@@ -30,6 +30,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{531803A3-E97
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ED8Editor.Tables", "src\ED8Editor.Tables\ED8Editor.Tables.csproj", "{83386A44-A8BB-4FD5-994D-FAEA118CAD93}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ED8Editor.Models", "src\ED8Editor.Models\ED8Editor.Models.csproj", "{C30D70C2-36B7-4D68-9D54-B2D8A5B8FB1A}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -88,8 +90,13 @@ Global
 		{83386A44-A8BB-4FD5-994D-FAEA118CAD93}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{83386A44-A8BB-4FD5-994D-FAEA118CAD93}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{83386A44-A8BB-4FD5-994D-FAEA118CAD93}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C30D70C2-36B7-4D68-9D54-B2D8A5B8FB1A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C30D70C2-36B7-4D68-9D54-B2D8A5B8FB1A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C30D70C2-36B7-4D68-9D54-B2D8A5B8FB1A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C30D70C2-36B7-4D68-9D54-B2D8A5B8FB1A}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{83386A44-A8BB-4FD5-994D-FAEA118CAD93} = {531803A3-E97A-4558-9FED-874B3C5FAB76}
+		{C30D70C2-36B7-4D68-9D54-B2D8A5B8FB1A} = {531803A3-E97A-4558-9FED-874B3C5FAB76}
 	EndGlobalSection
 EndGlobal

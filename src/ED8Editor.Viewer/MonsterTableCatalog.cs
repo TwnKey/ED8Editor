@@ -19,8 +19,8 @@ internal static class MonsterTableCatalog
     {
         if (string.IsNullOrWhiteSpace(gameDataPath)) return Array.Empty<MonsterTableChoice>();
         return CharacterAuthoringCatalog.LoadEnemies(gameDataPath)
-            .Where(value => !string.IsNullOrWhiteSpace(value.AnimationScript))
-            .GroupBy(value => value.AnimationScript, StringComparer.OrdinalIgnoreCase)
+            .Where(value => !string.IsNullOrWhiteSpace(value.BattleAiScript))
+            .GroupBy(value => value.BattleAiScript!, StringComparer.OrdinalIgnoreCase)
             .Select(group =>
             {
                 var entry = group.First();
