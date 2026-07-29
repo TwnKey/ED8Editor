@@ -9,6 +9,7 @@ using ED8Editor.Packages;
 using ED8Editor.Phyre;
 using ED8Editor.Rendering;
 using ED8Editor.Scene;
+using ED8Editor.ScriptHeaders;
 using ED8Editor.Tables;
 using Vortice.Direct3D11;
 
@@ -24,6 +25,7 @@ public sealed class ViewerForm : Form
     private string baseTitle;
     private readonly SceneElementPicker elementPicker = new();
     private readonly SceneRaycaster surfaceRaycaster = new();
+    private readonly SceneRaycaster surfacePreviewRaycaster = new();
     private readonly EditorOrbitCamera cameraNavigation = new();
     private readonly EditorCameraDollySmoother cameraDollySmoother = new();
     private readonly SceneTranslationGizmo translationGizmo = new();
@@ -75,6 +77,16 @@ public sealed class ViewerForm : Form
         GripStyle = ToolStripGripStyle.Hidden,
         RenderMode = ToolStripRenderMode.System,
     };
+    private readonly TableLayoutPanel topChrome = new()
+    {
+        Dock = DockStyle.Top,
+        AutoSize = true,
+        AutoSizeMode = AutoSizeMode.GrowAndShrink,
+        ColumnCount = 1,
+        RowCount = 3,
+        Margin = Padding.Empty,
+        Padding = Padding.Empty,
+    };
     private readonly ToolStripButton translateToolButton = new("Move (1)") { ToolTipText = "Translate the selected object" };
     private readonly ToolStripButton rotateToolButton = new("Rotate (2)") { ToolTipText = "Rotate the selected object" };
     private readonly ToolStripButton scaleToolButton = new("Scale (3)") { ToolTipText = "Scale the selected object" };
@@ -110,9 +122,19 @@ public sealed class ViewerForm : Form
     private readonly Panel scenePanel = new() { Dock = DockStyle.Left, Width = 340, Padding = new Padding(8) };
     private readonly TabControl leftPanelTabs = new() { Dock = DockStyle.Fill };
     private readonly TabPage mapTab = new("Map");
+    private readonly TabPage encountersTab = new("Encounters");
     private readonly TabPage modTab = new("Mod project");
     private readonly Panel mapPanel = new() { Dock = DockStyle.Fill };
     private readonly Panel modPanel = new() { Dock = DockStyle.Fill, Padding = new Padding(6) };
+    private readonly TreeView encountersTree = new()
+    {
+        Dock = DockStyle.Fill,
+        HideSelection = false,
+        FullRowSelect = true,
+    };
+    private readonly Button newEncounterButton = new() { AutoSize = true, Text = "New encounter…" };
+    private readonly Button editEncounterButton = new() { AutoSize = true, Text = "Edit…" };
+    private readonly Button instantiateEncounterButton = new() { AutoSize = true, Text = "Instantiate on map…" };
     private readonly TreeView modFileTree = new()
     {
         Dock = DockStyle.Fill,
@@ -148,8 +170,15 @@ public sealed class ViewerForm : Form
         BackColor = SystemColors.ControlDark,
     };
     private readonly TabControl rightPanelTabs = new() { Dock = DockStyle.Fill };
-    private readonly TabPage assetsTab = new("Assets / OPS");
+    private readonly TabPage assetsTab = new("Assets");
+    private readonly TabPage opsTab = new("OPS");
     private readonly TabPage scriptsTab = new("Scripts");
+    private readonly TreeView opsElementTree = new()
+    {
+        Dock = DockStyle.Fill,
+        HideSelection = false,
+        FullRowSelect = true,
+    };
     private readonly Panel assetControlsPanel = new() { Dock = DockStyle.Fill, Padding = new Padding(8) };
     private readonly TextBox assetSearch = new() { Dock = DockStyle.Top, PlaceholderText = "Search PKG assets..." };
     private readonly CheckBox snapCheckBox = new()
@@ -172,18 +201,6 @@ public sealed class ViewerForm : Form
         Text = "Show field monsters",
         Checked = true,
     };
-    private readonly ComboBox keyboardLayoutList = new()
-    {
-        Dock = DockStyle.Top,
-        Height = 28,
-        DropDownStyle = ComboBoxStyle.DropDownList,
-    };
-    private readonly ComboBox environmentVariantList = new()
-    {
-        Dock = DockStyle.Top,
-        Height = 28,
-        DropDownStyle = ComboBoxStyle.DropDownList,
-    };
     private readonly Label effectMetadataStatus = new()
     {
         Dock = DockStyle.Top,
@@ -199,7 +216,7 @@ public sealed class ViewerForm : Form
     {
         Dock = DockStyle.Bottom,
         Height = 30,
-        Text = "Edit CreateMonsters encounters…",
+        Text = "Edit encounters…",
     };
     private readonly Button addFieldMonsterButton = new()
     {
@@ -230,7 +247,7 @@ public sealed class ViewerForm : Form
     private readonly Button addOpsElementButton = new() { Dock = DockStyle.Bottom, Height = 30, Text = "Place OPS element" };
     private readonly SceneSnapSettings snapSettings = new(0.25f, MathF.PI / 12f, 0.1f);
     private readonly SceneOutlinerBuilder outlinerBuilder = new();
-    private readonly Dictionary<string, TextBox> opsInputFields = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Control> opsInputFields = new(StringComparer.Ordinal);
     private IReadOnlyList<AssetCatalogEntry> assetCatalog = Array.Empty<AssetCatalogEntry>();
     private D3D11GraphicsDevice? graphics;
     private D3D11Viewport? viewport;
@@ -263,12 +280,19 @@ public sealed class ViewerForm : Form
     private string? savedOpsPath;
     private PlacementState? placement;
     private Action<Vector3>? scriptSurfacePositionCapture;
+    private ScenePickHit? scriptSurfacePositionPreview;
+    private (int RequestId, SceneRay Ray, SceneModelInstance[] Instances)?
+        queuedScriptSurfacePreview;
+    private int scriptSurfacePreviewRequestId;
+    private bool scriptSurfacePreviewRaycastRunning;
+    private int opsCreationDestinationLoadGeneration;
+    private int opsPropertyDestinationLoadGeneration;
     private SceneCameraHandle cameraHandle = SceneCameraHandle.Eye;
     private IReadOnlyList<SceneElementSelection> outlinerSelections = Array.Empty<SceneElementSelection>();
     private bool refreshingOutliner;
     private EditorKeyboardLayout keyboardLayout;
     private SceneEnvironmentVariant environmentVariant = SceneEnvironmentVariant.Daylight;
-    private bool refreshingEnvironmentVariant;
+    private bool refreshingOpsElementTree;
     private string? instructionDefinitionsPath;
     private ScriptAnimationLibrary? scriptAnimationLibrary;
     private IReadOnlyList<MonsterTableChoice> monsterTableChoices =
@@ -326,20 +350,19 @@ public sealed class ViewerForm : Form
         assetControlsPanel.Controls.Add(showIndicatorsCheckBox);
         assetControlsPanel.Controls.Add(showFieldMonstersCheckBox);
         assetControlsPanel.Controls.Add(effectMetadataStatus);
-        assetControlsPanel.Controls.Add(environmentVariantList);
-        assetControlsPanel.Controls.Add(keyboardLayoutList);
         assetControlsPanel.Controls.Add(assetSearch);
         propertyGroup.Controls.Add(propertyGrid);
         propertyGroup.Controls.Add(applyPropertiesButton);
         sceneOutlinerGroup.Controls.Add(sceneOutliner);
         mapPanel.Controls.Add(sceneOutlinerGroup);
-        mapPanel.Controls.Add(propertyGroup);
         mapTab.Controls.Add(mapPanel);
+        BuildEncountersTab();
         BuildModProjectTab();
         RefreshModProjectTab();
         modTab.Controls.Add(modPanel);
-        leftPanelTabs.TabPages.Add(modTab);
         leftPanelTabs.TabPages.Add(mapTab);
+        leftPanelTabs.TabPages.Add(encountersTab);
+        leftPanelTabs.TabPages.Add(modTab);
         scenePanel.Controls.Add(leftPanelTabs);
         opsCreationGroup.Controls.Add(opsInputPanel);
         opsCreationGroup.Controls.Add(opsProfileEvidence);
@@ -350,15 +373,27 @@ public sealed class ViewerForm : Form
         assetControlsPanel.Controls.Add(addAssetButton);
         assetControlsPanel.Controls.Add(addFieldMonsterButton);
         assetControlsPanel.Controls.Add(editFieldMonstersButton);
-        assetControlsPanel.Controls.Add(opsCreationGroup);
         assetsTab.Controls.Add(assetControlsPanel);
+        var opsWorkspaceTabs = new TabControl { Dock = DockStyle.Fill };
+        var opsElementsPage = new TabPage("Elements");
+        var opsCreatePage = new TabPage("Create");
+        propertyGroup.Dock = DockStyle.Bottom;
+        propertyGroup.Height = 300;
+        opsCreationGroup.Dock = DockStyle.Fill;
+        opsCreationGroup.Height = 300;
+        opsElementsPage.Controls.Add(opsElementTree);
+        opsElementsPage.Controls.Add(propertyGroup);
+        opsCreatePage.Controls.Add(opsCreationGroup);
+        opsWorkspaceTabs.TabPages.Add(opsElementsPage);
+        opsWorkspaceTabs.TabPages.Add(opsCreatePage);
+        opsTab.Controls.Add(opsWorkspaceTabs);
         rightPanelTabs.TabPages.Add(assetsTab);
+        rightPanelTabs.TabPages.Add(opsTab);
         rightPanelTabs.TabPages.Add(scriptsTab);
         assetPanel.Controls.Add(rightPanelTabs);
         BuildMainMenu();
         openFileTabs.SelectedIndexChanged += (_, _) => SelectOpenFileTab();
         Controls.Add(viewportHost);
-        Controls.Add(openFileTabs);
         Controls.Add(assetPanelSplitter);
         Controls.Add(assetPanel);
         Controls.Add(scenePanel);
@@ -384,11 +419,18 @@ public sealed class ViewerForm : Form
             cameraPlayButton,
             ignoreScriptCameraButton,
         });
-        Controls.Add(gizmoToolStrip);
-        Controls.Add(mainMenu);
+        topChrome.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        topChrome.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        topChrome.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        topChrome.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        mainMenu.Dock = DockStyle.Fill;
+        openFileTabs.Dock = DockStyle.Fill;
+        gizmoToolStrip.Dock = DockStyle.Fill;
+        topChrome.Controls.Add(mainMenu, 0, 0);
+        topChrome.Controls.Add(openFileTabs, 0, 1);
+        topChrome.Controls.Add(gizmoToolStrip, 0, 2);
+        Controls.Add(topChrome);
         MainMenuStrip = mainMenu;
-        mainMenu.BringToFront();
-        gizmoToolStrip.BringToFront();
         translateToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Translate);
         rotateToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Rotate);
         scaleToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Scale);
@@ -485,30 +527,36 @@ public sealed class ViewerForm : Form
         deleteButton.Click += (_, _) => DeleteSelectedElement();
         propertyGrid.Columns.Add("Attribute", "Attribute");
         propertyGrid.Columns.Add("Value", "Value");
+        propertyGrid.CurrentCellDirtyStateChanged += (_, _) =>
+        {
+            if (propertyGrid.IsCurrentCellDirty)
+                propertyGrid.CommitEdit(DataGridViewDataErrorContexts.Commit);
+        };
+        propertyGrid.CellValueChanged += async (_, eventArgs) =>
+        {
+            if (eventArgs.RowIndex < 0 || eventArgs.ColumnIndex != 1) return;
+            var row = propertyGrid.Rows[eventArgs.RowIndex];
+            if (!string.Equals(
+                    row.Cells[0].Value?.ToString(), "next", StringComparison.Ordinal))
+            {
+                return;
+            }
+            await RefreshPropertyDestinationEntriesAsync();
+        };
+        propertyGrid.DataError += (_, eventArgs) =>
+        {
+            Debug.WriteLine($"OPS property grid value error: {eventArgs.Exception?.Message}");
+            eventArgs.ThrowException = false;
+        };
         applyPropertiesButton.Click += (_, _) => ApplyElementProperties();
         sceneOutliner.AfterSelect += (_, _) => SelectFromOutliner();
         sceneOutliner.NodeMouseDoubleClick += (_, eventArgs) => FocusOutlinerNode(eventArgs.Node);
+        opsElementTree.AfterSelect += (_, _) => SelectFromOpsTree();
+        opsElementTree.NodeMouseDoubleClick += (_, eventArgs) => EditOpsNode(eventArgs.Node);
         opsProfileList.DisplayMember = nameof(OpsSpatialCreationProfile.DisplayName);
         opsProfileList.DataSource = OpsSpatialCreationCatalog.Profiles.ToArray();
         opsProfileList.SelectedIndexChanged += (_, _) => RefreshOpsCreationInputs();
         addOpsElementButton.Click += (_, _) => BeginOpsPlacement();
-        keyboardLayoutList.Items.AddRange(new object[]
-        {
-            "Navigation: AZERTY (ZQSD)",
-            "Navigation: QWERTY (WASD)",
-        });
-        keyboardLayoutList.SelectedIndex = keyboardLayout == EditorKeyboardLayout.Azerty ? 0 : 1;
-        keyboardLayoutList.SelectedIndexChanged += (_, _) => ChangeKeyboardLayout();
-        environmentVariantList.Items.AddRange(new object[]
-        {
-            "Environment: Daylight",
-            "Environment: Evening",
-            "Environment: Night",
-            "Environment: Morning",
-            "Environment: Rain",
-        });
-        environmentVariantList.SelectedIndex = 0;
-        environmentVariantList.SelectedIndexChanged += (_, _) => ChangeEnvironmentVariant();
         RefreshOpsCreationInputs();
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.Opaque, true);
         renderTimer.Tick += (_, _) => RenderFrame();
@@ -657,14 +705,37 @@ public sealed class ViewerForm : Form
                 || (eventArgs.Button == MouseButtons.Middle && cameraDrag != CameraDragMode.Pan)) return;
             var deselect = eventArgs.Button == MouseButtons.Right
                 && cameraDrag == CameraDragMode.Look
-                && !rightLookMoved;
+                && !rightLookMoved
+                && scriptSurfacePositionCapture is null;
             EndCameraDrag();
+            if (eventArgs.Button == MouseButtons.Right
+                && scriptSurfacePositionCapture is not null)
+            {
+                var pointer = viewportHost.PointToClient(Cursor.Position);
+                if (viewportHost.ClientRectangle.Contains(pointer))
+                    QueueScriptSurfacePositionPreview(pointer);
+            }
             if (deselect) ClearSelection();
         };
         viewportHost.MouseMove += (_, eventArgs) =>
         {
             if (UpdateLeftMouseGesture(eventArgs.Location)) return;
-            if (placement is not null) UpdatePlacement(eventArgs.Location);
+            if (scriptSurfacePositionCapture is not null)
+            {
+                if (cameraDrag == CameraDragMode.None)
+                {
+                    QueueScriptSurfacePositionPreview(eventArgs.Location);
+                }
+                else
+                {
+                    MoveCamera(eventArgs.Location);
+                    QueueScriptSurfacePositionPreview(
+                        new Point(
+                            viewportHost.ClientSize.Width / 2,
+                            viewportHost.ClientSize.Height / 2));
+                }
+            }
+            else if (placement is not null) UpdatePlacement(eventArgs.Location);
             else if (gizmoDrag is not null) UpdateGizmoDrag(eventArgs.Location);
             else MoveCamera(eventArgs.Location);
         };
@@ -1145,40 +1216,17 @@ public sealed class ViewerForm : Form
         }
     }
 
-    private void ChangeKeyboardLayout()
+    private void SetKeyboardLayout(EditorKeyboardLayout value)
     {
-        keyboardLayout = keyboardLayoutList.SelectedIndex == 0
-            ? EditorKeyboardLayout.Azerty
-            : EditorKeyboardLayout.Qwerty;
+        keyboardLayout = value;
         settingsStore.Save(settingsStore.Load() with { KeyboardLayout = keyboardLayout });
         pressedKeys.Clear();
-    }
-
-    private void ChangeEnvironmentVariant()
-    {
-        if (refreshingEnvironmentVariant || environmentVariantList.SelectedIndex < 0) return;
-        SetEnvironmentVariant((SceneEnvironmentVariant)environmentVariantList.SelectedIndex);
-        if (uploadedModels.Count != 0)
-        {
-            var resourcesByAsset = uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase);
-            RefreshRenderInstances(resourcesByAsset);
-        }
-        Text = $"{baseTitle} — environment: {environmentVariant}";
     }
 
     private void SetEnvironmentVariant(SceneEnvironmentVariant value)
     {
         environmentVariant = value;
         viewport?.SetEnvironmentVariant(value);
-        refreshingEnvironmentVariant = true;
-        try
-        {
-            environmentVariantList.SelectedIndex = (int)value;
-        }
-        finally
-        {
-            refreshingEnvironmentVariant = false;
-        }
     }
 
     private bool UpdateLeftMouseGesture(Point current)
@@ -1308,6 +1356,32 @@ public sealed class ViewerForm : Form
         var options = new ToolStripMenuItem("Options");
         options.DropDownItems.Add(new ToolStripMenuItem(
             "Instruction definitions...", null, (_, _) => ConfigureInstructionDefinitions()));
+        var navigation = new ToolStripMenuItem("Keyboard navigation");
+        var azerty = new ToolStripMenuItem("AZERTY (ZQSD)")
+        {
+            CheckOnClick = true,
+            Checked = keyboardLayout == EditorKeyboardLayout.Azerty,
+        };
+        var qwerty = new ToolStripMenuItem("QWERTY (WASD)")
+        {
+            CheckOnClick = true,
+            Checked = keyboardLayout == EditorKeyboardLayout.Qwerty,
+        };
+        azerty.Click += (_, _) =>
+        {
+            SetKeyboardLayout(EditorKeyboardLayout.Azerty);
+            azerty.Checked = true;
+            qwerty.Checked = false;
+        };
+        qwerty.Click += (_, _) =>
+        {
+            SetKeyboardLayout(EditorKeyboardLayout.Qwerty);
+            qwerty.Checked = true;
+            azerty.Checked = false;
+        };
+        navigation.DropDownItems.Add(azerty);
+        navigation.DropDownItems.Add(qwerty);
+        options.DropDownItems.Add(navigation);
         mainMenu.Items.Add(options);
     }
 
@@ -1414,7 +1488,7 @@ public sealed class ViewerForm : Form
         ResizeViewport();
     }
 
-    private void OpenScriptEditor()
+    private void OpenScriptEditor(bool activateTab = true)
     {
         var editor = scriptEditor;
         if (editor is null || editor.IsDisposed)
@@ -1433,7 +1507,9 @@ public sealed class ViewerForm : Form
                             : Array.Empty<string>(),
                     BeginScriptSurfacePositionCapture),
                 instructionDefinitionsPath,
-                monsterTableChoices);
+                monsterTableChoices,
+                GetBattleMapAssets(),
+                CreateBattleMapInf);
             scriptEditor = editor;
             editor.TopLevel = false;
             editor.FormBorderStyle = FormBorderStyle.None;
@@ -1459,7 +1535,7 @@ public sealed class ViewerForm : Form
             editor.SetRuntimeEntities(CreateScriptEntityChoices(activeScriptEntities));
         }
 
-        rightPanelTabs.SelectedTab = scriptsTab;
+        if (activateTab) rightPanelTabs.SelectedTab = scriptsTab;
         var path = session.Script.Header.SourcePath;
         if (!string.IsNullOrEmpty(path) && System.IO.File.Exists(path))
         {
@@ -1471,6 +1547,7 @@ public sealed class ViewerForm : Form
     private async Task RefreshFieldMonstersAsync(DecompiledScript script)
     {
         var generation = ++fieldMonsterRefreshGeneration;
+        RefreshEncounterBrowser(script);
         if (session.Script.GameDataPath is not { } gameDataPath || graphics is null)
         {
             fieldMonsterInstances = Array.Empty<SceneModelInstance>();
@@ -1479,20 +1556,32 @@ public sealed class ViewerForm : Form
         }
 
         var spawns = ScriptMonsterSpawnReader.Read(script);
-        foreach (var assetId in spawns
-                     .Select(value => value.AssetId)
+        var modelAssetsByMonster = spawns
+            .Select(value => value.AssetId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(monsterAssetId => (
+                MonsterAssetId: monsterAssetId,
+                ModelAssetId: monsterTableChoices.FirstOrDefault(value =>
+                    value.AssetId.Equals(monsterAssetId, StringComparison.OrdinalIgnoreCase))
+                    ?.ModelAssetId))
+            .Where(value => !string.IsNullOrWhiteSpace(value.ModelAssetId))
+            .ToDictionary(
+                value => value.MonsterAssetId,
+                value => value.ModelAssetId!,
+                StringComparer.OrdinalIgnoreCase);
+        foreach (var modelAssetId in modelAssetsByMonster.Values
                      .Distinct(StringComparer.OrdinalIgnoreCase))
         {
             if (generation != fieldMonsterRefreshGeneration || IsDisposed) return;
-            if (!loadedModelsByAsset.TryGetValue(assetId, out var model))
+            if (!loadedModelsByAsset.TryGetValue(modelAssetId, out var model))
             {
-                model = await LoadScriptEntityModelAsync(assetId, gameDataPath);
+                model = await LoadScriptEntityModelAsync(modelAssetId, gameDataPath);
                 if (generation != fieldMonsterRefreshGeneration || IsDisposed) return;
                 if (model is null) continue;
-                loadedModelsByAsset[assetId] = model;
+                loadedModelsByAsset[modelAssetId] = model;
             }
             if (uploadedModels.All(value =>
-                    !value.AssetId.Equals(assetId, StringComparison.OrdinalIgnoreCase)))
+                    !value.AssetId.Equals(modelAssetId, StringComparison.OrdinalIgnoreCase)))
             {
                 uploadedModels.Add(new D3D11ModelUploader(graphics.Device).Upload(model));
             }
@@ -1503,7 +1592,11 @@ public sealed class ViewerForm : Form
         for (var index = 0; index < spawns.Count; index++)
         {
             var spawn = spawns[index];
-            if (!loadedModelsByAsset.TryGetValue(spawn.AssetId, out var model)) continue;
+            if (!modelAssetsByMonster.TryGetValue(spawn.AssetId, out var modelAssetId)
+                || !loadedModelsByAsset.TryGetValue(modelAssetId, out var model))
+            {
+                continue;
+            }
             var instanceId = FieldMonsterSceneInstanceBase + index;
             var monsterName = monsterTableChoices.FirstOrDefault(value =>
                 value.AssetId.Equals(spawn.AssetId, StringComparison.OrdinalIgnoreCase))
@@ -1514,7 +1607,7 @@ public sealed class ViewerForm : Form
             byInstance.Add(instanceId, spawn);
             rendered.Add(new SceneModelInstance(
                 instanceId,
-                spawn.AssetId,
+                modelAssetId,
                 $"{label} — encounter {spawn.EncounterIndex}",
                 model,
                 Matrix4x4.CreateRotationY(spawn.HeadingDegrees * MathF.PI / 180f)
@@ -3497,11 +3590,13 @@ public sealed class ViewerForm : Form
             window = new QuestEditorWindow(
                 path,
                 session.Script.Header.SourcePath,
+                GetQuestScriptSources(),
                 () =>
                 {
                     rightPanelTabs.SelectedTab = scriptsTab;
                     OpenScriptEditor();
                 },
+                NavigateToQuestMutation,
                 (target, beforeWrite) => TrackModSave(target, beforeWrite));
         }
         catch (Exception exception) when (exception is IOException
@@ -3519,6 +3614,90 @@ public sealed class ViewerForm : Form
         window.FormClosed += (_, _) => questEditorWindow = null;
         questEditorWindow = window;
         window.Show(this);
+        if (ResolveScenarioScriptCorpusDirectory() is { } corpusDirectory)
+            _ = window.IndexScriptCorpusAsync(corpusDirectory, instructionDefinitionsPath);
+    }
+
+    private string? ResolveScenarioScriptCorpusDirectory()
+    {
+        if (session.Script.GameDataPath is not { } gameDataPath) return null;
+        var sourceSegments = Path.GetFullPath(session.Script.Header.SourcePath)
+            .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var locale = sourceSegments.Any(value =>
+            value.Equals("dat_us", StringComparison.OrdinalIgnoreCase))
+            ? "dat_us"
+            : "dat";
+        var directory = Path.Combine(gameDataPath, "scripts", "scena", locale);
+        return Directory.Exists(directory) ? directory : null;
+    }
+
+    private void NavigateToQuestMutation(QuestScriptMutation mutation)
+    {
+        ArgumentNullException.ThrowIfNull(mutation);
+        BringToFront();
+        OpenScriptEditor();
+        if (!session.Script.Header.SourcePath.Equals(
+                mutation.ScriptPath,
+                StringComparison.OrdinalIgnoreCase)
+            && !OpenScriptFile(mutation.ScriptPath))
+        {
+            return;
+        }
+        if (scriptEditor is not { } editor
+            || editor.CurrentPath is not { } editorPath
+            || !Path.GetFullPath(editorPath).Equals(
+                Path.GetFullPath(mutation.ScriptPath),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+        rightPanelTabs.SelectedTab = scriptsTab;
+        editor.GoToInstruction(mutation.FunctionIndex, mutation.InstructionIndex);
+        editor.Focus();
+    }
+
+    private IReadOnlyList<QuestScriptSource> GetQuestScriptSources()
+    {
+        var sources = new List<QuestScriptSource>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var currentPath = Path.GetFullPath(session.Script.Header.SourcePath);
+        var currentScript = scriptEditor?.CurrentScript;
+        if (currentScript is not null)
+        {
+            sources.Add(new QuestScriptSource(currentPath, currentScript));
+            seen.Add(currentPath);
+        }
+        else if (File.Exists(currentPath))
+        {
+            sources.Add(new QuestScriptSource(
+                currentPath,
+                ScriptDecompiler.Decompile(currentPath, instructionDefinitionsPath)));
+            seen.Add(currentPath);
+        }
+
+        if (modProject is null) return sources;
+        foreach (var file in modProject.Files.Where(value =>
+                     value.HasModCopy
+                     && Path.GetExtension(value.RelativePath).Equals(".dat", StringComparison.OrdinalIgnoreCase)
+                     && value.RelativePath.Split('/')
+                         .Any(segment => segment.Equals("scripts", StringComparison.OrdinalIgnoreCase))))
+        {
+            var scriptFile = Path.GetFullPath(modProject.GameFilePath(file.RelativePath));
+            if (!seen.Add(scriptFile) || !File.Exists(scriptFile)) continue;
+            try
+            {
+                sources.Add(new QuestScriptSource(
+                    scriptFile,
+                    ScriptDecompiler.Decompile(scriptFile, instructionDefinitionsPath)));
+            }
+            catch (Exception exception) when (exception is IOException
+                or InvalidDataException or InvalidOperationException or ArgumentException)
+            {
+                Debug.WriteLine(
+                    $"Quest index skipped unreadable script '{scriptFile}': {exception.Message}");
+            }
+        }
+        return sources;
     }
 
     /// <summary>
@@ -3717,7 +3896,8 @@ public sealed class ViewerForm : Form
             rendered.AddRange(fieldMonsterInstances
                 .Where(value => resourcesByAsset.ContainsKey(value.AssetId))
                 .Where(value => !fieldMonsterSpawns.TryGetValue(value.Id, out var spawn)
-                    || !activeScriptEntities.ContainsKey(spawn.EntityId))
+                    || scriptMonsterInstances.All(entity =>
+                        entity.Id != ScriptEntitySceneInstanceId(spawn.EntityId)))
                 .Select(value => new D3D11SceneInstance(
                     value.Id,
                     resourcesByAsset[value.AssetId],
@@ -3814,6 +3994,19 @@ public sealed class ViewerForm : Form
             overlayLines.Add(new SceneOverlayLine(previewPosition - Vector3.UnitX * size, previewPosition + Vector3.UnitX * size, color));
             overlayLines.Add(new SceneOverlayLine(previewPosition - Vector3.UnitY * size, previewPosition + Vector3.UnitY * size, color));
             overlayLines.Add(new SceneOverlayLine(previewPosition - Vector3.UnitZ * size, previewPosition + Vector3.UnitZ * size, color));
+        }
+        if (scriptSurfacePositionPreview is { } surfacePreview)
+        {
+            var toCamera = cameraNavigation.Position - surfacePreview.Position;
+            var markerNormal = Vector3.Dot(surfacePreview.Normal, toCamera) < 0f
+                ? -surfacePreview.Normal
+                : surfacePreview.Normal;
+            var marker = SceneSurfacePlacementMarker.Build(
+                surfacePreview.Position,
+                markerNormal,
+                GetSurfacePlacementMarkerRadius(surfacePreview.Position));
+            overlayLines.AddRange(marker.Lines);
+            overlayTriangles.AddRange(marker.Triangles);
         }
         viewport.SetDebugLines(overlayLines
             .Select(line => new D3D11DebugLine(line.Start, line.End, line.Color, line.Thickness))
@@ -4234,6 +4427,7 @@ public sealed class ViewerForm : Form
     private void RefreshOutliner()
     {
         var groups = outlinerBuilder.Build(document.Elements);
+        RefreshOpsElementTree(groups);
         var fieldMonsterSelections = showFieldMonstersCheckBox.Checked
             ? fieldMonsterInstances.Select(value => new SceneElementSelection(
                 SceneElementKind.FieldMonster,
@@ -4332,7 +4526,600 @@ public sealed class ViewerForm : Form
         {
             refreshingOutliner = false;
         }
+        SyncOpsElementSelection();
     }
+
+    private void RefreshOpsElementTree(IReadOnlyList<SceneOutlinerGroup> groups)
+    {
+        refreshingOpsElementTree = true;
+        try
+        {
+            opsElementTree.BeginUpdate();
+            opsElementTree.Nodes.Clear();
+            foreach (var group in groups.Where(value =>
+                         value.Elements.Any(element => element.Kind != SceneElementKind.Prop)))
+            {
+                var elements = group.Elements
+                    .Where(element => element.Kind != SceneElementKind.Prop)
+                    .ToArray();
+                if (elements.Length == 0) continue;
+                var groupNode = opsElementTree.Nodes.Add($"{group.Name} ({elements.Length})");
+                foreach (var element in elements)
+                {
+                    groupNode.Nodes.Add(new TreeNode(
+                        $"{DescribeOpsTreeElement(element)} [{element.SourceIndex}]")
+                    {
+                        Tag = element,
+                    });
+                }
+                groupNode.Expand();
+            }
+            SyncOpsElementSelection();
+        }
+        finally
+        {
+            opsElementTree.EndUpdate();
+            refreshingOpsElementTree = false;
+        }
+    }
+
+    private string DescribeOpsTreeElement(SceneElementSelection element)
+    {
+        if (element.Kind != SceneElementKind.LookPoint)
+            return element.Name;
+        var point = currentMap?.Points.FirstOrDefault(value =>
+            value.SourceIndex == element.SourceIndex);
+        return point?.SourceAttributes.GetValueOrDefault("type") switch
+        {
+            "5" => $"Shop — {element.Name}",
+            "7" => $"Fishing spot — {element.Name}",
+            _ => element.Name,
+        };
+    }
+
+    private void SelectFromOpsTree()
+    {
+        if (refreshingOpsElementTree
+            || opsElementTree.SelectedNode?.Tag is not SceneElementSelection selected)
+        {
+            return;
+        }
+        selection = selected;
+        cameraHandle = SceneCameraHandle.Eye;
+        RefreshRenderInstances(uploadedModels.ToDictionary(
+            value => value.AssetId,
+            StringComparer.OrdinalIgnoreCase));
+        RefreshOverlay();
+        RefreshElementProperties();
+        SyncOutlinerSelection();
+        Text = $"{baseTitle} — selected: {DescribeSelection(selected)}";
+    }
+
+    private void FocusOpsNode(TreeNode node)
+    {
+        if (node.Tag is not SceneElementSelection selected) return;
+        if (selection != selected) opsElementTree.SelectedNode = node;
+        FocusSelection();
+    }
+
+    private void EditOpsNode(TreeNode node)
+    {
+        if (node.Tag is not SceneElementSelection selected) return;
+        if (selection != selected) opsElementTree.SelectedNode = node;
+        FocusSelection();
+        OpenOpsElementEditor(selected);
+    }
+
+    private void OpenOpsElementEditor(SceneElementSelection selected)
+    {
+        if (selected.Kind == SceneElementKind.LookPoint
+            && currentMap?.Points.FirstOrDefault(value =>
+                value.SourceIndex == selected.SourceIndex) is { } point
+            && point.SourceAttributes.TryGetValue("type", out var pointType))
+        {
+            if (pointType == "5")
+            {
+                OpenShopEditor(point);
+                return;
+            }
+            if (pointType == "7")
+            {
+                OpenFishingSpotEditor(selected, point);
+                return;
+            }
+        }
+
+        var attributeSet = document.FindElementAttributes(selected);
+        if (attributeSet is null) return;
+        var descriptors = attributeSet.Values
+            .OrderBy(value => value.Key, StringComparer.Ordinal)
+            .Select(attribute =>
+            {
+                var kind = OpsAttributeValueKinds.Resolve(
+                    selected, attribute.Key, attributeSet.Values);
+                var choices = GetOpsAttributeChoices(kind)
+                    .Select(value => new OpsAttributeChoice(value.Value, value.Label))
+                    .ToArray();
+                return new OpsAttributeEditorDescriptor(
+                    attribute.Key,
+                    attribute.Value,
+                    attributeSet.ProtectedNames.Contains(attribute.Key),
+                    choices);
+            })
+            .ToArray();
+
+        using var editor = new OpsElementEditorForm(
+            $"{OpsElementKindLabel(selected.Kind)} — {selected.Name}",
+            descriptors);
+        if (editor.ShowDialog(this) != DialogResult.OK) return;
+        try
+        {
+            var attributes = editor.ReadAttributes();
+            if (!document.ApplyElementAttributes(selected, attributes)) return;
+            var displayNameAttribute = selected.Kind == SceneElementKind.Sound
+                ? "seName"
+                : "name";
+            if (attributes.TryGetValue(displayNameAttribute, out var editedName)
+                && !string.IsNullOrWhiteSpace(editedName))
+            {
+                selection = selected with { Name = editedName.Trim() };
+            }
+            RefreshSceneFromDocument();
+        }
+        catch (ArgumentException exception)
+        {
+            MessageBox.Show(
+                this, exception.Message, "Invalid OPS element",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private void OpenShopEditor(MapPoint point)
+    {
+        var tableDirectory = ResolveTableDirectory();
+        var shopPath = tableDirectory is null
+            ? null
+            : Path.Combine(tableDirectory, "t_shop.tbl");
+        if (shopPath is null || !File.Exists(shopPath))
+        {
+            MessageBox.Show(
+                this,
+                "t_shop.tbl was not found for the current script locale.",
+                "Shop editor",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        try
+        {
+            OpenScriptEditor(activateTab: false);
+            var bindings = scriptEditor?.FindShopBindings(point.Name)
+                ?? Array.Empty<ShopScriptBinding>();
+            var table = Cs1ShopTable.Read(shopPath);
+            var items = GetTableChoices(new Cs1TableReference("t_item.tbl", "item"));
+            using var editor = new ShopEditorForm(point.Name, bindings, table, items);
+            if (editor.ShowDialog(this) != DialogResult.OK) return;
+
+            var result = editor.ReadResult();
+            TrackModSave(shopPath, beforeWrite: true);
+            table.SetTitleName(result.ShopId, result.Title);
+            table.ReplaceItems(result.ShopId, result.Items);
+            table.Write();
+            TrackModSave(shopPath, beforeWrite: false);
+            tableCatalog?.Invalidate(shopPath);
+            scriptEditor?.UpdateShopBinding(result.OriginalBinding, result.ShopId);
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException or InvalidOperationException
+            or ArgumentException or OverflowException)
+        {
+            MessageBox.Show(
+                this,
+                exception.Message,
+                "Cannot edit shop",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+    }
+
+    private void OpenFishingSpotEditor(
+        SceneElementSelection selected,
+        MapPoint point)
+    {
+        OpenScriptEditor(activateTab: false);
+        var bindings = scriptEditor?.FindFishingSpotBindings(point.Name)
+            ?? Array.Empty<FishingSpotScriptBinding>();
+        var waterTarget = point.SourceAttributes.TryGetValue("markPos", out var markPos)
+            && TryParseOpsVector(markPos, out var parsedTarget)
+                ? parsedTarget
+                : (Vector3?)null;
+        using var editor = new FishingSpotEditorForm(
+            point.Name,
+            point.Position,
+            point.Radius ?? 1.5f,
+            waterTarget,
+            bindings);
+        if (editor.ShowDialog(this) != DialogResult.OK) return;
+
+        try
+        {
+            var result = editor.ReadResult();
+            if (result.OriginalBinding is not null && result.UpdatedBinding is not null)
+            {
+                scriptEditor?.UpdateFishingSpotBinding(
+                    result.OriginalBinding,
+                    result.UpdatedBinding);
+            }
+
+            var attributeSet = document.FindElementAttributes(selected)
+                ?? throw new InvalidOperationException("The fishing LookPoint no longer exists.");
+            var attributes = new Dictionary<string, string>(
+                attributeSet.Values,
+                StringComparer.Ordinal)
+            {
+                ["name"] = result.FunctionName,
+                ["pos"] = FormatOpsVector(result.InteractionPosition),
+                ["radius"] = result.Radius.ToString(
+                    "G9", System.Globalization.CultureInfo.InvariantCulture),
+            };
+            if (result.UpdatedBinding is { } binding)
+                attributes["markPos"] = FormatOpsVector(binding.WaterTarget);
+            document.ApplyElementAttributes(selected, attributes);
+            selection = selected with { Name = result.FunctionName };
+            RefreshSceneFromDocument();
+        }
+        catch (Exception exception) when (exception is ArgumentException
+            or InvalidOperationException)
+        {
+            MessageBox.Show(
+                this, exception.Message, "Cannot update fishing spot",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private IReadOnlyList<OpsInputChoice> GetOpsAttributeChoices(OpsValueKind kind) =>
+        kind switch
+        {
+            OpsValueKind.ScriptFunction => GetCurrentScriptFunctionChoices(),
+            OpsValueKind.DestinationMap => GetDestinationMapChoices(),
+            OpsValueKind.MapSoundSource => GetMapSoundChoices(),
+            _ => Array.Empty<OpsInputChoice>(),
+        };
+
+    private static string OpsElementKindLabel(SceneElementKind kind) =>
+        kind switch
+        {
+            SceneElementKind.EntryVolume => "Map transition",
+            SceneElementKind.GroupVolume => "Trigger volume",
+            SceneElementKind.LookPoint => "Look point",
+            SceneElementKind.Camera => "Map camera",
+            SceneElementKind.Sound => "Sound object",
+            SceneElementKind.Light => "Light",
+            _ => "OPS element",
+        };
+
+    private static bool TryParseOpsVector(string text, out Vector3 value)
+    {
+        value = Vector3.Zero;
+        var parts = text.Split(',', StringSplitOptions.TrimEntries);
+        if (parts.Length != 3) return false;
+        var culture = System.Globalization.CultureInfo.InvariantCulture;
+        if (!float.TryParse(parts[0], System.Globalization.NumberStyles.Float, culture, out var x)
+            || !float.TryParse(parts[1], System.Globalization.NumberStyles.Float, culture, out var y)
+            || !float.TryParse(parts[2], System.Globalization.NumberStyles.Float, culture, out var z))
+        {
+            return false;
+        }
+        value = new Vector3(x, y, z);
+        return true;
+    }
+
+    private static string FormatOpsVector(Vector3 value)
+    {
+        var culture = System.Globalization.CultureInfo.InvariantCulture;
+        return string.Join(", ",
+            value.X.ToString("G9", culture),
+            value.Y.ToString("G9", culture),
+            value.Z.ToString("G9", culture));
+    }
+
+    private void SyncOpsElementSelection()
+    {
+        refreshingOpsElementTree = true;
+        try
+        {
+            opsElementTree.SelectedNode = opsElementTree.Nodes
+                .Cast<TreeNode>()
+                .SelectMany(group => group.Nodes.Cast<TreeNode>())
+                .FirstOrDefault(node =>
+                    node.Tag is SceneElementSelection candidate
+                    && candidate == selection);
+        }
+        finally
+        {
+            refreshingOpsElementTree = false;
+        }
+    }
+
+    /// <summary>
+    /// Encounters are battle definitions (CreateMonsters tables) plus zero or
+    /// more OP19 instances scattered through code functions. Keeping both in
+    /// one tree makes the one-to-many relationship explicit.
+    /// </summary>
+    private void BuildEncountersTab()
+    {
+        var tools = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom,
+            AutoSize = true,
+            WrapContents = true,
+            Padding = new Padding(4),
+        };
+        tools.Controls.Add(newEncounterButton);
+        tools.Controls.Add(editEncounterButton);
+        tools.Controls.Add(instantiateEncounterButton);
+        encountersTab.Controls.Add(encountersTree);
+        encountersTab.Controls.Add(tools);
+
+        newEncounterButton.Click += (_, _) =>
+        {
+            OpenScriptEditor();
+            scriptEditor?.CreateEncounter();
+        };
+        editEncounterButton.Click += (_, _) => EditSelectedEncounter();
+        instantiateEncounterButton.Click += (_, _) => InstantiateSelectedEncounter();
+        encountersTree.AfterSelect += (_, _) => RefreshEncounterButtons();
+        encountersTree.NodeMouseClick += (_, eventArgs) =>
+        {
+            if (eventArgs.Button == MouseButtons.Left
+                && eventArgs.Node.Tag is EncounterInstanceNode instance)
+            {
+                FocusEncounterInstanceOnMap(instance.Spawn);
+            }
+        };
+        encountersTree.NodeMouseDoubleClick += (_, eventArgs) =>
+        {
+            if (eventArgs.Node.Tag is EncounterInstanceNode instance)
+                NavigateToEncounterInstanceScript(instance.Spawn);
+            else
+                EditSelectedEncounter();
+        };
+        RefreshEncounterButtons();
+    }
+
+    private void RefreshEncounterBrowser(DecompiledScript script)
+    {
+        var spawns = ScriptMonsterSpawnReader.Read(script);
+        encountersTree.BeginUpdate();
+        try
+        {
+            encountersTree.Nodes.Clear();
+            foreach (var function in script.Functions.Where(value =>
+                         value.Table is not null
+                         && CreateMonstersTableReader.TryRead(value.Table, out _)))
+            {
+                CreateMonstersTableReader.TryRead(function.Table!, out var table);
+                var tableNode = new TreeNode(
+                    $"{function.Name} — {table!.MapAsset} ({table.Encounters.Count})")
+                {
+                    Tag = new EncounterTableNode(function.Index),
+                };
+                foreach (var encounter in table.Encounters)
+                {
+                    var monsterNames = encounter.MonsterAssets
+                        .Where(value => !string.IsNullOrWhiteSpace(value))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Select(value =>
+                        {
+                            var name = monsterTableChoices.FirstOrDefault(choice =>
+                                choice.AssetId.Equals(value, StringComparison.OrdinalIgnoreCase))
+                                ?.DisplayName;
+                            return string.IsNullOrWhiteSpace(name)
+                                ? value
+                                : $"{name} ({value})";
+                        });
+                    var linked = spawns.Where(value =>
+                            value.BattleFunctionIndex == function.Index
+                            && value.EncounterIndex == encounter.Id)
+                        .ToArray();
+                    var encounterNode = new TreeNode(
+                        $"Encounter {encounter.Id} — {string.Join(", ", monsterNames)}"
+                        + $" — {linked.Length} instance(s)")
+                    {
+                        Tag = new EncounterDefinitionNode(
+                            function.Index,
+                            encounter.Index,
+                            encounter.Id),
+                    };
+                    foreach (var spawn in linked)
+                    {
+                        var owner = script.Functions.ElementAtOrDefault(spawn.SourceFunctionIndex)?.Name
+                            ?? $"function #{spawn.SourceFunctionIndex}";
+                        encounterNode.Nodes.Add(new TreeNode(
+                            $"{owner} #{spawn.SourceInstructionIndex}"
+                            + $" — ({spawn.Position.X:0.##}, {spawn.Position.Y:0.##}, {spawn.Position.Z:0.##})")
+                        {
+                            Tag = new EncounterInstanceNode(spawn),
+                        });
+                    }
+                    tableNode.Nodes.Add(encounterNode);
+                }
+                tableNode.Expand();
+                encountersTree.Nodes.Add(tableNode);
+            }
+        }
+        finally
+        {
+            encountersTree.EndUpdate();
+        }
+        RefreshEncounterButtons();
+    }
+
+    private void RefreshEncounterButtons()
+    {
+        var hasEncounter = SelectedEncounterNode() is not null;
+        editEncounterButton.Enabled = hasEncounter;
+        instantiateEncounterButton.Enabled = hasEncounter;
+    }
+
+    private EncounterDefinitionNode? SelectedEncounterNode()
+    {
+        var node = encountersTree.SelectedNode;
+        if (node?.Tag is EncounterDefinitionNode encounter) return encounter;
+        if (node?.Tag is EncounterInstanceNode
+            && node.Parent?.Tag is EncounterDefinitionNode owner)
+        {
+            return owner;
+        }
+        return null;
+    }
+
+    private void EditSelectedEncounter()
+    {
+        if (SelectedEncounterNode() is not { } encounter) return;
+        OpenScriptEditor();
+        scriptEditor?.EditEncounter(encounter.TableFunctionIndex, encounter.EncounterIndex);
+    }
+
+    private void InstantiateSelectedEncounter()
+    {
+        if (SelectedEncounterNode() is not { } encounter) return;
+        OpenScriptEditor(activateTab: false);
+        scriptEditor?.InstantiateEncounter(
+            encounter.TableFunctionIndex,
+            encounter.EncounterIndex);
+    }
+
+    private void FocusEncounterInstanceOnMap(ScriptMonsterSpawn spawn)
+    {
+        if (!showFieldMonstersCheckBox.Checked)
+            showFieldMonstersCheckBox.Checked = true;
+        var rendered = fieldMonsterSpawns.FirstOrDefault(value =>
+            value.Value.SourceFunctionIndex == spawn.SourceFunctionIndex
+            && value.Value.SourceInstructionIndex == spawn.SourceInstructionIndex);
+        if (rendered.Value is null)
+        {
+            cameraNavigation.Focus(
+                spawn.Position,
+                Math.Max(sceneRadius * 0.02f, 1f));
+            Text = $"{baseTitle} — encounter {spawn.EncounterIndex}: "
+                + $"{spawn.AssetId} model unavailable";
+            return;
+        }
+        selection = new SceneElementSelection(
+            SceneElementKind.FieldMonster,
+            rendered.Key,
+            $"{spawn.AssetId} — encounter {spawn.EncounterIndex}");
+        FocusSelection();
+        RefreshRenderInstances(uploadedModels.ToDictionary(
+            value => value.AssetId,
+            StringComparer.OrdinalIgnoreCase));
+        RefreshOutliner();
+    }
+
+    private void NavigateToEncounterInstanceScript(ScriptMonsterSpawn spawn)
+    {
+        OpenScriptEditor();
+        rightPanelTabs.SelectedTab = scriptsTab;
+        scriptEditor?.GoToInstruction(
+            spawn.SourceFunctionIndex,
+            spawn.SourceInstructionIndex);
+    }
+
+    private IReadOnlyList<BattleMapAssetEntry> GetBattleMapAssets()
+    {
+        if (session.Script.GameDataPath is not { } gameDataPath)
+            return Array.Empty<BattleMapAssetEntry>();
+        try
+        {
+            return new BattleMapAssetCatalog(gameDataPath).Entries;
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException or ArgumentException)
+        {
+            Debug.WriteLine($"Could not enumerate battle maps: {exception.Message}");
+            return Array.Empty<BattleMapAssetEntry>();
+        }
+    }
+
+    private BattleMapAssetEntry? CreateBattleMapInf(IWin32Window owner)
+    {
+        if (session.Script.GameDataPath is not { } gameDataPath) return null;
+        using var dialog = new Form
+        {
+            Text = "New battle map metadata",
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            ClientSize = new Size(480, 145),
+            MinimizeBox = false,
+            MaximizeBox = false,
+            ShowInTaskbar = false,
+        };
+        var explanation = new Label
+        {
+            Left = 12,
+            Top = 10,
+            Width = 450,
+            Height = 42,
+            Text = "Creates data/map/battle/<asset>/<asset>.inf. "
+                + "This metadata file does not create battle geometry.",
+        };
+        var input = new TextBox
+        {
+            Left = 12,
+            Top = 58,
+            Width = 450,
+            PlaceholderText = "Battle map asset, e.g. bm9990",
+        };
+        var create = new Button
+        {
+            Text = "Create .inf",
+            DialogResult = DialogResult.OK,
+            Left = 278,
+            Top = 100,
+            Width = 90,
+        };
+        var cancel = new Button
+        {
+            Text = "Cancel",
+            DialogResult = DialogResult.Cancel,
+            Left = 374,
+            Top = 100,
+            Width = 88,
+        };
+        dialog.Controls.AddRange(new Control[] { explanation, input, create, cancel });
+        dialog.AcceptButton = create;
+        dialog.CancelButton = cancel;
+        if (dialog.ShowDialog(owner) != DialogResult.OK) return null;
+
+        try
+        {
+            var catalog = new BattleMapAssetCatalog(gameDataPath);
+            var assetId = input.Text.Trim();
+            var result = catalog.CreateMinimalInf(assetId);
+            TrackModSave(result.InfPath, beforeWrite: false);
+            return result;
+        }
+        catch (Exception exception) when (exception is IOException
+            or UnauthorizedAccessException or ArgumentException)
+        {
+            MessageBox.Show(
+                owner,
+                exception.Message,
+                "Cannot create battle map metadata",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return null;
+        }
+    }
+
+    private sealed record EncounterTableNode(int TableFunctionIndex);
+    private sealed record EncounterDefinitionNode(
+        int TableFunctionIndex,
+        int EncounterIndex,
+        int EncounterId);
+    private sealed record EncounterInstanceNode(ScriptMonsterSpawn Spawn);
 
     /// <summary>
     /// The mod tab lists every game file this project has written, keeps the
@@ -5010,8 +5797,69 @@ public sealed class ViewerForm : Form
     {
         scriptSurfacePositionCapture =
             applyPosition ?? throw new ArgumentNullException(nameof(applyPosition));
+        scriptSurfacePositionPreview = null;
         Text = $"{baseTitle} — click a map surface to capture a script position; Esc cancels";
         viewportHost.Focus();
+        var pointer = viewportHost.PointToClient(Cursor.Position);
+        if (viewportHost.ClientRectangle.Contains(pointer))
+            QueueScriptSurfacePositionPreview(pointer);
+    }
+
+    private void QueueScriptSurfacePositionPreview(Point location)
+    {
+        if (scriptSurfacePositionCapture is null
+            || viewportHost.ClientSize.Width <= 0
+            || viewportHost.ClientSize.Height <= 0)
+        {
+            return;
+        }
+        queuedScriptSurfacePreview = (
+            ++scriptSurfacePreviewRequestId,
+            CreatePointerRay(location),
+            VisibleSceneInstances().ToArray());
+        RunQueuedScriptSurfacePreviewRaycast();
+    }
+
+    private async void RunQueuedScriptSurfacePreviewRaycast()
+    {
+        if (scriptSurfacePreviewRaycastRunning) return;
+        scriptSurfacePreviewRaycastRunning = true;
+        try
+        {
+            while (queuedScriptSurfacePreview is { } request
+                   && scriptSurfacePositionCapture is not null
+                   && !IsDisposed)
+            {
+                queuedScriptSurfacePreview = null;
+                var hit = await Task.Run(() =>
+                    surfacePreviewRaycaster.Cast(request.Ray, request.Instances).Hit);
+                if (IsDisposed) return;
+                if (scriptSurfacePositionCapture is not null
+                    && request.RequestId == scriptSurfacePreviewRequestId)
+                {
+                    scriptSurfacePositionPreview = hit;
+                    RefreshOverlay();
+                }
+            }
+        }
+        finally
+        {
+            scriptSurfacePreviewRaycastRunning = false;
+            if (queuedScriptSurfacePreview is not null
+                && scriptSurfacePositionCapture is not null
+                && !IsDisposed)
+            {
+                RunQueuedScriptSurfacePreviewRaycast();
+            }
+        }
+    }
+
+    private float GetSurfacePlacementMarkerRadius(Vector3 position)
+    {
+        var distance = Math.Max(Vector3.Distance(cameraNavigation.Position, position), 0.01f);
+        var worldUnitsPerPixel = 2f * distance * MathF.Tan(CameraVerticalFieldOfView * 0.5f)
+            / Math.Max(1, viewportHost.ClientSize.Height);
+        return Math.Clamp(worldUnitsPerPixel * 15f, 0.06f, 0.75f);
     }
 
     private void CaptureScriptSurfacePosition(Point location)
@@ -5030,6 +5878,10 @@ public sealed class ViewerForm : Form
             return;
         }
         scriptSurfacePositionCapture = null;
+        scriptSurfacePositionPreview = null;
+        queuedScriptSurfacePreview = null;
+        scriptSurfacePreviewRequestId++;
+        RefreshOverlay();
         applyPosition(hit.Position);
         Text = $"{baseTitle} — script position captured: "
             + $"{hit.Position.X:0.###}, {hit.Position.Y:0.###}, {hit.Position.Z:0.###}";
@@ -5038,6 +5890,10 @@ public sealed class ViewerForm : Form
     private void CancelScriptSurfacePositionCapture()
     {
         scriptSurfacePositionCapture = null;
+        scriptSurfacePositionPreview = null;
+        queuedScriptSurfacePreview = null;
+        scriptSurfacePreviewRequestId++;
+        RefreshOverlay();
         Text = baseTitle;
     }
 
@@ -5067,23 +5923,38 @@ public sealed class ViewerForm : Form
         opsProfileEvidence.Text = profile.Evidence;
         foreach (var input in profile.Inputs)
         {
-            var row = new FlowLayoutPanel
+            var row = new TableLayoutPanel
             {
                 Width = Math.Max(220, opsInputPanel.ClientSize.Width - 20),
-                Height = 28,
-                WrapContents = false,
+                Height = input.Kind == OpsValueKind.ScriptFunction ? 58 : 32,
+                ColumnCount = 2,
+                RowCount = 1,
                 Margin = Padding.Empty,
             };
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             row.Controls.Add(new Label
             {
-                Width = 110,
+                Dock = DockStyle.Fill,
                 Text = input.DisplayName,
                 TextAlign = ContentAlignment.MiddleLeft,
-            });
-            var field = new TextBox { Width = 120 };
-            row.Controls.Add(field);
+            }, 0, 0);
+            var field = CreateOpsInputEditor(input);
+            row.Controls.Add(field, 1, 0);
             opsInputFields.Add(input.Name, field);
             opsInputPanel.Controls.Add(row);
+        }
+
+        if (opsInputFields.TryGetValue("next", out var destinationMap)
+            && destinationMap is ComboBox mapList
+            && opsInputFields.TryGetValue("entry", out var destinationEntry)
+            && destinationEntry is ComboBox entryList)
+        {
+            mapList.SelectedIndexChanged += async (_, _) =>
+                await PopulateDestinationEntriesAsync(mapList, entryList);
+            mapList.TextChanged += async (_, _) =>
+                await PopulateDestinationEntriesAsync(mapList, entryList);
+            if (mapList.Items.Count > 0) mapList.SelectedIndex = 0;
         }
     }
 
@@ -5092,7 +5963,10 @@ public sealed class ViewerForm : Form
         if (opsProfileList.SelectedItem is not OpsSpatialCreationProfile profile) return;
         try
         {
-            var inputs = opsInputFields.ToDictionary(pair => pair.Key, pair => pair.Value.Text, StringComparer.Ordinal);
+            var inputs = opsInputFields.ToDictionary(
+                pair => pair.Key,
+                pair => ReadOpsInputValue(pair.Value),
+                StringComparer.Ordinal);
             profile.ValidateInputs(inputs);
             placement = new PlacementState(null, profile.DisplayName, null, profile, inputs, null, Vector3.UnitY);
             var pointer = viewportHost.PointToClient(Cursor.Position);
@@ -5105,10 +5979,205 @@ public sealed class ViewerForm : Form
         }
     }
 
+    private Control CreateOpsInputEditor(OpsCreationInput input)
+    {
+        if (input.Kind == OpsValueKind.Text)
+            return new TextBox { Dock = DockStyle.Fill };
+
+        if (input.Kind == OpsValueKind.ScriptFunction)
+        {
+            var currentScriptName = Path.GetFileName(session.Script.Header.SourcePath);
+            var functionList = ChoiceCombo(GetCurrentScriptFunctionChoices());
+            var panel = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 2,
+                Margin = Padding.Empty,
+            };
+            panel.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
+            panel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            panel.Controls.Add(new Label
+            {
+                Dock = DockStyle.Fill,
+                Text = $"Script: {currentScriptName}",
+                ForeColor = SystemColors.GrayText,
+                AutoEllipsis = true,
+            }, 0, 0);
+            panel.Controls.Add(functionList, 0, 1);
+            panel.Tag = functionList;
+            return panel;
+        }
+
+        var choices = input.Kind switch
+        {
+            OpsValueKind.DestinationMap => GetDestinationMapChoices(),
+            OpsValueKind.MapSoundSource => GetMapSoundChoices(),
+            _ => Array.Empty<OpsInputChoice>(),
+        };
+        return ChoiceCombo(choices);
+    }
+
+    private static ComboBox ChoiceCombo(IReadOnlyList<OpsInputChoice> choices)
+    {
+        var combo = new ComboBox
+        {
+            Dock = DockStyle.Fill,
+            DropDownStyle = ComboBoxStyle.DropDown,
+            AutoCompleteMode = AutoCompleteMode.SuggestAppend,
+            AutoCompleteSource = AutoCompleteSource.ListItems,
+        };
+        combo.Items.AddRange(choices.Cast<object>().ToArray());
+        return combo;
+    }
+
+    private static string ReadOpsInputValue(Control control)
+    {
+        if (control.Tag is ComboBox nested) return ReadOpsInputValue(nested);
+        if (control is ComboBox combo)
+            return combo.SelectedItem is OpsInputChoice choice ? choice.Value : combo.Text.Trim();
+        return control.Text.Trim();
+    }
+
+    private IReadOnlyList<OpsInputChoice> GetCurrentScriptFunctionChoices()
+    {
+        try
+        {
+            var script = scriptEditor?.CurrentScript
+                ?? ScriptDecompiler.Decompile(
+                    session.Script.Header.SourcePath,
+                    instructionDefinitionsPath);
+            return script.Functions
+                .Where(value => value.IsCode)
+                .OrderBy(value => value.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(value => new OpsInputChoice(value.Name, value.Name))
+                .ToArray();
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException or InvalidOperationException)
+        {
+            Debug.WriteLine($"Could not enumerate OPS script functions: {exception.Message}");
+            return Array.Empty<OpsInputChoice>();
+        }
+    }
+
+    private IReadOnlyList<OpsInputChoice> GetDestinationMapChoices()
+    {
+        var directory = Path.GetDirectoryName(session.Script.Header.SourcePath);
+        if (directory is null || !Directory.Exists(directory))
+            return Array.Empty<OpsInputChoice>();
+        return Directory.EnumerateFiles(directory, "*.dat", SearchOption.TopDirectoryOnly)
+            .Where(path => !Path.GetFileName(path).Equals(
+                "system.dat", StringComparison.OrdinalIgnoreCase))
+            .Select(path => Path.GetFileNameWithoutExtension(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .Select(value => new OpsInputChoice(value, value))
+            .ToArray();
+    }
+
+    private IReadOnlyList<OpsInputChoice> GetMapSoundChoices()
+    {
+        var names = new List<string>();
+        if (currentMap is not null)
+            names.AddRange(currentMap.Sounds.Select(value => value.SoundName));
+        try
+        {
+            var script = scriptEditor?.CurrentScript
+                ?? ScriptDecompiler.Decompile(
+                    session.Script.Header.SourcePath,
+                    instructionDefinitionsPath);
+            names.AddRange(script.Functions
+                .Where(value => value.IsCode)
+                .SelectMany(value => value.Instructions)
+                // OP49 selector 0 registers the map sound source consumed by
+                // SoundObject.seName. Its final operand is the source name.
+                .Where(value => value.Opcode == 49 && value.Name == "OP49_0")
+                .Select(value => value.Arguments.LastOrDefault(argument =>
+                    argument.Kind == "string"))
+                .Where(argument => argument is not null)
+                .Select(argument => DecodeScriptString(argument!.Raw)));
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException or InvalidOperationException)
+        {
+            Debug.WriteLine($"Could not enumerate map sound sources: {exception.Message}");
+        }
+        return names
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .Select(value => new OpsInputChoice(value!, value!))
+            .ToArray();
+    }
+
+    private static string DecodeScriptString(byte[] raw)
+        => System.Text.Encoding.Latin1.GetString(raw).TrimEnd('\0');
+
+    private async Task PopulateDestinationEntriesAsync(
+        ComboBox mapList,
+        ComboBox entryList)
+    {
+        var generation = ++opsCreationDestinationLoadGeneration;
+        var mapId = ReadOpsInputValue(mapList);
+        entryList.Items.Clear();
+        var entries = await GetDestinationEntryChoicesAsync(mapId);
+        if (IsDisposed
+            || generation != opsCreationDestinationLoadGeneration
+            || !mapId.Equals(
+                ReadOpsInputValue(mapList), StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+        entryList.Items.AddRange(entries.Cast<object>().ToArray());
+        if (entryList.Items.Count > 0) entryList.SelectedIndex = 0;
+    }
+
+    private async Task<IReadOnlyList<OpsInputChoice>> GetDestinationEntryChoicesAsync(
+        string mapId)
+    {
+        if (string.IsNullOrWhiteSpace(mapId)
+            || session.Script.GameDataPath is not { } gameDataPath
+            || Path.GetDirectoryName(session.Script.Header.SourcePath) is not { } scriptDirectory)
+        {
+            return Array.Empty<OpsInputChoice>();
+        }
+        var scriptPath = Path.Combine(scriptDirectory, mapId + ".dat");
+        if (!File.Exists(scriptPath)) return Array.Empty<OpsInputChoice>();
+        try
+        {
+            var entries = await Task.Run(() =>
+            {
+                var target = new ScriptBootstrapper().Open(scriptPath, gameDataPath);
+                if (target.MapOpsPath is null) return Array.Empty<string>();
+                var map = new OpsReader().Read(target.MapOpsPath);
+                return map.Volumes
+                    .Where(value => value.Kind == MapVolumeKind.Entry)
+                    .Select(value => value.Name)
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+            });
+            return entries
+                .Select(value => new OpsInputChoice(value, value))
+                .ToArray();
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException or InvalidOperationException
+            or ArgumentException)
+        {
+            Debug.WriteLine(
+                $"Could not enumerate destination entries for '{mapId}': {exception.Message}");
+            return Array.Empty<OpsInputChoice>();
+        }
+    }
+
     private void RefreshElementProperties()
     {
         propertyGrid.Rows.Clear();
-        var attributeSet = selection is null ? null : document.FindElementAttributes(selection);
+        var selected = selection;
+        var attributeSet = selected is null ? null : document.FindElementAttributes(selected);
         propertyGroup.Enabled = attributeSet is not null;
         if (attributeSet is null) return;
         foreach (var attribute in attributeSet.Values.OrderBy(value => value.Key, StringComparer.Ordinal))
@@ -5119,8 +6188,14 @@ public sealed class ViewerForm : Form
             {
                 row.ReadOnly = true;
                 row.DefaultCellStyle.ForeColor = SystemColors.GrayText;
+                continue;
             }
+            var kind = OpsAttributeValueKinds.Resolve(
+                selected!, attribute.Key, attributeSet.Values);
+            if (kind != OpsValueKind.Text)
+                row.Cells[1] = CreateOpsPropertyValueCell(kind, attribute.Value);
         }
+        _ = RefreshPropertyDestinationEntriesAsync();
     }
 
     private void ApplyElementProperties()
@@ -5139,13 +6214,89 @@ public sealed class ViewerForm : Form
                     throw new ArgumentException($"Duplicate OPS attribute '{name}'.");
                 }
             }
-            document.ApplyElementAttributes(selected, attributes);
+            if (!document.ApplyElementAttributes(selected, attributes)) return;
+            var displayNameAttribute = selected.Kind == SceneElementKind.Sound
+                ? "seName"
+                : "name";
+            if (attributes.TryGetValue(displayNameAttribute, out var editedName)
+                && !string.IsNullOrWhiteSpace(editedName))
+            {
+                selection = selected with { Name = editedName.Trim() };
+                RefreshOutliner();
+                RefreshElementProperties();
+            }
         }
         catch (ArgumentException exception)
         {
             MessageBox.Show(exception.Message, "Invalid OPS attributes", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
+
+    private DataGridViewComboBoxCell CreateOpsPropertyValueCell(
+        OpsValueKind kind,
+        string currentValue)
+    {
+        IReadOnlyList<OpsInputChoice> choices = kind switch
+        {
+            OpsValueKind.ScriptFunction => GetCurrentScriptFunctionChoices(),
+            OpsValueKind.DestinationMap => GetDestinationMapChoices(),
+            OpsValueKind.MapSoundSource => GetMapSoundChoices(),
+            _ => Array.Empty<OpsInputChoice>(),
+        };
+        return CreateOpsPropertyChoiceCell(choices, currentValue);
+    }
+
+    private static DataGridViewComboBoxCell CreateOpsPropertyChoiceCell(
+        IReadOnlyList<OpsInputChoice> choices,
+        string currentValue)
+    {
+        var allChoices = choices.ToList();
+        if (allChoices.All(value =>
+                !value.Value.Equals(currentValue, StringComparison.OrdinalIgnoreCase)))
+        {
+            allChoices.Insert(0, new OpsInputChoice(
+                currentValue,
+                string.IsNullOrEmpty(currentValue) ? "(none)" : currentValue));
+        }
+        var cell = new DataGridViewComboBoxCell
+        {
+            DisplayMember = nameof(OpsInputChoice.Label),
+            ValueMember = nameof(OpsInputChoice.Value),
+            DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton,
+            FlatStyle = FlatStyle.Flat,
+        };
+        cell.Items.AddRange(allChoices.Cast<object>().ToArray());
+        cell.Value = currentValue;
+        return cell;
+    }
+
+    private async Task RefreshPropertyDestinationEntriesAsync()
+    {
+        var selected = selection;
+        if (selected is null) return;
+        var mapRow = FindPropertyRow("next");
+        var entryRow = FindPropertyRow("entry");
+        if (mapRow is null || entryRow is null || entryRow.ReadOnly) return;
+        var mapId = mapRow.Cells[1].Value?.ToString()?.Trim() ?? string.Empty;
+        var currentEntry = entryRow.Cells[1].Value?.ToString() ?? string.Empty;
+        var generation = ++opsPropertyDestinationLoadGeneration;
+        var choices = await GetDestinationEntryChoicesAsync(mapId);
+        if (IsDisposed
+            || generation != opsPropertyDestinationLoadGeneration
+            || selection != selected)
+        {
+            return;
+        }
+        entryRow.Cells[1] = CreateOpsPropertyChoiceCell(choices, currentEntry);
+    }
+
+    private DataGridViewRow? FindPropertyRow(string attributeName)
+        => propertyGrid.Rows
+            .Cast<DataGridViewRow>()
+            .FirstOrDefault(row => !row.IsNewRow
+                && string.Equals(
+                    row.Cells[0].Value?.ToString(), attributeName,
+                    StringComparison.Ordinal));
 
     private bool TryGetOverlayFocus(SceneElementSelection selected, out Vector3 center, out float radius)
     {
@@ -5249,5 +6400,10 @@ public sealed class ViewerForm : Form
         CpuAnimationClip Clip,
         bool Loop,
         bool Reverse);
+
+    private sealed record OpsInputChoice(string Value, string Label)
+    {
+        public override string ToString() => Label;
+    }
 
 }

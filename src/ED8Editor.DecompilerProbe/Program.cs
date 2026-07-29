@@ -1,6 +1,73 @@
 using System.Text;
 using ED8Editor.Decompiler;
 
+if (args is ["--dump-shop", var shopScriptPath, var entryFunction])
+{
+    var shopScript = ScriptDecompiler.Decompile(shopScriptPath);
+    var bindings = ShopScriptBinding.Read(shopScript, entryFunction);
+    foreach (var binding in bindings)
+    {
+        Console.WriteLine(
+            $"function=#{binding.FunctionIndex} {binding.FunctionName} "
+            + $"instruction=#{binding.InstructionIndex} shop={binding.ShopId} "
+            + $"path={string.Join(" -> ", binding.CallPath)}");
+    }
+    Console.WriteLine($"shop_bindings={bindings.Count}");
+    return 0;
+}
+
+if (args is ["--dump-fishing-spots", var fishingPath])
+{
+    var fishingScript = ScriptDecompiler.Decompile(fishingPath);
+    var count = 0;
+    foreach (var function in fishingScript.Functions.Where(value => value.IsCode))
+    {
+        foreach (var binding in FishingSpotScriptBinding.Read(fishingScript, function.Name))
+        {
+            Console.WriteLine(
+                $"function=#{binding.FunctionIndex} {binding.FunctionName} "
+                + $"instruction=#{binding.InstructionIndex} fish_pnt={binding.FishingPointId} "
+                + $"player={binding.PlayerPosition.X:G9},{binding.PlayerPosition.Y:G9},{binding.PlayerPosition.Z:G9} "
+                + $"yaw={binding.HeadingDegrees:G9} "
+                + $"water={binding.WaterTarget.X:G9},{binding.WaterTarget.Y:G9},{binding.WaterTarget.Z:G9}");
+            count++;
+        }
+    }
+    Console.WriteLine($"fishing_spots={count}");
+    return 0;
+}
+
+if (args is ["--fishing-spot-smoke", var fishingSmokePath])
+{
+    var temporaryPath = Path.Combine(
+        Path.GetTempPath(), $"ed8editor-fishing-{Guid.NewGuid():N}.dat");
+    try
+    {
+        using var fishingDocument = ScriptEditorDocument.Open(fishingSmokePath);
+        var snapshot = fishingDocument.Snapshot;
+        var binding = snapshot.Functions.Where(value => value.IsCode)
+            .SelectMany(function => FishingSpotScriptBinding.Read(snapshot, function.Name))
+            .FirstOrDefault()
+            ?? throw new InvalidOperationException("The script has no OP73_1 fishing payload.");
+        fishingDocument.SetBytes(
+            binding.FunctionIndex,
+            binding.InstructionIndex,
+            binding.PayloadArgumentIndex,
+            binding.EncodePayload());
+        fishingDocument.Save(temporaryPath);
+        if (!File.ReadAllBytes(fishingSmokePath).SequenceEqual(File.ReadAllBytes(temporaryPath)))
+            throw new InvalidOperationException("Writing an unchanged fishing payload was not byte-perfect.");
+        Console.WriteLine(
+            $"PASS fishing payload byte-perfect: {Path.GetFileName(fishingSmokePath)} "
+            + $"#{binding.FunctionIndex}/#{binding.InstructionIndex}");
+        return 0;
+    }
+    finally
+    {
+        if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+    }
+}
+
 if (args is ["--edit-smoke", var editPath])
 {
     var temporaryPath = Path.Combine(Path.GetTempPath(), $"ed8editor-{Guid.NewGuid():N}.dat");
@@ -129,6 +196,86 @@ if (args is ["--function-smoke", var functionPath])
     }
 }
 
+if (args is ["--instruction-copy-smoke", var copyPath])
+{
+    var temporaryPath = Path.Combine(
+        Path.GetTempPath(),
+        $"ed8editor-copy-{Guid.NewGuid():N}.dat");
+    try
+    {
+        using var document = ScriptEditorDocument.Open(copyPath);
+        var before = document.Snapshot;
+        var candidate = before.Functions
+            .Where(value => value.IsCode)
+            .SelectMany(function => function.Instructions
+                .Select(instruction => (Function: function, Instruction: instruction)))
+            .FirstOrDefault(value => value.Instruction.Jumps.Any(jump =>
+                jump.TargetFunctionIndex == value.Function.Index
+                && jump.TargetInstructionIndex >= 0
+                && jump.TargetInstructionIndex != value.Instruction.Index));
+        var function = candidate.Function
+            ?? before.Functions.First(value => value.IsCode && value.Instructions.Count >= 3);
+        var indices = candidate.Instruction is null
+            ? new[] { 0, 1 }
+            : new[]
+            {
+                candidate.Instruction.Index,
+                candidate.Instruction.Jumps.First(value =>
+                    value.TargetFunctionIndex == function.Index
+                    && value.TargetInstructionIndex >= 0).TargetInstructionIndex,
+            }.Distinct().OrderBy(value => value).ToArray();
+        var insertion = function.Instructions
+            .Select((instruction, index) => (instruction, index))
+            .LastOrDefault(value => value.instruction.Opcode == 1).index;
+        if (insertion <= 0) insertion = function.Instructions.Count;
+
+        document.CopyInstructions(function.Index, indices);
+        var pastedCount = document.PasteInstructions(function.Index, insertion);
+        if (pastedCount != indices.Length)
+            throw new InvalidOperationException("The native clipboard pasted the wrong instruction count.");
+        var edited = document.Snapshot;
+        var editedFunction = edited.Functions[function.Index];
+        for (var index = 0; index < indices.Length; index++)
+        {
+            if (editedFunction.Instructions[insertion + index].Name
+                != function.Instructions[indices[index]].Name)
+            {
+                throw new InvalidOperationException("A pasted instruction changed its registered variant.");
+            }
+        }
+        if (candidate.Instruction is not null)
+        {
+            var sourcePosition = Array.IndexOf(indices, candidate.Instruction.Index);
+            var sourceTarget = candidate.Instruction.Jumps.First(value =>
+                value.TargetFunctionIndex == function.Index
+                && value.TargetInstructionIndex >= 0).TargetInstructionIndex;
+            var targetPosition = Array.IndexOf(indices, sourceTarget);
+            var pastedJump = editedFunction.Instructions[insertion + sourcePosition].Jumps
+                .FirstOrDefault(value => value.TargetFunctionIndex == function.Index);
+            if (targetPosition >= 0
+                && pastedJump?.TargetInstructionIndex != insertion + targetPosition)
+            {
+                throw new InvalidOperationException(
+                    "A branch internal to the copied set did not target its pasted counterpart.");
+            }
+        }
+        document.Save(temporaryPath);
+        using var reopened = ScriptEditorDocument.Open(temporaryPath);
+        if (reopened.Snapshot.Functions[function.Index].Instructions.Count
+            != function.Instructions.Count + indices.Length)
+        {
+            throw new InvalidOperationException("Pasted instructions did not survive serialization.");
+        }
+        Console.WriteLine(
+            $"PASS copy/paste {indices.Length} instruction(s): {Path.GetFileName(copyPath)}");
+        return 0;
+    }
+    finally
+    {
+        if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+    }
+}
+
 if (args is ["--time-snapshot", var timePath])
 {
     var clock = System.Diagnostics.Stopwatch.StartNew();
@@ -243,6 +390,73 @@ if (args is ["--dump-monsters", var monsterPath])
     return 0;
 }
 
+if (args is ["--field-monster-insert-smoke", var fieldMonsterPath])
+{
+    var temporaryPath = Path.Combine(
+        Path.GetTempPath(), $"ed8editor-field-monster-{Guid.NewGuid():N}.dat");
+    try
+    {
+        using var document = ScriptEditorDocument.Open(fieldMonsterPath);
+        var fieldMonsterScript = document.Snapshot;
+        var battleFunction = fieldMonsterScript.Functions.First(value =>
+            value.Table is not null
+            && CreateMonstersTableReader.TryRead(value.Table, out _));
+        CreateMonstersTableReader.TryRead(battleFunction.Table!, out var table);
+        var encounter = table!.Encounters.First();
+        var target = fieldMonsterScript.Functions.First(value => value.IsCode);
+        var insertion = target.Instructions.Count > 0
+            && target.Instructions[^1].Opcode == 1
+                ? target.Instructions.Count - 1
+                : target.Instructions.Count;
+        var parameters = FieldMonsterSpawnParameters.CreateDefault(
+            30000, encounter.MonsterAssets.First(value => value.Length > 0),
+            battleFunction.Index, encounter.Id) with
+        {
+            Position = new System.Numerics.Vector3(1.25f, 2.5f, 3.75f),
+            HeadingDegrees = 90f,
+        };
+        document.InsertInstruction(target.Index, insertion, "Entity_Spawn");
+        document.SetInteger(target.Index, insertion, 0, parameters.EntityId);
+        document.SetString(target.Index, insertion, 1, parameters.ModelAsset);
+        document.SetString(target.Index, insertion, 2, parameters.DisplayName);
+        document.SetString(target.Index, insertion, 3, parameters.MonsterAsset);
+        document.SetInteger(target.Index, insertion, 4, parameters.EntityType);
+        document.SetInteger(target.Index, insertion, 5, parameters.Flags);
+        document.SetFloat(target.Index, insertion, 6, parameters.Position.X);
+        document.SetFloat(target.Index, insertion, 7, parameters.Position.Y);
+        document.SetFloat(target.Index, insertion, 8, parameters.Position.Z);
+        document.SetFloat(target.Index, insertion, 9, parameters.HeadingDegrees);
+        document.SetFloat(target.Index, insertion, 10, parameters.Scale);
+        document.SetFloat(target.Index, insertion, 11, parameters.CollisionHeight);
+        document.SetFloat(target.Index, insertion, 12, parameters.CollisionRadius);
+        document.SetString(target.Index, insertion, 13, parameters.ScriptFile);
+        document.SetString(target.Index, insertion, 14, parameters.InitFunction);
+        document.SetInteger(target.Index, insertion, 15, parameters.BattleFunctionIndex);
+        document.SetInteger(target.Index, insertion, 16, parameters.EncounterIndex);
+        document.SetInteger(target.Index, insertion, 17, parameters.UnknownParameter1);
+        document.SetInteger(target.Index, insertion, 18, parameters.UnknownParameter2);
+        document.SetInteger(target.Index, insertion, 19, parameters.UnknownParameter3);
+        document.Save(temporaryPath);
+        var reopened = ScriptDecompiler.Decompile(temporaryPath);
+        var inserted = ScriptMonsterSpawnReader.Read(reopened).Single(value =>
+            value.EntityId == parameters.EntityId);
+        if (inserted.AssetId != parameters.MonsterAsset
+            || inserted.Position != parameters.Position
+            || inserted.BattleFunctionIndex != parameters.BattleFunctionIndex
+            || inserted.EncounterIndex != parameters.EncounterIndex)
+        {
+            throw new InvalidOperationException(
+                "The inserted field-monster OP19 did not round-trip exactly.");
+        }
+        Console.WriteLine("PASS field-monster OP19 insert/save/reopen");
+        return 0;
+    }
+    finally
+    {
+        if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+    }
+}
+
 if (args is ["--dump-create-monsters", var createMonstersPath])
 {
     var createMonstersScript = ScriptDecompiler.Decompile(createMonstersPath);
@@ -349,10 +563,12 @@ if (args.Length < 1)
 {
     Console.Error.WriteLine("Usage: ED8Editor.DecompilerProbe <script.dat> [cs1_instructions.json]");
     Console.Error.WriteLine("       ED8Editor.DecompilerProbe --edit-smoke <script.dat>");
+    Console.Error.WriteLine("       ED8Editor.DecompilerProbe --instruction-copy-smoke <script.dat>");
     Console.Error.WriteLine("       ED8Editor.DecompilerProbe --dump-tables <script.dat>");
     Console.Error.WriteLine("       ED8Editor.DecompilerProbe --find-table <directory> <kind>");
     Console.Error.WriteLine("       ED8Editor.DecompilerProbe --dump-code <script.dat>");
     Console.Error.WriteLine("       ED8Editor.DecompilerProbe --dump-monsters <script.dat>");
+    Console.Error.WriteLine("       ED8Editor.DecompilerProbe --field-monster-insert-smoke <script.dat>");
     Console.Error.WriteLine("       ED8Editor.DecompilerProbe --dump-create-monsters <script.dat>");
     Console.Error.WriteLine("       ED8Editor.DecompilerProbe --table-edit-smoke <script.dat>");
     Console.Error.WriteLine("       ED8Editor.DecompilerProbe --create-monsters-edit-smoke <script.dat>");

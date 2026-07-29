@@ -26,7 +26,9 @@ internal sealed record CharacterAuthoringEntry(
 /// <summary>
 /// Exact game-table bindings used by the character/enemy studio. This catalog
 /// does not infer models from filenames: character rows come from decoded
-/// NameTableData and enemy rows from the verified leading strings in t_mons.
+/// NameTableData and enemy rows from decoded t_mons fields. For enemies the
+/// loadable PKG/Phyre asset is "texture" (C_MONxxx); "model" is the model name
+/// inside that asset (monxxx).
 /// </summary>
 internal static class CharacterAuthoringCatalog
 {
@@ -70,10 +72,10 @@ internal static class CharacterAuthoringCatalog
                 value => value.Value,
                 StringComparer.Ordinal);
             if (!values.TryGetValue("script", out var script)
-                || !values.TryGetValue("model", out var model)
+                || !values.TryGetValue("texture", out var modelAsset)
                 || !values.TryGetValue("name", out var name)
                 || string.IsNullOrWhiteSpace(script)
-                || string.IsNullOrWhiteSpace(model))
+                || string.IsNullOrWhiteSpace(modelAsset))
             {
                 continue;
             }
@@ -81,7 +83,7 @@ internal static class CharacterAuthoringCatalog
                 CharacterAuthoringKind.Enemy,
                 null,
                 string.IsNullOrWhiteSpace(name) ? script : name,
-                model,
+                modelAsset,
                 script,
                 string.Empty,
                 $"t_mons.tbl / status row {pair.index}"));

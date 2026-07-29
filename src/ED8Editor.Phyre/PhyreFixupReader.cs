@@ -1,10 +1,39 @@
-using ED8Editor.Core;
+﻿using ED8Editor.Core;
 using System.Text;
 
 namespace ED8Editor.Phyre;
 
 public sealed class PhyreFixupReader : IPhyreFixupReader
 {
+    /// <summary>
+    /// How many blocks of each packing, and how many fixups they carried, have
+    /// been read so far. Writing these tables back needs to know which packings
+    /// are actually used and how much they save; counting what the game's files
+    /// contain is surer than guessing what its writer would choose.
+    ///
+    /// Counters rather than a dictionary: clusters are read from several threads,
+    /// and a diagnostic must not be able to break a load.
+    /// </summary>
+    public static IReadOnlyList<(int Blocks, int Fixups)> PackingCensus
+        => Enumerable.Range(0, PackingKinds)
+            .Select(index => (BlocksByPacking[index], FixupsByPacking[index]))
+            .ToArray();
+
+    /// <summary>
+    /// Where each block started, how it was packed and what it covered. Filled
+    /// only while <see cref="TraceBlocks"/> is on, to compare a table the game
+    /// shipped with one this project writes.
+    /// </summary>
+    public static List<(long Offset, int Packing, uint Mask, uint Source, int Count)> Blocks { get; }
+        = new();
+
+    public static bool TraceBlocks { get; set; }
+
+    private const int PackingKinds = 8;
+    private static readonly int[] BlocksByPacking = new int[PackingKinds];
+    private static readonly int[] FixupsByPacking = new int[PackingKinds];
+
+
     public PhyreFixupSet Read(ReadOnlyMemory<byte> data, PhyreClusterMetadata metadata)
     {
         var header = metadata.Header;
@@ -168,6 +197,12 @@ public sealed class PhyreFixupReader : IPhyreFixupReader
         {
             var packedTypeAndMask = ReadByte();
             var packType = packedTypeAndMask & 7;
+            var before = _values.Count;
+            Interlocked.Increment(ref BlocksByPacking[packType]);
+            _censusType = packType;
+            _censusBefore = before;
+            _censusOffset = _position - 1;
+            _censusMask = (uint)(packedTypeAndMask & ~7);
             var mask = (uint)(packedTypeAndMask & ~7);
             var fixupMask = mask | ExcludeSource;
             if (objectCount == 1) fixupMask |= ExcludeSourceObject;
@@ -241,7 +276,23 @@ public sealed class PhyreFixupReader : IPhyreFixupReader
                 default:
                     throw new InvalidPhyreException($"Unknown Phyre fixup packing type {packType}.");
             }
+
+            Interlocked.Add(ref FixupsByPacking[_censusType], _values.Count - _censusBefore);
+            if (PhyreFixupReader.TraceBlocks)
+            {
+                PhyreFixupReader.Blocks.Add((
+                    _censusOffset,
+                    _censusType,
+                    _censusMask,
+                    template.Source,
+                    _values.Count - _censusBefore));
+            }
         }
+
+        private int _censusType;
+        private int _censusBefore;
+        private long _censusOffset;
+        private uint _censusMask;
 
         private void DecodeSelected(Value template, uint objectCount, uint mask, bool inclusive, bool payloadAfterIds)
         {
@@ -328,7 +379,16 @@ public sealed class PhyreFixupReader : IPhyreFixupReader
                 value.UserFixupId = userFixup ? encodedUserFixup - 1 : null;
             }
 
-            if (!userFixup)
+            if (userFixup)
+            {
+                // A fixup that names a user fixup has no destination of its own.
+                // The block may have hoisted a shared list into the template, and
+                // letting that leak in here would say this fixup points at it.
+                value.DestinationObject = 0;
+                value.DestinationList = 0;
+                value.DestinationOffset = 0;
+            }
+            else
             {
                 value.DestinationObject = ReadVlq();
                 if ((mask & ExcludeDestinationList) == 0) value.DestinationList = ReadVlq();

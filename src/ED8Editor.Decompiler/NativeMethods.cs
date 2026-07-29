@@ -228,6 +228,15 @@ internal static class NativeMethods
     public static extern int cs1i_instr_move(IntPtr doc, int f, int from, int to);
 
     [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_instr_copy(IntPtr doc, int f, int[] indices, int count);
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_instr_clipboard_count(IntPtr doc);
+
+    [DllImport(Dll, CallingConvention = Cc)]
+    public static extern int cs1i_instr_paste(IntPtr doc, int f, int position);
+
+    [DllImport(Dll, CallingConvention = Cc)]
     public static extern int cs1i_instr_set_jump(IntPtr doc, int f, int k, int a, int targetFunction, int targetInstruction);
 
     [DllImport(Dll, CallingConvention = Cc)]

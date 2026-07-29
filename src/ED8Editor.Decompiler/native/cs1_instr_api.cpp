@@ -192,6 +192,32 @@ struct Arg{
   std::vector<ExprElem> expr;                      // kind 2 : sous-ops de l'expression
 };
 struct Instr{ int reg=-1; int op=0; std::vector<long> path; std::vector<Arg> args; long id=-1; long origOff=0; };
+
+// Instructions are normally immutable value trees, except that nested
+// expression calls use shared_ptr. Clipboard copies must own those nested
+// instructions: otherwise remapping a pasted ptr32 would mutate the source.
+static Instr cloneInstrTree(const Instr& source);
+static Arg cloneArgTree(const Arg& source){
+  Arg result=source;
+  result.groups.clear();
+  for(const auto& group:source.groups){
+    std::vector<Arg> cloned; cloned.reserve(group.size());
+    for(const auto& argument:group) cloned.push_back(cloneArgTree(argument));
+    result.groups.push_back(std::move(cloned));
+  }
+  result.expr=source.expr;
+  for(size_t i=0;i<source.expr.size();i++){
+    if(source.expr[i].nested)
+      result.expr[i].nested=std::make_shared<Instr>(cloneInstrTree(*source.expr[i].nested));
+  }
+  return result;
+}
+static Instr cloneInstrTree(const Instr& source){
+  Instr result=source; result.args.clear(); result.args.reserve(source.args.size());
+  for(const auto& argument:source.args) result.args.push_back(cloneArgTree(argument));
+  return result;
+}
+
 struct RegInstr{ std::string name, opname; int op=0; bool ui=false; std::vector<long> path;
                  std::vector<std::string> argTypes, argNames, argSems, argSemArgs; std::vector<int> argSemSpans; NodeList read; };
 
@@ -562,6 +588,7 @@ struct IDoc{ cs1ed::Doc* base=nullptr; std::string scene; bool ui=false;
              std::vector<char> isTable; std::vector<cs1tbl::Table> tables;
              long nextId=0; std::vector<long> funcEndId;
              std::vector<long> origStart, origEnd;
+             std::vector<Instr> instructionClipboard;
              std::vector<long> padLen;   // octets de padding (0x00) en fin de chaque fonction code
              std::vector<uint8_t> origHeader; long paOff=0; // header original (byte-perfect) + offset de la table de ptr
              int origNb=0; long origFnpos=0, origPa=0; }; // pour reconstruire fidelement si nb change (add/remove)
@@ -917,6 +944,68 @@ CS1_API int32_t cs1i_instr_move(IDoc* d,int32_t f,int32_t from,int32_t to){
   if(!d||f<0||f>=(int)d->dec.size())return 0; auto&v=d->dec[f];
   if(from<0||from>=(int)v.size()||to<0||to>=(int)v.size())return 0;
   cs1i::Instr t=std::move(v[from]); v.erase(v.begin()+from); v.insert(v.begin()+to,std::move(t)); return 1;
+}
+
+static void remapClipboardRefs(std::vector<cs1i::Arg>& args,const std::map<long,long>& ids){
+  for(auto& argument:args){
+    if(argument.kind==0 && argument.type=="ptr32" && argument.isRef){
+      auto found=ids.find(argument.targetId);
+      if(found!=ids.end()) argument.targetId=found->second;
+    }
+    if(argument.kind==7)
+      for(auto& group:argument.groups) remapClipboardRefs(group,ids);
+    if(argument.kind==2)
+      for(auto& element:argument.expr)
+        if(element.nested) remapClipboardRefs(element.nested->args,ids);
+  }
+}
+
+// Copies an arbitrary ordered set of instructions into the document-local
+// clipboard. The values and symbolic references are preserved exactly.
+CS1_API int32_t cs1i_instr_copy(
+    IDoc* d,int32_t f,const int32_t* indices,int32_t count){
+  if(!d||f<0||f>=(int)d->dec.size()||!d->isCode[f]||!indices||count<=0)return 0;
+  std::vector<int32_t> ordered(indices,indices+count);
+  std::sort(ordered.begin(),ordered.end());
+  if(std::adjacent_find(ordered.begin(),ordered.end())!=ordered.end())return 0;
+  for(int32_t index:ordered)
+    if(index<0||index>=(int)d->dec[f].size())return 0;
+  d->instructionClipboard.clear();
+  d->instructionClipboard.reserve(ordered.size());
+  for(int32_t index:ordered)
+    d->instructionClipboard.push_back(cloneInstrTree(d->dec[f][index]));
+  return (int32_t)d->instructionClipboard.size();
+}
+
+CS1_API int32_t cs1i_instr_clipboard_count(IDoc* d){
+  return d?(int32_t)d->instructionClipboard.size():0;
+}
+
+// Pastes fresh instruction identities. References whose targets were copied
+// are redirected to the corresponding pasted instruction; external branches
+// deliberately keep pointing at their original target.
+CS1_API int32_t cs1i_instr_paste(IDoc* d,int32_t f,int32_t position){
+  if(!d||f<0||f>=(int)d->dec.size()||!d->isCode[f]
+      ||d->instructionClipboard.empty())return 0;
+  auto& target=d->dec[f];
+  if(position<0)position=0;
+  if(position>(int)target.size())position=(int)target.size();
+  std::vector<cs1i::Instr> copies; copies.reserve(d->instructionClipboard.size());
+  std::map<long,long> ids;
+  for(const auto& source:d->instructionClipboard){
+    cs1i::Instr copy=cloneInstrTree(source);
+    long oldId=copy.id;
+    copy.id=d->nextId++;
+    copy.origOff=-1;
+    ids[oldId]=copy.id;
+    copies.push_back(std::move(copy));
+  }
+  for(auto& copy:copies) remapClipboardRefs(copy.args,ids);
+  target.insert(
+    target.begin()+position,
+    std::make_move_iterator(copies.begin()),
+    std::make_move_iterator(copies.end()));
+  return (int32_t)copies.size();
 }
 // ---- Ajout / suppression de FONCTIONS entieres (tables) ----
 // Supprime la fonction f (et toutes ses metadonnees). Le nb de fonctions change ->

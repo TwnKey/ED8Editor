@@ -102,6 +102,27 @@ public sealed class ScriptEditorDocument : IDisposable
     public void MoveInstruction(int function, int from, int to) =>
         Mutate(NativeMethods.cs1i_instr_move(Handle, function, from, to), "move the instruction");
 
+    public int InstructionClipboardCount => NativeMethods.cs1i_instr_clipboard_count(Handle);
+
+    public void CopyInstructions(int function, IReadOnlyCollection<int> instructionIndices)
+    {
+        ArgumentNullException.ThrowIfNull(instructionIndices);
+        var indices = instructionIndices.OrderBy(value => value).ToArray();
+        if (indices.Length == 0)
+            throw new ArgumentException("At least one instruction must be selected.", nameof(instructionIndices));
+        if (NativeMethods.cs1i_instr_copy(Handle, function, indices, indices.Length) != indices.Length)
+            throw new InvalidOperationException("The native engine could not copy the selected instructions.");
+    }
+
+    public int PasteInstructions(int function, int position)
+    {
+        var count = NativeMethods.cs1i_instr_paste(Handle, function, position);
+        if (count <= 0)
+            throw new InvalidOperationException("The instruction clipboard is empty or could not be pasted.");
+        IsDirty = true;
+        return count;
+    }
+
     public void ReplaceExpression(
         int function, int instruction, int argument, IReadOnlyList<ScriptExpressionToken> tokens)
     {

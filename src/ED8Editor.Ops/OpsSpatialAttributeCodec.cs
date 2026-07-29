@@ -7,9 +7,37 @@ namespace ED8Editor.Ops;
 
 public sealed class OpsSpatialAttributeCodec
 {
+    public IReadOnlyDictionary<string, string> GetEditableAttributes(MapVolume source)
+    {
+        var converted = OpsCoordinateConverter.ToSourceTransform(source.Transform);
+        return WithAttributes(
+            source.SourceAttributes,
+            ("pos", $"{Vector(converted.Position)},  {Vector(converted.EulerRadians)},  {Vector(converted.Scale)}"));
+    }
+
+    public IReadOnlyDictionary<string, string> GetEditableAttributes(MapPoint source)
+        => WithAttributes(source.SourceAttributes, ("pos", Vector(source.Position)));
+
+    public IReadOnlyDictionary<string, string> GetEditableAttributes(MapCameraMarker source)
+        => WithAttributes(
+            source.SourceAttributes,
+            ("eye", Vector(source.Eye)),
+            ("lookat", Vector(source.LookAt)));
+
+    public IReadOnlyDictionary<string, string> GetEditableAttributes(MapSoundMarker source)
+        => WithAttributes(source.SourceAttributes, ("sePosition", Vector(source.Position)));
+
+    public IReadOnlyDictionary<string, string> GetEditableAttributes(MapLightMarker source)
+        => WithAttributes(source.SourceAttributes, ("pos", Vector(source.Position)));
+
     public MapVolume Apply(MapVolume source, IReadOnlyDictionary<string, string> attributes)
     {
-        var updated = Prepare(attributes, source.SourceAttributes, "name", "pos");
+        var updated = Prepare(attributes, source.SourceAttributes);
+        var positionComponents = ParseComponents(Required(updated, "pos"), "pos", 9);
+        var transform = OpsCoordinateConverter.ToEditorVolumeTransform(
+            new Vector3(positionComponents[0], positionComponents[1], positionComponents[2]),
+            new Vector3(positionComponents[3], positionComponents[4], positionComponents[5]),
+            new Vector3(positionComponents[6], positionComponents[7], positionComponents[8]));
         ValidateOptionalUInt32(updated, "flag");
         if (source.Kind == MapVolumeKind.Entry)
         {
@@ -22,6 +50,8 @@ public sealed class OpsSpatialAttributeCodec
         }
         return source with
         {
+            Name = Required(updated, "name"),
+            Transform = transform,
             DestinationMap = Optional(updated, "next"),
             DestinationEntry = Optional(updated, "entry"),
             SourceAttributes = updated,
@@ -30,7 +60,7 @@ public sealed class OpsSpatialAttributeCodec
 
     public MapPoint Apply(MapPoint source, IReadOnlyDictionary<string, string> attributes)
     {
-        var updated = Prepare(attributes, source.SourceAttributes, "name", "pos");
+        var updated = Prepare(attributes, source.SourceAttributes);
         ValidateOptionalUInt32(updated, "flag");
         ValidateOptionalVector3(updated, "markPos");
         ValidateOptionalFloat(updated, "rotY");
@@ -38,6 +68,9 @@ public sealed class OpsSpatialAttributeCodec
         var radius = Optional(updated, "radius");
         return source with
         {
+            Name = Required(updated, "name"),
+            Position = OpsCoordinateConverter.ToEditorPosition(
+                ParseVector3(Required(updated, "pos"), "pos")),
             Radius = radius is null ? null : ParseFloat(radius, "radius"),
             SourceAttributes = updated,
         };
@@ -45,7 +78,7 @@ public sealed class OpsSpatialAttributeCodec
 
     public MapCameraMarker Apply(MapCameraMarker source, IReadOnlyDictionary<string, string> attributes)
     {
-        var updated = Prepare(attributes, source.SourceAttributes, "no", "eye", "lookat");
+        var updated = Prepare(attributes, source.SourceAttributes, "no");
         ValidateOptionalUInt32(updated, "flag");
         ValidateOptionalFloat(updated, "dist");
         ValidateOptionalFloat(updated, "fov");
@@ -53,12 +86,19 @@ public sealed class OpsSpatialAttributeCodec
         ValidateOptionalVector3(updated, "rot");
         ValidateOptionalFloat(updated, "time");
         ValidateOptionalInteger(updated, "type");
-        return source with { SourceAttributes = updated };
+        return source with
+        {
+            Eye = OpsCoordinateConverter.ToEditorPosition(
+                ParseVector3(Required(updated, "eye"), "eye")),
+            LookAt = OpsCoordinateConverter.ToEditorPosition(
+                ParseVector3(Required(updated, "lookat"), "lookat")),
+            SourceAttributes = updated,
+        };
     }
 
     public MapSoundMarker Apply(MapSoundMarker source, IReadOnlyDictionary<string, string> attributes)
     {
-        var updated = Prepare(attributes, source.SourceAttributes, "seName", "sePosition");
+        var updated = Prepare(attributes, source.SourceAttributes);
         ValidateOptionalInteger(updated, "seGroupId");
         ValidateOptionalFloat(updated, "seVolume");
         var sourceKind = Required(updated, "seType");
@@ -71,8 +111,11 @@ public sealed class OpsSpatialAttributeCodec
         };
         return source with
         {
+            SoundName = Required(updated, "seName"),
             Kind = kind,
             SourceKind = sourceKind,
+            Position = OpsCoordinateConverter.ToEditorPosition(
+                ParseVector3(Required(updated, "sePosition"), "sePosition")),
             Range = ParseFloat(Required(updated, "seRange"), "seRange"),
             SourceRotation = ParseFloat(Required(updated, "seRotation"), "seRotation"),
             SourceScale = ParseVector3(Required(updated, "seScale"), "seScale"),
@@ -88,12 +131,14 @@ public sealed class OpsSpatialAttributeCodec
 
     public MapLightMarker Apply(MapLightMarker source, IReadOnlyDictionary<string, string> attributes)
     {
-        var updated = Prepare(attributes, source.SourceAttributes, "pos");
+        var updated = Prepare(attributes, source.SourceAttributes);
         ValidateOptionalUInt32(updated, "flag");
         return source with
         {
             Group = Required(updated, "group"),
             Type = Required(updated, "type"),
+            Position = OpsCoordinateConverter.ToEditorPosition(
+                ParseVector3(Required(updated, "pos"), "pos")),
             Color = ParseVector4(Required(updated, "color"), "color"),
             ColorPower = ParseFloat(Required(updated, "colorPower"), "colorPower"),
             InnerRange = ParseFloat(Required(updated, "innerRange"), "innerRange"),
@@ -223,4 +268,19 @@ public sealed class OpsSpatialAttributeCodec
             throw new ArgumentException($"OPS attribute '{name}' contains invalid unsigned integer '{value}'.", name);
         }
     }
+
+    private static IReadOnlyDictionary<string, string> WithAttributes(
+        IReadOnlyDictionary<string, string> source,
+        params (string Name, string Value)[] replacements)
+    {
+        var attributes = new Dictionary<string, string>(source, StringComparer.Ordinal);
+        foreach (var replacement in replacements) attributes[replacement.Name] = replacement.Value;
+        return attributes;
+    }
+
+    private static string Vector(Vector3 value)
+        => $"{Number(value.X)}, {Number(value.Y)}, {Number(value.Z)}";
+
+    private static string Number(float value)
+        => value.ToString("R", CultureInfo.InvariantCulture);
 }

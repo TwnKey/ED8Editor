@@ -46,6 +46,7 @@ internal sealed class ScriptFlowPanel : Panel
     private readonly Dictionary<int, int> branchChoice = new();
     private readonly HashSet<int> activePath = new();
     private readonly HashSet<int> hiddenInstructions = new();
+    private readonly HashSet<int> selectedInstructions = new();
 
     private static readonly Font HeaderFont = new("Consolas", 9.5f, FontStyle.Bold);
     private static readonly Font SummaryFont = new("Consolas", 8.5f);
@@ -88,8 +89,8 @@ internal sealed class ScriptFlowPanel : Panel
         base.Dispose(disposing);
     }
 
-    /// <summary>A block was clicked.</summary>
-    public event Action<int>? InstructionSelected;
+    /// <summary>The selected block set and its primary (most recently targeted) block.</summary>
+    public event Action<IReadOnlyList<int>, int?>? InstructionSelectionChanged;
 
     /// <summary>A block was double-clicked: open its editor.</summary>
     public event Action<int>? InstructionActivated;
@@ -102,6 +103,7 @@ internal sealed class ScriptFlowPanel : Panel
     public event Action<IReadOnlyList<BranchDecision>>? ActivePathChanged;
 
     public int? SelectedInstruction => selectedInstruction;
+    public IReadOnlyCollection<int> SelectedInstructions => selectedInstructions;
 
     /// <summary>Instructions actually walked to reach the current point.</summary>
     public IReadOnlyCollection<int> ActivePath => activePath;
@@ -209,16 +211,28 @@ internal sealed class ScriptFlowPanel : Panel
     public void SelectInstruction(int instruction)
     {
         selectedEdge = null;
-        if (selectedInstruction != instruction)
-        {
-            selectedInstruction = instruction;
-            Invalidate();
-        }
+        selectedInstructions.Clear();
+        selectedInstructions.Add(instruction);
+        selectedInstruction = instruction;
+        Invalidate();
+    }
+
+    public void SelectInstructions(IEnumerable<int> instructions, int? primary = null)
+    {
+        ArgumentNullException.ThrowIfNull(instructions);
+        selectedEdge = null;
+        selectedInstructions.Clear();
+        foreach (var instruction in instructions.Where(nodes.ContainsKey))
+            selectedInstructions.Add(instruction);
+        selectedInstruction = primary is { } candidate && selectedInstructions.Contains(candidate)
+            ? candidate
+            : selectedInstructions.Count > 0 ? selectedInstructions.Max() : null;
         Invalidate();
     }
 
     public void ClearSelection()
     {
+        selectedInstructions.Clear();
         selectedInstruction = null;
         selectedEdge = null;
         Invalidate();
@@ -453,7 +467,7 @@ internal sealed class ScriptFlowPanel : Panel
             return;
         }
 
-        var selected = selectedInstruction == node.Instruction;
+        var selected = selectedInstructions.Contains(node.Instruction);
         var flashing = flashedInstruction == node.Instruction;
         var background = flashing ? FlashBackground
             : selected ? NodeSelected
@@ -596,13 +610,45 @@ internal sealed class ScriptFlowPanel : Panel
         if (HitTestNode(eventArgs.Location) is { } node)
         {
             selectedEdge = null;
-            SelectInstruction(node.Instruction);
             if (!node.IsAnchor)
             {
-                InstructionSelected?.Invoke(node.Instruction);
+                var modifiers = ModifierKeys;
+                if ((modifiers & Keys.Shift) != 0 && selectedInstruction is { } anchor)
+                {
+                    var lower = Math.Min(anchor, node.Instruction);
+                    var upper = Math.Max(anchor, node.Instruction);
+                    selectedInstructions.Clear();
+                    foreach (var instruction in nodes.Keys.Where(value =>
+                                 value >= lower && value <= upper && value >= 0))
+                    {
+                        selectedInstructions.Add(instruction);
+                    }
+                    selectedInstruction = node.Instruction;
+                }
+                else if ((modifiers & Keys.Control) != 0)
+                {
+                    if (!selectedInstructions.Add(node.Instruction))
+                        selectedInstructions.Remove(node.Instruction);
+                    selectedInstruction = selectedInstructions.Contains(node.Instruction)
+                        ? node.Instruction
+                        : selectedInstructions.Count > 0 ? selectedInstructions.Max() : null;
+                }
+                else
+                {
+                    selectedInstructions.Clear();
+                    selectedInstructions.Add(node.Instruction);
+                    selectedInstruction = node.Instruction;
+                }
+                InstructionSelectionChanged?.Invoke(
+                    selectedInstructions.OrderBy(value => value).ToArray(),
+                    selectedInstruction);
                 // A press on a block may become a drag to reorder it.
-                blockDragOrigin = eventArgs.Location;
-                blockDragInstruction = node.Instruction;
+                if (selectedInstructions.Count == 1)
+                {
+                    blockDragOrigin = eventArgs.Location;
+                    blockDragInstruction = node.Instruction;
+                }
+                Invalidate();
             }
             return;
         }

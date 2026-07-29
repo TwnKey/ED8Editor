@@ -1,14 +1,13 @@
 using System.Globalization;
 using System.Text;
+using ED8Editor.Decompiler;
 using ED8Editor.Tables;
 
 namespace ED8Editor.Viewer;
 
 /// <summary>
-/// Focused editor for the verified relationship in t_quest.tbl:
-/// QSTitle.unknown_short is the quest ID and groups every QSText.id stage.
-/// Unknown flags remain untouched and visible instead of being assigned guessed
-/// gameplay meanings.
+/// Quest table editor plus an exact index of script-side quest mutations.
+/// Table fields with unresolved meanings remain visible and round-tripped.
 /// </summary>
 internal sealed class QuestEditorWindow : Form
 {
@@ -16,9 +15,12 @@ internal sealed class QuestEditorWindow : Form
     private readonly Cs1TableDocument document;
     private readonly Cs1TableRecordCodec codec;
     private readonly IReadOnlyList<QuestRecord> quests;
+    private readonly List<QuestScriptMutation> scriptMutations;
+    private readonly CancellationTokenSource corpusIndexCancellation = new();
     private readonly Action<string, bool> onSaving;
     private readonly string? scriptPath;
     private readonly Action openScriptEditor;
+    private readonly Action<QuestScriptMutation> navigateToScriptMutation;
     private readonly ListBox questList = new() { Dock = DockStyle.Fill, IntegralHeight = false };
     private readonly ListBox stageList = new() { Dock = DockStyle.Fill, IntegralHeight = false };
     private readonly TextBox title = new() { Dock = DockStyle.Top };
@@ -32,6 +34,21 @@ internal sealed class QuestEditorWindow : Form
         AcceptsTab = true,
     };
     private readonly Label metadata = new() { Dock = DockStyle.Top, Height = 54, AutoEllipsis = true };
+    private readonly ListView lifecycleList = new()
+    {
+        Dock = DockStyle.Fill,
+        View = View.Details,
+        FullRowSelect = true,
+        GridLines = true,
+        HideSelection = false,
+        ShowItemToolTips = true,
+    };
+    private readonly Label lifecycleSummary = new()
+    {
+        Dock = DockStyle.Top,
+        Height = 54,
+        AutoEllipsis = true,
+    };
     private string? savedPath;
     private QuestRecord? currentQuest;
     private QuestStage? currentStage;
@@ -39,13 +56,17 @@ internal sealed class QuestEditorWindow : Form
     public QuestEditorWindow(
         string path,
         string? scriptPath,
+        IReadOnlyList<QuestScriptSource> scriptSources,
         Action openScriptEditor,
+        Action<QuestScriptMutation> navigateToScriptMutation,
         Action<string, bool> onSaving)
     {
         sourcePath = Path.GetFullPath(path);
         this.scriptPath = scriptPath;
-        this.openScriptEditor =
-            openScriptEditor ?? throw new ArgumentNullException(nameof(openScriptEditor));
+        this.openScriptEditor = openScriptEditor
+            ?? throw new ArgumentNullException(nameof(openScriptEditor));
+        this.navigateToScriptMutation = navigateToScriptMutation
+            ?? throw new ArgumentNullException(nameof(navigateToScriptMutation));
         this.onSaving = onSaving ?? throw new ArgumentNullException(nameof(onSaving));
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
         var locale = Path.GetFileName(Path.GetDirectoryName(sourcePath));
@@ -55,6 +76,10 @@ internal sealed class QuestEditorWindow : Form
         codec = new Cs1TableRecordCodec(textEncoding: encoding);
         document = Cs1TableDocument.Read(sourcePath);
         quests = BuildQuestRecords(document, codec);
+        var analyzer = new QuestScriptAnalyzer();
+        scriptMutations = (scriptSources ?? Array.Empty<QuestScriptSource>())
+            .SelectMany(value => analyzer.Analyze(value.Path, value.Script))
+            .ToList();
         Text = "Quest editor — t_quest.tbl";
         StartPosition = FormStartPosition.CenterParent;
         ClientSize = new Size(1180, 760);
@@ -62,6 +87,54 @@ internal sealed class QuestEditorWindow : Form
         BuildUi();
         PopulateQuests();
     }
+
+    public async Task IndexScriptCorpusAsync(
+        string directory,
+        string? instructionDefinitionsPath)
+    {
+        lifecycleSummary.Text = $"Indexing quest references in {directory}…";
+        QuestScriptCorpusIndex index;
+        try
+        {
+            index = await Task.Run(
+                () => new QuestScriptCorpusIndexer().AnalyzeDirectory(
+                    directory,
+                    instructionDefinitionsPath,
+                    corpusIndexCancellation.Token),
+                corpusIndexCancellation.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        if (IsDisposed || corpusIndexCancellation.IsCancellationRequested) return;
+        var existing = scriptMutations
+            .Select(MutationKey)
+            .ToHashSet();
+        foreach (var mutation in index.Mutations)
+        {
+            if (existing.Add(MutationKey(mutation))) scriptMutations.Add(mutation);
+        }
+        if (currentQuest is { } selected) PopulateLifecycle(selected);
+        if (index.UnreadableScripts.Count > 0)
+        {
+            lifecycleSummary.Text += $" {index.UnreadableScripts.Count} unreadable script(s) were skipped.";
+        }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            corpusIndexCancellation.Cancel();
+            corpusIndexCancellation.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
+    private static (string Path, int Function, int Instruction) MutationKey(
+        QuestScriptMutation mutation) =>
+        (mutation.ScriptPath.ToUpperInvariant(), mutation.FunctionIndex, mutation.InstructionIndex);
 
     private void BuildUi()
     {
@@ -75,6 +148,22 @@ internal sealed class QuestEditorWindow : Form
         menu.Items.Add(file);
         MainMenuStrip = menu;
 
+        var tabs = new TabControl { Dock = DockStyle.Fill };
+        var questDataTab = new TabPage("Quest data") { Padding = new Padding(4) };
+        questDataTab.Controls.Add(BuildQuestDataPanel());
+        var lifecycleTab = new TabPage("Script lifecycle") { Padding = new Padding(8) };
+        lifecycleTab.Controls.Add(BuildLifecyclePanel());
+        var integrationTab = new TabPage("Architecture") { Padding = new Padding(8) };
+        integrationTab.Controls.Add(BuildIntegrationPanel());
+        tabs.TabPages.Add(questDataTab);
+        tabs.TabPages.Add(lifecycleTab);
+        tabs.TabPages.Add(integrationTab);
+        Controls.Add(tabs);
+        Controls.Add(menu);
+    }
+
+    private Control BuildQuestDataPanel()
+    {
         var questGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Quests (QSTitle)" };
         questGroup.Controls.Add(questList);
         var stageGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Journal stages (QSText)" };
@@ -98,26 +187,58 @@ internal sealed class QuestEditorWindow : Form
         editor.Controls.Add(new Label { Text = "Quest title", Dock = DockStyle.Top, Height = 24 });
         editor.Controls.Add(apply);
 
-        var split = new SplitContainer
-        {
-            Dock = DockStyle.Fill,
-        };
+        var split = new SplitContainer { Dock = DockStyle.Fill };
         split.Panel1.Controls.Add(left);
         split.Panel2.Controls.Add(editor);
-        var questDataTab = new TabPage("Quest data") { Padding = new Padding(4) };
-        questDataTab.Controls.Add(split);
-        var integrationTab = new TabPage("Quest integration") { Padding = new Padding(8) };
-        integrationTab.Controls.Add(BuildIntegrationPanel());
-        var tabs = new TabControl { Dock = DockStyle.Fill };
-        tabs.TabPages.Add(questDataTab);
-        tabs.TabPages.Add(integrationTab);
-        Controls.Add(tabs);
-        Controls.Add(menu);
         WinFormsLayout.SetInitialSplitterDistance(split, 390);
         WinFormsLayout.SetInitialSplitterDistance(left, 380);
         questList.SelectedIndexChanged += (_, _) => SelectQuest();
         stageList.SelectedIndexChanged += (_, _) => SelectStage();
         apply.Click += (_, _) => TryApplyCurrent();
+        return split;
+    }
+
+    private Control BuildLifecyclePanel()
+    {
+        lifecycleList.Columns.Add("Location", 340);
+        lifecycleList.Columns.Add("Operation", 180);
+        lifecycleList.Columns.Add("Value", 160);
+        lifecycleList.Columns.Add("Evidence", 400);
+        lifecycleList.DoubleClick += (_, _) =>
+        {
+            NavigateToSelectedMutation();
+        };
+        var goTo = new Button
+        {
+            Dock = DockStyle.Bottom,
+            Height = 34,
+            Text = "Go to selected script block",
+        };
+        goTo.Click += (_, _) => NavigateToSelectedMutation();
+        var note = new Label
+        {
+            Dock = DockStyle.Bottom,
+            Height = 52,
+            Text = "Double-click a reference to open the script graph. Validation conditions, rewards, "
+                + "dialogue, encounters and NPC interaction remain graph instructions. This index anchors "
+                + "them to verified quest-state operations instead of duplicating the script editor.",
+        };
+        var panel = new Panel { Dock = DockStyle.Fill };
+        panel.Controls.Add(lifecycleList);
+        panel.Controls.Add(note);
+        panel.Controls.Add(goTo);
+        panel.Controls.Add(lifecycleSummary);
+        return panel;
+    }
+
+    private void NavigateToSelectedMutation()
+    {
+        if (lifecycleList.SelectedItems.Count == 0
+            || lifecycleList.SelectedItems[0].Tag is not QuestScriptMutation mutation)
+        {
+            return;
+        }
+        navigateToScriptMutation(mutation);
     }
 
     private Control BuildIntegrationPanel()
@@ -125,23 +246,25 @@ internal sealed class QuestEditorWindow : Form
         var components = new ListView
         {
             Dock = DockStyle.Top,
-            Height = 245,
+            Height = 285,
             View = View.Details,
             FullRowSelect = true,
             GridLines = true,
         };
         components.Columns.Add("Component", 190);
-        components.Columns.Add("Current knowledge", 500);
-        components.Columns.Add("Status", 170);
+        components.Columns.Add("Current knowledge", 620);
+        components.Columns.Add("Status", 190);
         Add("t_quest / QSTitle", "Quest ID, title, requester and preserved unknown flags.", "Editable");
         Add("t_quest / QSText", "Journal stages grouped by the verified quest ID.", "Editable");
-        Add("t_quest / QSRank + QSChapter", "Global rank/chapter lookup data; exact quest lifecycle role not established.", "Decoded");
+        Add("OP103 selector 1", "Publishes a QSText journal-stage index for a quest ID.", "Verified in corpus");
+        Add("OP103 selector 3", "Lifecycle flags: value 4 activates/accepts; value 8 completes.", "Verified in corpus");
+        Add("OP103 selectors 2/4/5/6", "Indexed without assigning an unverified gameplay meaning.", "Unresolved");
+        Add("Validation conditions", "Branches, expressions and flags leading to OP103; owned by the script graph.", "Graph-owned");
+        Add("Rewards / inventory", "Separate scenario operations near completion; exact opcode semantics still require verification.", "Research required");
+        Add("Quest giver", "Dialogue and interaction function that reaches the activation mutation.", "Graph-owned");
+        Add("Encounters", "CreateMonsters plus scenario functions can be linked to the quest flow through graph references.", "Partially implemented");
         Add("t_navi / NaviTextData", "Objective/navigation text and opaque transition bytes.", "Decoded; link unresolved");
-        Add("Scenario script", "Start, progress and completion logic must reuse the existing script graph.", "Open current script");
-        Add("Quest state transitions", "Opcodes/flags that publish journal stages still require corpus verification.", "Research required");
-        Add("Rewards and inventory", "Likely executed by scenario instructions; not owned by QSTitle/QSText.", "Research required");
-        Add("Map markers / destinations", "Potential script, OPS and place-table references; no relation is assumed.", "Research required");
-        Add("Dialogue / cutscenes", "Calls and branches remain authored in the existing script editor.", "Reuse script graph");
+        Add("QSRank / QSChapter / QSBook / QSMons", "Decoded records retained as separate sources until their exact relationships are established.", "Research required");
 
         var openScript = new Button
         {
@@ -167,7 +290,6 @@ internal sealed class QuestEditorWindow : Form
         naviGrid.Columns.Add("text", "Navigation text");
         naviGrid.Columns.Add("opaque", "Preserved transition bytes");
         PopulateNavigationRows(naviGrid);
-
         var naviGroup = new GroupBox
         {
             Dock = DockStyle.Fill,
@@ -191,9 +313,7 @@ internal sealed class QuestEditorWindow : Form
 
     private void PopulateNavigationRows(DataGridView grid)
     {
-        var path = Path.Combine(
-            Path.GetDirectoryName(sourcePath)!,
-            "t_navi.tbl");
+        var path = Path.Combine(Path.GetDirectoryName(sourcePath)!, "t_navi.tbl");
         if (!File.Exists(path)) return;
         var navi = Cs1TableDocument.Read(path);
         foreach (var entry in navi.Entries.Where(value =>
@@ -229,6 +349,7 @@ internal sealed class QuestEditorWindow : Form
             + $"byte={Value(quest.TitleFields, "unknown_byte")}, "
             + $"data={Value(quest.TitleFields, "unknown_data")}. "
             + "These fields are preserved without an inferred name.";
+        PopulateLifecycle(quest);
         if (quest.Stages.Count > 0) stageList.SelectedIndex = 0;
         else stageText.Clear();
     }
@@ -244,6 +365,61 @@ internal sealed class QuestEditorWindow : Form
             + $"{Value(stage.Fields, "unknown_byte_2")}. Unknown codes are preserved.";
     }
 
+    private void PopulateLifecycle(QuestRecord quest)
+    {
+        lifecycleList.BeginUpdate();
+        lifecycleList.Items.Clear();
+        var mutations = scriptMutations
+            .Where(value => value.QuestId == quest.Id)
+            .OrderBy(value => value.ScriptPath, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(value => value.FunctionIndex)
+            .ThenBy(value => value.InstructionIndex)
+            .ToArray();
+        foreach (var mutation in mutations)
+        {
+            var (operation, value, evidence) = Describe(mutation);
+            var item = new ListViewItem(mutation.Location)
+            {
+                Tag = mutation,
+                ToolTipText = mutation.ScriptPath,
+            };
+            item.SubItems.Add(operation);
+            item.SubItems.Add(value);
+            item.SubItems.Add(evidence);
+            lifecycleList.Items.Add(item);
+        }
+        lifecycleSummary.Text = mutations.Length == 0
+            ? $"Quest {quest.Id}: no OP103 reference was found in the scripts currently indexed."
+            : $"Quest {quest.Id}: {mutations.Length} exact OP103 reference(s) in "
+                + $"{mutations.Select(value => value.ScriptPath).Distinct(StringComparer.OrdinalIgnoreCase).Count()} script(s).";
+        lifecycleList.EndUpdate();
+    }
+
+    private static (string Operation, string Value, string Evidence) Describe(
+        QuestScriptMutation mutation)
+    {
+        if (mutation.Kind == QuestMutationKind.JournalStage)
+            return ("Set journal stage",
+                mutation.Value?.ToString(CultureInfo.InvariantCulture) ?? "—",
+                "OP103 selector 1; value is the zero-based QSText stage index.");
+        if (mutation.Kind == QuestMutationKind.LifecycleFlags)
+        {
+            var label = mutation.Value switch
+            {
+                4 => "4 — active/accepted",
+                8 => "8 — completed",
+                2 => "2 — exact lifecycle name unresolved",
+                { } value => value.ToString(CultureInfo.InvariantCulture),
+                _ => "—",
+            };
+            return ("Set lifecycle flags", label,
+                "OP103 selector 3. Values 4 and 8 are verified from start/completion flows.");
+        }
+        return ($"OP103 selector {mutation.Selector}",
+            mutation.Value?.ToString(CultureInfo.InvariantCulture) ?? "—",
+            "Indexed without assigning an unverified gameplay meaning.");
+    }
+
     private void ApplyCurrent()
     {
         if (currentQuest is null) return;
@@ -251,9 +427,7 @@ internal sealed class QuestEditorWindow : Form
         changed |= SetIfChanged(currentQuest.TitleFields, "title", title.Text);
         changed |= SetIfChanged(currentQuest.TitleFields, "persons", persons.Text);
         if (currentStage is not null)
-        {
             changed |= SetIfChanged(currentStage.Fields, "text", stageText.Text);
-        }
         if (!changed) return;
         questList.Refresh();
         stageList.Refresh();
@@ -353,8 +527,6 @@ internal sealed class QuestEditorWindow : Form
         var index = values.ToList().FindIndex(field =>
             field.Field.Name.Equals(name, StringComparison.Ordinal));
         if (index < 0) throw new InvalidDataException($"Field '{name}' is absent.");
-        // The codec values are immutable records; this list is always the mutable
-        // List created below.
         ((List<Cs1TableFieldValue>)values)[index] = values[index] with { Value = value };
     }
 

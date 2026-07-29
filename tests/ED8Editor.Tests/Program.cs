@@ -878,6 +878,7 @@ var tests = new (string Name, Action Run)[]
     ("selects authored environment variants like the game", SelectsAuthoredEnvironmentVariants),
     ("supports editor camera orbit and free flight", KeepsEditorCameraOrbitCentered),
     ("smooths accumulated editor camera dolly input", SmoothsEditorCameraDollyInput),
+    ("builds a ground-oriented surface placement decal", BuildsSurfacePlacementDecal),
     ("builds typed OPS overlay geometry", BuildsTypedOpsOverlayGeometry),
     ("renders declared sound volume shapes", RendersDeclaredSoundVolumeShapes),
     ("picks exact OPS volume geometry", PicksExactOpsVolumeGeometry),
@@ -889,12 +890,18 @@ var tests = new (string Name, Action Run)[]
     ("groups editable elements for the scene outliner", GroupsSceneOutlinerElements),
     ("validates and normalizes game installations", ValidatesGameInstallations),
     ("persists editor user settings", PersistsEditorUserSettings),
+    ("catalogs battle maps and creates minimal INF metadata", CatalogsBattleMapAssets),
+    ("defines a complete field-monster OP19 profile", DefinesFieldMonsterSpawnProfile),
     ("writes transformed OPS props without losing unknown data", WritesTransformedOpsProps),
     ("writes duplicated and deleted OPS spatial elements", WritesStructuralOpsEdits),
     ("creates observed OPS spatial profiles in empty sections", CreatesObservedOpsProfiles),
     ("indexes PKG names without reading archives", IndexesPkgNamesWithoutReadingArchives),
     ("round-trips CS1 TBL entries byte-exactly", RoundTripsCs1Table),
     ("preserves localized QSText stale lengths", PreservesQuestTextStaleLength),
+    ("indexes verified quest script mutations by opcode and selector", IndexesQuestScriptMutations),
+    ("encodes the established fishing spot payload exactly", EncodesFishingSpotPayload),
+    ("follows exact local shop calls to OP114", ResolvesShopScriptBinding),
+    ("edits shop titles and inventory without losing unknown words", EditsShopTable),
     ("resolves semantic TBL references by category", ResolvesSemanticTableReferences),
     ("builds semantic choices from the requested TBL category", BuildsSemanticTableChoices),
     ("flattens repeated and referenced TBL schema fields", FlattensTblSchemaFields),
@@ -926,6 +933,203 @@ foreach (var test in tests)
 }
 
 return failures == 0 ? 0 : 1;
+
+static void EncodesFishingSpotPayload()
+{
+    var binding = new FishingSpotScriptBinding(
+        FunctionIndex: 12,
+        FunctionName: "LP_fishpoint00",
+        InstructionIndex: 7,
+        PayloadArgumentIndex: 1,
+        FishingPointId: 7,
+        PlayerPosition: new Vector3(21.85f, -1.12f, -42.13f),
+        HeadingDegrees: -70f,
+        WaterTarget: new Vector3(19.06f, -1.47f, -39.95f));
+    var expected =
+        "07000000CDCCAE41295C8FBF1F8528C200008CC2E17A9841F628BCBFCDCC1FC2";
+    var actual = Convert.ToHexString(binding.EncodePayload());
+    if (actual != expected)
+        throw new InvalidOperationException($"Fishing payload mismatch: {actual}.");
+}
+
+static void ResolvesShopScriptBinding()
+{
+    static InstructionArgument Scalar(int index, string type, int value) =>
+        new(index, "scalar", type, value, value, Array.Empty<byte>(), null);
+    static InstructionArgument Text(int index, string value) =>
+        new(index, "string", "string", 0, 0, Encoding.UTF8.GetBytes(value + "\0"), null);
+    var script = new DecompiledScript("shop-test", new[]
+    {
+        new DecompiledFunction(0, "LP_Shop01", true, new[]
+        {
+            new DecompiledInstruction(0, 0, "CallExt", 4,
+                new[] { Scalar(0, "u8", 11), Text(1, "TK_Keilis") },
+                Array.Empty<JumpTarget>()),
+        }),
+        new DecompiledFunction(1, "TK_Keilis", true, new[]
+        {
+            new DecompiledInstruction(0, 0, "OP114", 114,
+                new[] { Scalar(0, "s16", 110) },
+                Array.Empty<JumpTarget>()),
+        }),
+    });
+    var binding = ShopScriptBinding.Read(script, "LP_Shop01").Single();
+    if (binding.ShopId != 110
+        || !binding.CallPath.SequenceEqual(new[] { "LP_Shop01", "TK_Keilis" }))
+        throw new Exception("The local shop call chain was not resolved exactly.");
+}
+
+static void EditsShopTable()
+{
+    var directory = Path.Combine(
+        Path.GetTempPath(), "ed8editor-shop-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    var path = Path.Combine(directory, "t_shop.tbl");
+    try
+    {
+        var title = new byte[]
+        {
+            110, 0, 7, (byte)'O', (byte)'l', (byte)'d', 0,
+            1, 2, 3, 4, 5, 6, 7, 8,
+        };
+        var item = new byte[6];
+        BinaryPrimitives.WriteUInt16LittleEndian(item, 110);
+        BinaryPrimitives.WriteUInt16LittleEndian(item.AsSpan(2), 511);
+        BinaryPrimitives.WriteUInt16LittleEndian(item.AsSpan(4), 6);
+        new Cs1TableDocumentBuilder()
+            .WithEntry("ShopTitle", title)
+            .WithEntry("ShopItem", item)
+            .Build()
+            .Write(path);
+
+        var table = Cs1ShopTable.Read(path);
+        table.SetTitleName(110, "New title");
+        table.ReplaceItems(110, new[]
+        {
+            new Cs1ShopItemValue(512, 6),
+            new Cs1ShopItemValue(514, 3),
+        });
+        table.Write();
+
+        var reopened = Cs1ShopTable.Read(path);
+        var reopenedTitle = reopened.Titles.Single();
+        var reopenedItems = reopened.Items(110);
+        if (reopenedTitle.Name != "New title"
+            || !reopenedTitle.UnknownSuffix.SequenceEqual(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 })
+            || reopenedItems.Count != 2
+            || reopenedItems[0].ItemId != 512
+            || reopenedItems[0].UnknownValue != 6
+            || reopenedItems[1].UnknownValue != 3)
+        {
+            throw new Exception("The shop table edit did not preserve its unknown data.");
+        }
+    }
+    finally
+    {
+        Directory.Delete(directory, recursive: true);
+    }
+}
+
+static void IndexesQuestScriptMutations()
+{
+    static InstructionArgument Scalar(int index, int value) =>
+        new(index, "scalar", "s16", value, value, Array.Empty<byte>(), null);
+    var instructions = new[]
+    {
+        new DecompiledInstruction(0, 12, "renamed", 103,
+            new[] { Scalar(0, 28), Scalar(1, 3), Scalar(2, 4) },
+            Array.Empty<JumpTarget>()),
+        new DecompiledInstruction(1, 18, "also_renamed", 103,
+            new[] { Scalar(0, 28), Scalar(1, 1), Scalar(2, 7) },
+            Array.Empty<JumpTarget>()),
+        new DecompiledInstruction(2, 24, "OP103_6", 103,
+            new[] { Scalar(0, 28), Scalar(1, 6), Scalar(2, 2) },
+            Array.Empty<JumpTarget>()),
+        new DecompiledInstruction(3, 30, "unrelated", 100,
+            new[] { Scalar(0, 28), Scalar(1, 1) },
+            Array.Empty<JumpTarget>()),
+    };
+    var script = new DecompiledScript("test", new[]
+    {
+        new DecompiledFunction(2, "arbitrary_name", true, instructions),
+    });
+    var result = new QuestScriptAnalyzer().Analyze("quest-test.dat", script);
+    if (result.Count != 3
+        || result[0].Kind != QuestMutationKind.LifecycleFlags
+        || result[0].Value != 4
+        || result[1].Kind != QuestMutationKind.JournalStage
+        || result[1].Value != 7
+        || result[2].Kind != QuestMutationKind.UnknownSelector6)
+    {
+        throw new InvalidOperationException(
+            "Quest mutations were not classified from the raw opcode/selector pair.");
+    }
+}
+
+static void CatalogsBattleMapAssets()
+{
+    var root = Path.Combine(Path.GetTempPath(), $"ed8editor-battle-{Guid.NewGuid():N}");
+    var data = Path.Combine(root, "data");
+    var existing = Path.Combine(data, "map", "battle", "bm0010");
+    try
+    {
+        Directory.CreateDirectory(existing);
+        File.WriteAllText(Path.Combine(existing, "bm0010.inf"), "<node_infomation></node_infomation>");
+        File.WriteAllBytes(Path.Combine(existing, "cloud.uvb"), Encoding.ASCII.GetBytes("UVab"));
+
+        var catalog = new BattleMapAssetCatalog(data);
+        var entry = catalog.Entries.Single();
+        if (entry.AssetId != "bm0010" || !entry.HasInf
+            || entry.UvAnimationFiles.Single() != "cloud.uvb")
+        {
+            throw new InvalidOperationException("The existing battle-map metadata was not cataloged.");
+        }
+
+        var created = catalog.CreateMinimalInf("bm9990");
+        var bytes = File.ReadAllBytes(created.InfPath);
+        if (!created.HasInf || bytes.AsSpan().StartsWith(new byte[] { 0xef, 0xbb, 0xbf })
+            || !Encoding.UTF8.GetString(bytes).Contains("<node_infomation>"))
+        {
+            throw new InvalidOperationException("The minimal battle-map INF is not the authored XML skeleton.");
+        }
+    }
+    finally
+    {
+        if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+    }
+}
+
+static void BuildsSurfacePlacementDecal()
+{
+    var normal = Vector3.Normalize(new Vector3(0.25f, 1f, -0.4f));
+    var position = new Vector3(3f, 4f, 5f);
+    var geometry = SceneSurfacePlacementMarker.Build(position, normal, 2f);
+    if (geometry.Lines.Count != 22)
+        throw new Exception("Surface decal did not create its ring and cross.");
+    if (geometry.Triangles.Count != 20)
+        throw new Exception("Surface decal did not create its translucent fill.");
+    foreach (var point in geometry.Triangles.SelectMany(value =>
+                 new[] { value.A, value.B, value.C }))
+    {
+        var planeDistance = Vector3.Dot(point - position, normal);
+        if (planeDistance <= 0f || planeDistance >= 0.1f)
+            throw new Exception("Surface decal is not oriented in the picked surface plane.");
+    }
+}
+
+static void DefinesFieldMonsterSpawnProfile()
+{
+    var profile = FieldMonsterSpawnParameters.CreateDefault(2000, "mon116", 4, 2);
+    if (profile.EntityType != 2)
+        throw new Exception("Field-monster entity type changed.");
+    if (profile.Scale != -1f)
+        throw new Exception("Field-monster scale sentinel changed.");
+    if (profile.BattleFunctionIndex != 4 || profile.EncounterIndex != 2)
+        throw new Exception("Encounter linkage was not encoded in the OP19 profile.");
+    if (profile.UnknownParameter1 != 0x40C00000
+        || profile.UnknownParameter2 != 0x41A00000)
+        throw new Exception("Verified retail raw parameters changed.");
+}
 
 // An .eff is read with its version and flag word in hand, and its fixed-width
 // name fields keep authoring leftovers past their null terminator. Reading one
@@ -1353,8 +1557,8 @@ static void BuildsSemanticTableChoices()
 static void FlattensTblSchemaFields()
 {
     var schemas = Cs1TableSchemaSet.Default;
-    if (schemas.Entries.Count != 50)
-        throw new Exception($"Expected 50 CS1 entry schemas, found {schemas.Entries.Count}.");
+    if (schemas.Entries.Count != 51)
+        throw new Exception($"Expected 51 CS1 entry schemas, found {schemas.Entries.Count}.");
     var fields = schemas.FindAtomicFields("item")
         ?? throw new Exception("The item schema was not loaded.");
     var names = fields.Select(value => value.Name).ToHashSet(StringComparer.Ordinal);
@@ -2720,20 +2924,45 @@ static void WritesStructuralOpsEdits()
             edit(values);
             Equal(true, document.ApplyElementAttributes(selected, values));
         }
-        Apply(SceneElementKind.EntryVolume, values => values["next"] = "a9999");
+        Apply(SceneElementKind.EntryVolume, values =>
+        {
+            values["name"] = "entry_event";
+            values["next"] = "a9999";
+            values["pos"] = "10,11,12, 0,0,0, 4,5,6";
+        });
         Apply(SceneElementKind.GroupVolume, values => values["flag"] = "0x7");
-        Apply(SceneElementKind.LookPoint, values => values["radius"] = "4.5");
-        Apply(SceneElementKind.Camera, values => values["fov"] = "45");
+        Apply(SceneElementKind.LookPoint, values =>
+        {
+            values["name"] = "look_event";
+            values["pos"] = "13,14,15";
+            values["radius"] = "4.5";
+        });
+        Apply(SceneElementKind.Camera, values =>
+        {
+            values["eye"] = "16,17,18";
+            values["lookat"] = "19,20,21";
+            values["fov"] = "45";
+        });
         Apply(SceneElementKind.Sound, values =>
         {
+            values["seName"] = "river";
+            values["sePosition"] = "22,23,24";
             values["seRange"] = "12.5";
             values["seVolume"] = "0.75";
         });
         Apply(SceneElementKind.Light, values =>
         {
+            values["pos"] = "25,26,27";
             values["colorPower"] = "4";
             values["outerRange"] = "11";
         });
+        Near(10f, document.CreateMapSnapshot()!.Volumes.Single(
+            value => value.Kind == MapVolumeKind.Entry).Transform.Position.X);
+        Near(13f, document.CreateMapSnapshot()!.Points[0].Position.X);
+        Near(16f, document.CreateMapSnapshot()!.Cameras[0].Eye.X);
+        Near(19f, document.CreateMapSnapshot()!.Cameras[0].LookAt.X);
+        Near(22f, document.CreateMapSnapshot()!.Sounds[0].Position.X);
+        Near(25f, document.CreateMapSnapshot()!.Lights[0].Position.X);
         Near(4.5f, document.CreateMapSnapshot()!.Points[0].Radius!.Value);
         Near(12.5f, document.CreateMapSnapshot()!.Sounds[0].Range);
         Near(11f, document.CreateMapSnapshot()!.Lights[0].OuterRange);
@@ -2745,9 +2974,11 @@ static void WritesStructuralOpsEdits()
         new OpsWriter().Write(outputPath, source, document.CreateMapSnapshot()!);
         var attributesReloaded = new OpsReader().Read(outputPath);
         Equal("a9999", attributesReloaded.Volumes.Single(value => value.Kind == MapVolumeKind.Entry).DestinationMap!);
+        Equal("entry_event", attributesReloaded.Volumes.Single(value => value.Kind == MapVolumeKind.Entry).Name);
         Equal("0x7", attributesReloaded.Volumes.Single(value => value.Kind == MapVolumeKind.Group).SourceAttributes["flag"]);
         Equal("45", attributesReloaded.Cameras[0].SourceAttributes["fov"]);
         Near(12.5f, attributesReloaded.Sounds[0].Range);
+        Equal("river", attributesReloaded.Sounds[0].SoundName);
         Near(4f, attributesReloaded.Lights[0].ColorPower);
 
         var invalidSound = new Dictionary<string, string>(
@@ -2762,15 +2993,13 @@ static void WritesStructuralOpsEdits()
         };
         Throws<ArgumentException>(() => document.ApplyElementAttributes(
             originals.Single(value => value.Kind == SceneElementKind.Camera), invalidCamera));
-        var protectedEntry = new Dictionary<string, string>(
+        var invalidEntryPosition = new Dictionary<string, string>(
             document.FindElementAttributes(originals.Single(value => value.Kind == SceneElementKind.EntryVolume))!.Values)
         {
             ["pos"] = "invalid",
         };
-        Equal(true, document.ApplyElementAttributes(
-            originals.Single(value => value.Kind == SceneElementKind.EntryVolume), protectedEntry));
-        Equal("1,2,3, 0,0,0, 4,5,6", document.FindElementAttributes(
-            originals.Single(value => value.Kind == SceneElementKind.EntryVolume))!.Values["pos"]);
+        Throws<ArgumentException>(() => document.ApplyElementAttributes(
+            originals.Single(value => value.Kind == SceneElementKind.EntryVolume), invalidEntryPosition));
         foreach (var original in originals)
         {
             var duplicate = document.DuplicateElement(original);
@@ -2787,14 +3016,20 @@ static void WritesStructuralOpsEdits()
 
         new OpsWriter().Write(outputPath, source, edited);
         var reloaded = new OpsReader().Read(outputPath);
-        Equal("entry_001", reloaded.Volumes.Single(value => value.Kind == MapVolumeKind.Entry).Name);
+        Equal("entry_event_001", reloaded.Volumes.Single(value => value.Kind == MapVolumeKind.Entry).Name);
+        Near(10f, reloaded.Volumes.Single(value => value.Kind == MapVolumeKind.Entry).Transform.Position.X);
         Equal("group_001", reloaded.Volumes.Single(value => value.Kind == MapVolumeKind.Group).Name);
-        Equal("look_001", reloaded.Points[0].Name);
+        Equal("look_event_001", reloaded.Points[0].Name);
+        Near(13f, reloaded.Points[0].Position.X);
         Equal("7", reloaded.Cameras[0].Name);
-        Equal("bell", reloaded.Sounds[0].SoundName);
+        Near(16f, reloaded.Cameras[0].Eye.X);
+        Near(19f, reloaded.Cameras[0].LookAt.X);
+        Equal("river", reloaded.Sounds[0].SoundName);
+        Near(22f, reloaded.Sounds[0].Position.X);
         Equal("0.75", reloaded.Sounds[0].SourceAttributes["seVolume"]);
         Near(12.5f, reloaded.Sounds[0].Range);
         Equal("0x5", reloaded.Lights[0].SourceAttributes["flag"]);
+        Near(25f, reloaded.Lights[0].Position.X);
         Near(11f, reloaded.Lights[0].OuterRange);
         Equal(true, document.Undo());
         Equal(2, document.CreateMapSnapshot()!.Lights.Count);
@@ -2825,6 +3060,42 @@ static void CreatesObservedOpsProfiles()
         OpsSpatialCreationProfile Profile(string id)
             => OpsSpatialCreationCatalog.Profiles.Single(value => value.Id == id);
 
+        Equal(
+            OpsValueKind.DestinationMap,
+            Profile("observed.m0010.entry_type_2").Inputs[0].Kind);
+        Equal(
+            OpsValueKind.DestinationEntry,
+            Profile("observed.m0010.entry_type_2").Inputs[1].Kind);
+        Equal(
+            OpsValueKind.ScriptFunction,
+            Profile("observed.t1000.entry_event_trigger").Inputs.Single().Kind);
+        Equal(
+            OpsValueKind.MapSoundSource,
+            Profile("observed.a0007.point_sound").Inputs.Single().Kind);
+        var eventSelection = new SceneElementSelection(
+            SceneElementKind.EntryVolume, 0, "EV_TEST");
+        Equal(
+            OpsValueKind.ScriptFunction,
+            OpsAttributeValueKinds.Resolve(
+                eventSelection,
+                "name",
+                new Dictionary<string, string>
+                {
+                    ["name"] = "EV_TEST",
+                    ["next"] = string.Empty,
+                }));
+        Equal(
+            OpsValueKind.DestinationMap,
+            OpsAttributeValueKinds.Resolve(
+                eventSelection,
+                "next",
+                new Dictionary<string, string> { ["next"] = "a1000" }));
+        Equal(
+            OpsValueKind.MapSoundSource,
+            OpsAttributeValueKinds.Resolve(
+                new SceneElementSelection(SceneElementKind.Sound, 0, "river"),
+                "seName",
+                new Dictionary<string, string> { ["seName"] = "river" }));
         Throws<ArgumentException>(() => document.AddSpatialElement(
             Profile("observed.m0010.entry_type_2"), Vector3.Zero, new Dictionary<string, string>()));
         var entry = document.AddSpatialElement(

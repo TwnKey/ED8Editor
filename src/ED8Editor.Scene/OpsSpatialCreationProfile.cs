@@ -4,7 +4,53 @@ using ED8Editor.Core;
 
 namespace ED8Editor.Scene;
 
-public sealed record OpsCreationInput(string Name, string DisplayName);
+public enum OpsValueKind
+{
+    Text,
+    ScriptFunction,
+    DestinationMap,
+    DestinationEntry,
+    MapSoundSource,
+}
+
+public sealed record OpsCreationInput(
+    string Name,
+    string DisplayName,
+    OpsValueKind Kind = OpsValueKind.Text);
+
+public static class OpsAttributeValueKinds
+{
+    public static OpsValueKind Resolve(
+        SceneElementSelection selection,
+        string attributeName,
+        IReadOnlyDictionary<string, string> attributes)
+    {
+        ArgumentNullException.ThrowIfNull(attributes);
+        if (selection.Kind == SceneElementKind.EntryVolume)
+        {
+            if (attributeName.Equals("next", StringComparison.Ordinal))
+                return OpsValueKind.DestinationMap;
+            if (attributeName.Equals("entry", StringComparison.Ordinal))
+                return OpsValueKind.DestinationEntry;
+            if (attributeName.Equals("name", StringComparison.Ordinal)
+                && string.IsNullOrWhiteSpace(attributes.GetValueOrDefault("next")))
+            {
+                return OpsValueKind.ScriptFunction;
+            }
+        }
+        if (selection.Kind == SceneElementKind.LookPoint
+            && attributeName.Equals("name", StringComparison.Ordinal))
+        {
+            return OpsValueKind.ScriptFunction;
+        }
+        if (selection.Kind == SceneElementKind.Sound
+            && attributeName.Equals("seName", StringComparison.Ordinal))
+        {
+            return OpsValueKind.MapSoundSource;
+        }
+        return OpsValueKind.Text;
+    }
+}
 
 public sealed record OpsSpatialElementDraft(
     SceneElementSelection Selection,
@@ -95,8 +141,10 @@ public static class OpsSpatialCreationCatalog
             "Observed in m0010.ops: go_r0010",
             new[]
             {
-                new OpsCreationInput("next", "Destination map"),
-                new OpsCreationInput("entry", "Destination entry"),
+                new OpsCreationInput(
+                    "next", "Destination map", OpsValueKind.DestinationMap),
+                new OpsCreationInput(
+                    "entry", "Destination entry", OpsValueKind.DestinationEntry),
             },
             values => $"go_{values["next"].Trim()}",
             (id, name, position, values) =>
@@ -134,7 +182,11 @@ public static class OpsSpatialCreationCatalog
             "Event trigger (runs a script function on entry)",
             SceneElementKind.EntryVolume,
             "Observed in t1000.ops: EV_C08E30S00, EV_C00E06S00, EV_Fishing_Tuto (no destination map, flag 0x3)",
-            new[] { new OpsCreationInput("function", "Script function to run") },
+            new[]
+            {
+                new OpsCreationInput(
+                    "function", "Script function to run", OpsValueKind.ScriptFunction),
+            },
             values => values["function"].Trim(),
             (id, name, position, values) =>
             {
@@ -217,7 +269,11 @@ public static class OpsSpatialCreationCatalog
             "Point sound",
             SceneElementKind.Sound,
             "Observed in a0007.ops: POINT SoundObject",
-            new[] { new OpsCreationInput("seName", "Sound name") },
+            new[]
+            {
+                new OpsCreationInput(
+                    "seName", "Map sound source", OpsValueKind.MapSoundSource),
+            },
             values => values["seName"].Trim(),
             (id, name, position, values) =>
             {

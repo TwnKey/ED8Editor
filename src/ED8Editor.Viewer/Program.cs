@@ -1,5 +1,6 @@
 ﻿using System.Globalization;
 using System.Text;
+using System.Numerics;
 using ED8Editor.Application;
 using ED8Editor.Assets;
 using ED8Editor.Core;
@@ -7,6 +8,7 @@ using ED8Editor.Decompiler;
 using ED8Editor.Ops;
 using ED8Editor.Packages;
 using ED8Editor.Phyre;
+using ED8Editor.Scene;
 
 namespace ED8Editor.Viewer;
 
@@ -44,6 +46,55 @@ internal static class Program
             }
             return;
         }
+        if (args is ["--verify-model-asset", var modelAssetId, var modelDataPath])
+        {
+            var modelLoader = new EditorProjectLoader(
+                new OpsReader(), new GameAssetResolverFactory(), new PkgArchiveReader(),
+                new AssetManifestReader(), new PhyreD3D11ModelReader(),
+                new PhyreD3D11TextureReader());
+            var load = modelLoader.LoadAsset(modelAssetId, modelDataPath);
+            var bounds = load.Model is null
+                ? null
+                : new SceneBoundsCalculator().Calculate(new[]
+                {
+                    new SceneModelInstance(
+                        0, modelAssetId, modelAssetId, load.Model,
+                        Matrix4x4.Identity),
+                });
+            Console.WriteLine(
+                $"{modelAssetId}: {load.Status}; "
+                + $"model={load.Model?.AssetId ?? "<none>"}; "
+                + $"meshes={load.Model?.Meshes.Count ?? 0}; "
+                + $"bounds={(bounds?.HasGeometry == true
+                    ? $"{bounds.Center.X:G4},{bounds.Center.Y:G4},{bounds.Center.Z:G4}"
+                        + $" r={bounds.Radius:G4}"
+                    : "<none>")}; error={load.Error ?? "<none>"}");
+            Environment.ExitCode = load.Status == AssetModelLoadStatus.Loaded ? 0 : 1;
+            return;
+        }
+        if (args is ["--verify-encounter-asset", var monsterAssetId, var encounterDataPath])
+        {
+            var choice = MonsterTableCatalog.Load(encounterDataPath).SingleOrDefault(value =>
+                value.AssetId.Equals(monsterAssetId, StringComparison.OrdinalIgnoreCase));
+            if (choice is null)
+            {
+                Console.Error.WriteLine($"{monsterAssetId}: no exact t_mons status mapping");
+                Environment.ExitCode = 1;
+                return;
+            }
+            Console.WriteLine(
+                $"{choice.AssetId}: name={choice.DisplayName}; model={choice.ModelAssetId}");
+            var modelLoader = new EditorProjectLoader(
+                new OpsReader(), new GameAssetResolverFactory(), new PkgArchiveReader(),
+                new AssetManifestReader(), new PhyreD3D11ModelReader(),
+                new PhyreD3D11TextureReader());
+            var load = modelLoader.LoadAsset(choice.ModelAssetId, encounterDataPath);
+            Console.WriteLine(
+                $"{choice.ModelAssetId}: {load.Status}; meshes={load.Model?.Meshes.Count ?? 0}; "
+                + $"error={load.Error ?? "<none>"}");
+            Environment.ExitCode = load.Status == AssetModelLoadStatus.Loaded ? 0 : 1;
+            return;
+        }
         if (args is ["--verify-eff", var effRoot])
         {
             Environment.ExitCode = VerifyEffects(effRoot);
@@ -62,6 +113,11 @@ internal static class Program
         if (args is ["--dump-function-timeline", var timelineScript, var timelineFunction])
         {
             DumpFunctionTimeline(timelineScript, timelineFunction);
+            return;
+        }
+        if (args is ["--dump-phyre", var phyrePath, ..])
+        {
+            DumpPhyreCluster(phyrePath, args.Length > 2 && args[2] == "--members");
             return;
         }
         if (args is ["--new-eff", var newEffPath])
@@ -736,6 +792,65 @@ internal static class Program
             Console.Error.WriteLine($"FAIL writing a new texture: {exception.Message}");
         }
 
+        // The import as the editor runs it: an image in, a package out, read back
+        // through the same pipeline the game's own packages go through.
+        var sandbox = Path.Combine(Path.GetTempPath(), $"ed8tex-{Guid.NewGuid():N}");
+        try
+        {
+            var imagePath = Path.Combine(sandbox, "source.png");
+            Directory.CreateDirectory(sandbox);
+            using (var bitmap = new Bitmap(48, 24))
+            {
+                for (var y = 0; y < bitmap.Height; y++)
+                {
+                    for (var x = 0; x < bitmap.Width; x++)
+                    {
+                        bitmap.SetPixel(x, y, Color.FromArgb(255 - x * 5, x * 5, y * 10, 40));
+                    }
+                }
+                bitmap.Save(imagePath, System.Drawing.Imaging.ImageFormat.Png);
+            }
+
+            var imported = EffTextureImport.Import(sandbox, imagePath, "I_EFTEX900", "ARGB8");
+            var package = reader.Read(imported.PackagePath);
+            var manifest = System.Text.Encoding.UTF8.GetString(
+                package.ReadEntry(package.Entries.First(entry =>
+                    entry.Name.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))));
+            var written = new PhyreD3D11TextureReader().Read(
+                "imported",
+                package.ReadEntry(package.Entries.First(entry =>
+                    entry.Name.EndsWith(".phyre", StringComparison.OrdinalIgnoreCase))));
+            if (!manifest.Contains("symbol=\"I_EFTEX900\"", StringComparison.Ordinal))
+            {
+                failures++;
+                Console.Error.WriteLine("FAIL the imported package declares another symbol");
+            }
+            if (written.Width != 48 || written.Height != 24 || written.Format != "ARGB8")
+            {
+                failures++;
+                Console.Error.WriteLine(
+                    $"FAIL the imported texture read back as {written.Width}x{written.Height}"
+                    + $" {written.Format}");
+            }
+            else
+            {
+                Console.WriteLine(
+                    $"  imported 48x24 -> {Path.GetFileName(imported.PackagePath)},"
+                    + $" read back {written.Width}x{written.Height} {written.Format},"
+                    + $" {written.MipCount} mips, symbol declared");
+            }
+        }
+        catch (Exception exception) when (exception is IOException or InvalidDataException
+            or NotSupportedException or ArgumentException or InvalidOperationException)
+        {
+            failures++;
+            Console.Error.WriteLine($"FAIL importing an image: {exception.Message}");
+        }
+        finally
+        {
+            if (Directory.Exists(sandbox)) Directory.Delete(sandbox, recursive: true);
+        }
+
         Console.WriteLine(
             (failures == 0 ? "PASS " : "FAIL ")
             + $"{rebuilt} of {packages.Length} effect texture packages rebuilt byte for byte"
@@ -1033,6 +1148,106 @@ internal static class Program
                 + $" {ScriptSceneStateResolver.ReadInstructionString(arguments[1])}"
                 + $" loop={(arguments.Count > 2 ? arguments[2].IntValue : -1)}");
         }
+    }
+
+    /// <summary>
+    /// Prints what a Phyre cluster is made of: its header, the type schema it
+    /// carries, the objects it holds and the fixups that tie them together. This
+    /// is the whole of what a writer would have to produce, so it is also how the
+    /// size of that job is measured.
+    /// </summary>
+    private static void DumpPhyreCluster(string path, bool withMembers)
+    {
+        var data = ReadPhyreEntry(path);
+        var cluster = new PhyreClusterReader().Read(data);
+        var metadata = cluster.Metadata;
+        var header = metadata.Header;
+        Console.WriteLine(
+            $"{Path.GetFileName(path)}: {data.Length} bytes,"
+            + $" platform {metadata.PlatformId}, {(metadata.IsBigEndian ? "big" : "little")}-endian");
+        Console.WriteLine(
+            $"  header: size {header.Size}, namespace {header.PackedNamespaceSize} bytes,"
+            + $" object data at {header.ObjectDataOffset}, {metadata.TotalDataSize} bytes of it");
+        Console.WriteLine(
+            $"  schema: {metadata.Types.Count} type names, {metadata.Classes.Count} classes,"
+            + $" {metadata.Classes.Sum(value => value.Members.Count)} members");
+        Console.WriteLine(
+            $"  group sizes: {metadata.InstanceGroups.Sum(value => (long)value.ObjectsSize)} of objects,"
+            + $" {metadata.InstanceGroups.Sum(value => (long)value.ArraysSize)} of arrays,"
+            + $" {metadata.InstanceGroups.Sum(value => (long)value.Size)} declared");
+        Console.WriteLine(
+            $"  objects: {metadata.InstanceGroups.Count} instance groups,"
+            + $" {metadata.InstanceGroups.Sum(value => (long)value.Count)} objects");
+        Console.WriteLine(
+            $"  fixups: {header.PointerFixupCount} pointer, {header.ArrayFixupCount} array,"
+            + $" {header.PointerArrayFixupCount} pointer-array ({header.PointersInArraysCount} pointers),"
+            + $" {header.UserFixupCount} user ({header.UserFixupDataSize} bytes)");
+        Console.WriteLine($"  gpu payload starts at {cluster.Fixups.VramDataOffset}");
+        // Every byte before the pixels has to belong to a structure a writer
+        // would produce; whatever is left over is what is still not understood.
+        // One 36-byte header per instance group, between the namespace and the
+        // object data.
+        var instanceHeaders = header.ObjectDataOffset - header.InstanceHeadersOffset;
+        var accounted = header.Size
+            + header.PackedNamespaceSize
+            + instanceHeaders
+            + metadata.TotalDataSize
+            + header.PointerFixupSize
+            + header.ArrayFixupSize
+            + header.PointerArrayFixupSize
+            + header.UserFixupCount * 12
+            + header.UserFixupDataSize
+            // The header-class section: one word per instance, sixteen bytes per
+            // child entry, between the user fixups and the fixup tables.
+            + header.HeaderClassInstanceCount * 4
+            + header.HeaderClassChildCount * 16;
+        Console.WriteLine(
+            $"  accounting: header {header.Size} + namespace {header.PackedNamespaceSize}"
+            + $" + instance headers {instanceHeaders} + objects {metadata.TotalDataSize}"
+            + $" + fixups {header.PointerFixupSize + header.ArrayFixupSize + header.PointerArrayFixupSize}"
+            + $" + user fixups {header.UserFixupCount * 12}+{header.UserFixupDataSize}"
+            + $" + header classes {header.HeaderClassInstanceCount * 4 + header.HeaderClassChildCount * 16}"
+            + $" = {accounted} of {cluster.Fixups.VramDataOffset}"
+            + $" ({cluster.Fixups.VramDataOffset - accounted} unexplained)");
+        foreach (var group in metadata.InstanceGroups)
+        {
+            Console.WriteLine(
+                $"    group {group.Index}: {group.Count} x {group.ClassName ?? "?"}"
+                + $" ({group.ObjectsSize} bytes of objects, {group.ArraysSize} of arrays)");
+        }
+        foreach (var fixup in cluster.Fixups.UserFixups.Take(8))
+        {
+            Console.WriteLine(
+                $"    user fixup {fixup.Id}: {fixup.TypeName ?? fixup.TypeId.ToString()}"
+                + $" = {fixup.Text ?? $"{fixup.Data.Length} bytes"}");
+        }
+        if (!withMembers) return;
+        foreach (var descriptor in metadata.Classes)
+        {
+            Console.WriteLine(
+                $"  class {descriptor.Index} {descriptor.Name}: {descriptor.Size} bytes,"
+                + $" align {descriptor.Alignment}, {descriptor.Members.Count} members");
+            foreach (var member in descriptor.Members)
+            {
+                Console.WriteLine(
+                    $"      +{member.ValueOffset,4} {member.Name} : {member.TypeName ?? member.TypeId.ToString()}"
+                    + $" ({member.Size} bytes{(member.IsDynamicArrayPointer ? ", dynamic array" : string.Empty)})");
+            }
+        }
+    }
+
+    /// <summary>Reads a .phyre from disk, or out of the package that holds it.</summary>
+    private static byte[] ReadPhyreEntry(string path)
+    {
+        if (!path.EndsWith(".pkg", StringComparison.OrdinalIgnoreCase))
+        {
+            return File.ReadAllBytes(path);
+        }
+        var archive = new PkgArchiveReader().Read(path);
+        var entry = archive.Entries.FirstOrDefault(value =>
+            value.Name.EndsWith(".phyre", StringComparison.OrdinalIgnoreCase))
+            ?? throw new InvalidDataException($"{Path.GetFileName(path)} holds no .phyre entry.");
+        return archive.ReadEntry(entry);
     }
 
     /// <summary>Plays one effect and prints the nodes it holds at a given time.</summary>

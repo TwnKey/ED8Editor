@@ -35,10 +35,12 @@
       "selectors": [],
       "read": [
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "Script source selector"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "Function name"
         }
       ],
       "verified": true
@@ -62,10 +64,12 @@
       "selectors": [],
       "read": [
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "Script source selector"
         },
         {
-          "t": "string"
+          "t": "string",
+          "name": "Function name"
         }
       ],
       "verified": true
@@ -8671,7 +8675,7 @@
       "verified": true
     },
     {
-      "name": "OP103_1",
+      "name": "Quest_SetJournalStage",
       "op": 103,
       "opname": "OP103",
       "selectors": [
@@ -8682,14 +8686,18 @@
       ],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "Quest ID",
+          "sem": "tbl",
+          "sem_arg": "t_quest:QSTitle"
         },
         {
           "t": "u8",
           "role": "peek"
         },
         {
-          "t": "u16"
+          "t": "u16",
+          "name": "Journal stage"
         }
       ],
       "verified": true
@@ -8719,7 +8727,7 @@
       "verified": true
     },
     {
-      "name": "OP103_3",
+      "name": "Quest_SetLifecycleFlags",
       "op": 103,
       "opname": "OP103",
       "selectors": [
@@ -8730,14 +8738,19 @@
       ],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "Quest ID",
+          "sem": "tbl",
+          "sem_arg": "t_quest:QSTitle"
         },
         {
           "t": "u8",
           "role": "peek"
         },
         {
-          "t": "u8"
+          "t": "u8",
+          "name": "Lifecycle flags",
+          "sem": "bitmask"
         }
       ],
       "verified": true
@@ -9578,13 +9591,16 @@
       "verified": true
     },
     {
-      "name": "OP114",
+      "name": "Shop_Open",
       "op": 114,
       "opname": "OP114",
       "selectors": [],
       "read": [
         {
-          "t": "s16"
+          "t": "s16",
+          "name": "Shop ID",
+          "sem": "tbl",
+          "sem_arg": "t_shop:ShopTitle"
         }
       ],
       "verified": true

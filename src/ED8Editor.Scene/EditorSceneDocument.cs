@@ -191,15 +191,29 @@ public sealed class EditorSceneDocument
             SceneElementKind.Prop when props.TryGetValue(selection.SourceIndex, out var prop)
                 => AttributeSet(prop.SourceAttributes, "asset", "name", "pos", "rot", "scl"),
             SceneElementKind.EntryVolume or SceneElementKind.GroupVolume when volumes.TryGetValue(key, out var volume)
-                => AttributeSet(volume.SourceAttributes, "name", "pos"),
+                => AttributeSet(spatialAttributeCodec.GetEditableAttributes(volume with
+                {
+                    Transform = ToMapTransform(volume.Transform, elements[key].Transform),
+                })),
             SceneElementKind.LookPoint when points.TryGetValue(selection.SourceIndex, out var point)
-                => AttributeSet(point.SourceAttributes, "name", "pos"),
+                => AttributeSet(spatialAttributeCodec.GetEditableAttributes(point with
+                {
+                    Position = elements[key].Transform.Position,
+                })),
             SceneElementKind.Camera when cameras.TryGetValue(selection.SourceIndex, out var camera)
-                => AttributeSet(camera.SourceAttributes, "no", "eye", "lookat"),
+                => AttributeSet(
+                    spatialAttributeCodec.GetEditableAttributes(FindCamera(selection)!),
+                    "no"),
             SceneElementKind.Sound when sounds.TryGetValue(selection.SourceIndex, out var sound)
-                => AttributeSet(sound.SourceAttributes, "seName", "sePosition"),
+                => AttributeSet(spatialAttributeCodec.GetEditableAttributes(sound with
+                {
+                    Position = elements[key].Transform.Position,
+                })),
             SceneElementKind.Light when lights.TryGetValue(selection.SourceIndex, out var light)
-                => AttributeSet(light.SourceAttributes, "pos"),
+                => AttributeSet(spatialAttributeCodec.GetEditableAttributes(light with
+                {
+                    Position = elements[key].Transform.Position,
+                })),
             _ => null,
         };
     }
@@ -223,40 +237,86 @@ public sealed class EditorSceneDocument
                 var afterVolume = spatialAttributeCodec.Apply(beforeVolume, attributes);
                 beforeAttributes = beforeVolume.SourceAttributes;
                 afterAttributes = afterVolume.SourceAttributes;
-                undo = () => volumes[key] = beforeVolume;
-                redo = () => volumes[key] = afterVolume;
+                undo = () =>
+                {
+                    volumes[key] = beforeVolume;
+                    SetElementName(key, beforeVolume.Name);
+                    SetElementTransform(key, SceneTransform.FromMapTransform(beforeVolume.Transform));
+                };
+                redo = () =>
+                {
+                    volumes[key] = afterVolume;
+                    SetElementName(key, afterVolume.Name);
+                    SetElementTransform(key, SceneTransform.FromMapTransform(afterVolume.Transform));
+                };
                 break;
             case SceneElementKind.LookPoint:
                 if (!points.TryGetValue(selection.SourceIndex, out var beforePoint)) return false;
                 var afterPoint = spatialAttributeCodec.Apply(beforePoint, attributes);
                 beforeAttributes = beforePoint.SourceAttributes;
                 afterAttributes = afterPoint.SourceAttributes;
-                undo = () => points[selection.SourceIndex] = beforePoint;
-                redo = () => points[selection.SourceIndex] = afterPoint;
+                undo = () =>
+                {
+                    points[selection.SourceIndex] = beforePoint;
+                    SetElementName(key, beforePoint.Name);
+                    SetElementTransform(key, IdentityAt(beforePoint.Position));
+                };
+                redo = () =>
+                {
+                    points[selection.SourceIndex] = afterPoint;
+                    SetElementName(key, afterPoint.Name);
+                    SetElementTransform(key, IdentityAt(afterPoint.Position));
+                };
                 break;
             case SceneElementKind.Camera:
                 if (!cameras.TryGetValue(selection.SourceIndex, out var beforeCamera)) return false;
                 var afterCamera = spatialAttributeCodec.Apply(beforeCamera, attributes);
                 beforeAttributes = beforeCamera.SourceAttributes;
                 afterAttributes = afterCamera.SourceAttributes;
-                undo = () => cameras[selection.SourceIndex] = beforeCamera;
-                redo = () => cameras[selection.SourceIndex] = afterCamera;
+                undo = () =>
+                {
+                    cameras[selection.SourceIndex] = beforeCamera;
+                    SetElementTransform(key, IdentityAt(beforeCamera.Eye));
+                };
+                redo = () =>
+                {
+                    cameras[selection.SourceIndex] = afterCamera;
+                    SetElementTransform(key, IdentityAt(afterCamera.Eye));
+                };
                 break;
             case SceneElementKind.Sound:
                 if (!sounds.TryGetValue(selection.SourceIndex, out var beforeSound)) return false;
                 var afterSound = spatialAttributeCodec.Apply(beforeSound, attributes);
                 beforeAttributes = beforeSound.SourceAttributes;
                 afterAttributes = afterSound.SourceAttributes;
-                undo = () => sounds[selection.SourceIndex] = beforeSound;
-                redo = () => sounds[selection.SourceIndex] = afterSound;
+                undo = () =>
+                {
+                    sounds[selection.SourceIndex] = beforeSound;
+                    SetElementName(key, beforeSound.SoundName);
+                    SetElementTransform(key, IdentityAt(beforeSound.Position));
+                };
+                redo = () =>
+                {
+                    sounds[selection.SourceIndex] = afterSound;
+                    SetElementName(key, afterSound.SoundName);
+                    SetElementTransform(key, IdentityAt(afterSound.Position));
+                };
                 break;
             case SceneElementKind.Light:
                 if (!lights.TryGetValue(selection.SourceIndex, out var beforeLight)) return false;
                 var afterLight = spatialAttributeCodec.Apply(beforeLight, attributes);
                 beforeAttributes = beforeLight.SourceAttributes;
                 afterAttributes = afterLight.SourceAttributes;
-                undo = () => lights[selection.SourceIndex] = beforeLight;
-                redo = () => lights[selection.SourceIndex] = afterLight;
+                undo = () =>
+                {
+                    lights[selection.SourceIndex] = beforeLight;
+                    SetElementTransform(key, IdentityAt(beforeLight.Position));
+                };
+                redo = () =>
+                {
+                    lights[selection.SourceIndex] = afterLight;
+                    SetElementTransform(key, IdentityAt(afterLight.Position));
+                };
                 break;
             default:
                 return false;
@@ -266,6 +326,17 @@ public sealed class EditorSceneDocument
         PushCommand(undo, redo);
         Changed?.Invoke(this, EventArgs.Empty);
         return true;
+    }
+
+    private void SetElementName(SceneElementKey key, string name)
+    {
+        if (elements.TryGetValue(key, out var state))
+            state.Selection = state.Selection with { Name = name };
+    }
+
+    private void SetElementTransform(SceneElementKey key, SceneTransform transform)
+    {
+        if (elements.TryGetValue(key, out var state)) state.Transform = transform;
     }
 
     public bool ApplyPropAttributes(SceneElementSelection selection, IReadOnlyDictionary<string, string> attributes)
@@ -440,7 +511,8 @@ public sealed class EditorSceneDocument
             throw new ArgumentException("Scene element does not exist.", nameof(selection));
         }
         var id = NextSourceIndex(selection.Kind);
-        var displayName = CreateUniqueElementName(selection.Kind, selection.Name);
+        var displayName = CreateUniqueElementName(
+            selection.Kind, sourceElement.Selection.Name);
         var duplicatedSelection = new SceneElementSelection(selection.Kind, id, displayName);
         var duplicatedElement = new ElementState(duplicatedSelection, sourceElement.Capabilities, sourceElement.Transform);
         Action addState;
@@ -789,7 +861,7 @@ public sealed class EditorSceneDocument
             Transform = transform;
         }
 
-        public SceneElementSelection Selection { get; }
+        public SceneElementSelection Selection { get; set; }
         public SceneTransformCapabilities Capabilities { get; }
         public SceneTransform Transform { get; set; }
 

@@ -1201,9 +1201,11 @@
       ]
     },
     "ShopTitle": {
+      "key": "shop_id",
+      "label": "name",
       "fields": [
         {
-          "name": "unknown_short",
+          "name": "shop_id",
           "type": "i16"
         },
         {
@@ -1218,6 +1220,23 @@
           "name": "unknown_data",
           "type": "bytes",
           "size": 8
+        }
+      ]
+    },
+    "ShopItem": {
+      "key": "item_id",
+      "fields": [
+        {
+          "name": "shop_id",
+          "type": "u16"
+        },
+        {
+          "name": "item_id",
+          "type": "u16"
+        },
+        {
+          "name": "unknown_u16",
+          "type": "u16"
         }
       ]
     },

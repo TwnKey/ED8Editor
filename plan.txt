@@ -1,30 +1,21 @@
 ﻿Aucune heuristique ou détection farfelue.
 
 Codex :
-- Implémenter les "entités" cad spawn les acteurs, leur attribuer une id dans une liste d'entité qui se maintient à jour selon la position dans la fonction (depuis le départ de la fonction), etc, comme le fait le script, de manière similaire à la caméra cad que depuis le départ de la fonction courante, retracer les spawn/mouvements des acteurs pour qu'ils soient positionnés correctement par rapport à la caméra (de cette façon l'utilisateur saura cadrer la caméra dans l'éditeur)
-de cette façon aussi on pourra remplir les champs avec sem = entity pour qu'il pointe vers l'entité avec l'id correspondante, et permettre à l'utilisateur de sélectionner d'autres entités dans la liste
-- Vérifier l'implémentation des commandes op45 (caméra). L'idée est de reproduire les plans statiques de la caméra (pas l'interpolation)
-et facilement permettre à l'utilisateur de les modifier avec la caméra de l'éditeur.
-- implémenter correctement le rempalcement des valeurs par les propriétés associées de la caméra courante
-- voir ce qui manque pour gérer les crafts (des fichiers non liés à une map, si pas de map on charge une scène avec un ground de debug. et si c'est un fichier ani on charge le personnage dont c'est le fichier ani.
-- Impémenter les animations faciales. (se baser sur : https://github.com/Trails-Research-Group/Doc/blob/main/tutorials/Animate-faces-in-late-Cold-Steels.md)
-- Ajouter la possibilité d'ajouter ses propres props custom, avec repacking en nouveau pkg automatisé
-- Ajouter la possibilité d'importer ses propres personnages (modèle + skinning / transfert de weight + nouveau script ani/entrées tables) :
+- voir pour faire un loader de fichiers 3D pour les modèles custom, qui puisse partir de sources différentes (par ex un seul fichier fbx qui contient tout, ou un fichier obj + un fichier d'anim + des fichiers de textures, idk. se concentrer sur le fbx dans un premier temps. un exemple est ici :"C:\Users\Administrator\Desktop\Megidramon X") L'idée est qu'atm Claude est en train de bosser sur l'écriture de dae.phyre / dds.phyre, et nous on écrit la logique pour partir d'un modèle externe et fournir à claude des entrées adaptées pour son convertisseur
+- Voir pour comprendre comment marchent les boutiques et si on peut les rendre éditables facilement.
+- Voir pour les bancs de poisson comment ça marche, comment on définit leur position, les afficher dans le viewport...
+- Voir où on associe un script "battle" à un monstre/encounter/que sais je. en gros les scripts battle sont la logique d'un combat a priori, on veut pouvoir créer nos propres scénarios de combat et les relier à un enemi créé (pertinent dans l'éditeur d'enemi ? ou alors lié à un encounter (plusieurs ennemis)?).
 
-- Ajouter un moyen de faire des quêtes custom de A à Z :
-
-- Ajouter un moyen de gérer facilement les fichiers d'un mod à part du jeu de base pour facilement bundle/distribuer (avoir une archive spéciale ?) :
 PLUS TARD:
 - "Le shader Phyre complet n’est pas encore activé : il manque le binding vérifié de tous les paramètres moteur ($Globals, brouillard, caméra, éclairage…)."
 - Implémenter les lumières et ombres (comme dans le jeu ?)
 - Implémenter la météo ? (sera nécessaire si settée par le script)
 
 Claude :
-- Rendre encore plus intuitif l'éditeur de scripts (atm y a des branches dans tous les sens)
-- Virer les op0 de l'éditeur de script quand ils sont après un op1 (c'est du padding, pas des instructions)
-- Trouver une solution pour les cas où on a plusieurs branches, si on veut récupérer l'état de la camera (quel branche on prend ?)
-une solution qui soit simple pour l'utilisateur.
-- Gestion des flags (pour les jump conditionnels) : traquer la valeur des flags, que ça soit aussi simple pour l'utilisateur
+- Implémenter la conversion moddèle 3D custom -> dae.phyre, idem textures, sans gabarit ou heuristique
+- Implémenter deux modes (animations custom vs transfert des animations du jeu d'origine sur notre nouveau modèle importé), les rendre le plus ergonomique possible
+- Voir pour facilement ajouter des armes custom.
+- Voir pour idéalement être capable d'écrire nos propres shaders HLSL et les faire lire par le jeu (donc les compiler phyre a priori).
 
 
 ================================================================================
@@ -622,6 +613,42 @@ implémenté du tout.
 [?]      Les pauses restent « vides » dans l'éditeur : dans le jeu elles laissent
          lire les dialogues (OP26 attend une entrée), que la preview n'affiche
          pas. D'où la vitesse réglable et « ⏭ Next command ».
+
+--- ÉCRIRE DU PHYRE SANS GABARIT (étude) ---
+[OK]     Étude complète : doc/phyre_ecriture_faisabilite.md, mesurée avec le
+         nouvel outil --dump-phyre <fichier|paquet> [--members].
+         Résultat central : en additionnant les sections que nos lecteurs
+         décodent déjà (en-tête, namespace empaqueté, en-têtes de groupes,
+         données d'objets, user fixups, section « header class », tables de
+         fixups), on retombe EXACTEMENT sur le début de la charge GPU —
+         0 octet inexpliqué, aussi bien sur une texture (2 653 o de conteneur)
+         que sur un modèle de personnage (172 733 o). Il n'y a donc aucune zone
+         opaque : un écrivain est l'inverse d'un code que nous possédons, et il
+         se prouve en ré-écrivant un fichier du jeu à l'octet près.
+         Texture = 2 objets (PAssetReference + PTexture2D), 12 classes de schéma
+         transcriptibles depuis les macros PHYRE_BIND du SDK -> faisable sans
+         gabarit, ~600-900 lignes.
+         Modèle = 2 877 objets, 127 classes, 3 069 fixups, dont l'écrasante
+         majorité est de la plomberie de shaders (874 PSamplerState,
+         676 PShaderParameterDefinition, 26 PParameterBuffer) ; et le paquet
+         porte 14 shaders compilés ed8.fx#<hash> de ~1,1 Mo. Le conteneur ne
+         pose pas de problème nouveau ; ce sont les VALEURS des paramètres de
+         shader qui bloquent (le README d'ED8_12AssetTool le dit lui-même).
+         Ordre proposé : écrivain de conteneur -> round-trip octet pour octet
+         sur les 174 textures -> round-trip sur les modèles -> table de schéma
+         depuis le SDK -> remplacement de géométrie -> matériaux.
+[OK]     FAIT depuis : écrivain de conteneur complet (src/ED8Editor.Phyre/
+         Authoring/, boîte noire + sonde tools/PhyreAuthoringProbe hors
+         solution). 617 clusters de 40 paquets de personnages et 174 textures
+         reconstruits À L'OCTET PRÈS depuis ce qu'ils contiennent ; une texture
+         s'écrit ENTIÈREMENT depuis une image (schéma des 12 classes en code) et
+         l'import de l'éditeur y est branché — ce qui a corrigé au passage le
+         manifeste, qui déclarait le symbole du paquet gabarit.
+         Restent, pour un modèle neuf : les données d'objets (disposition des
+         classes de géométrie) et la section header-class. Mesuré : la charge GPU
+         d'un modèle n'est QUE ses tampons (550 556 octets sur 550 562, le reste
+         est de l'alignement), donc le remplacement de géométrie ne demande pas
+         de toucher aux matériaux.
 
 --- GESTION DES FICHIERS DE MOD ---
 [OK]     Projet de mod (.ed8mod, JSON) + magasin local à côté du projet :

@@ -1,6 +1,7 @@
 ﻿using System.Globalization;
 using System.Numerics;
 using System.Text;
+using ED8Editor.Application;
 using ED8Editor.Decompiler;
 using ED8Editor.Tables;
 
@@ -118,6 +119,14 @@ public sealed class ScriptEditorForm : Form
     private readonly ToolStripButton moveUpButton = new("Move up");
     private readonly ToolStripButton moveDownButton = new("Move down");
     private readonly ToolStripButton deleteInstructionButton = new("Delete");
+    private readonly ToolStripButton copyInstructionsButton = new("Copy")
+    {
+        ToolTipText = "Copy the selected instruction blocks (Ctrl+C)",
+    };
+    private readonly ToolStripButton pasteInstructionsButton = new("Paste after")
+    {
+        ToolTipText = "Paste copied instructions after the primary selected block (Ctrl+V)",
+    };
     private readonly ToolStripButton placeFieldMonsterButton = new("Place field monster…")
     {
         ToolTipText = "Duplicate a known field-monster instruction and place it on the map",
@@ -152,6 +161,7 @@ public sealed class ScriptEditorForm : Form
     private DecompiledScript? script;
     private int selectedFunctionIndex = -1;
     private int? selectedInstructionIndex;
+    private readonly SortedSet<int> selectedInstructionIndices = new();
     private bool suppressInstructionSelected;
     private bool suppressFunctionSelected;
     private Form? activeInstructionEditor;
@@ -159,23 +169,29 @@ public sealed class ScriptEditorForm : Form
     private readonly ScriptEditorSemanticContext? semanticContext;
     private readonly string? instructionDefinitionsPath;
     private readonly IReadOnlyList<MonsterTableChoice> monsterChoices;
+    private readonly IReadOnlyList<BattleMapAssetEntry> battleMapAssets;
+    private readonly Func<IWin32Window, BattleMapAssetEntry?>? createBattleMapAsset;
     private readonly Dictionary<string, Dictionary<int, Dictionary<string, string>>> bitmaskDefs = new();
 
     public ScriptEditorForm(
         Func<Cs1TableReference, IReadOnlyList<Cs1TableChoice>>? tableChoices = null,
         ScriptEditorSemanticContext? semanticContext = null,
         string? instructionDefinitionsPath = null,
-        IReadOnlyList<MonsterTableChoice>? monsterChoices = null)
+        IReadOnlyList<MonsterTableChoice>? monsterChoices = null,
+        IReadOnlyList<BattleMapAssetEntry>? battleMapAssets = null,
+        Func<IWin32Window, BattleMapAssetEntry?>? createBattleMapAsset = null)
     {
         this.tableChoices = tableChoices;
         this.semanticContext = semanticContext;
         this.instructionDefinitionsPath = instructionDefinitionsPath;
         this.monsterChoices = monsterChoices ?? Array.Empty<MonsterTableChoice>();
+        this.battleMapAssets = battleMapAssets ?? Array.Empty<BattleMapAssetEntry>();
+        this.createBattleMapAsset = createBattleMapAsset;
         LoadBitmaskDefs();
         KeyPreview = true;
         BuildUi();
         blocks.MoveRequested += (from, to) => MoveInstruction(from, to);
-        blocks.InstructionSelected += index => SelectDrawnInstruction(index);
+        blocks.InstructionSelectionChanged += SelectDrawnInstructions;
         blocks.InstructionActivated += index => ActivateDrawnInstruction(index);
         blocks.JumpEditRequested += (instruction, argument) => OpenJumpEditor(instruction, argument);
         Deactivate += (_, _) => ReleaseViewportKeys();
@@ -214,6 +230,7 @@ public sealed class ScriptEditorForm : Form
     public event Action<string>? FileSaved;
 
     public DecompiledScript? CurrentScript => script;
+    public string? CurrentPath => document?.SourcePath;
 
     public void OpenCreateMonstersEditor()
     {
@@ -231,7 +248,11 @@ public sealed class ScriptEditorForm : Form
             return;
         }
         using var editor = new TableEditorForm(
-            document, function.Index, monsterChoices);
+            document,
+            function.Index,
+            monsterChoices,
+            battleMapAssets: battleMapAssets,
+            createBattleMapAsset: createBattleMapAsset);
         editor.TableChanged += (_, _) =>
             RefreshDocument(selectedFunctionIndex, selectedInstructionIndex);
         editor.ShowDialog(this);
@@ -240,12 +261,89 @@ public sealed class ScriptEditorForm : Form
     public void StartFieldMonsterPlacement()
     {
         if (script is null || document is null) return;
-        if (selectedFunctionIndex < 0)
-        {
-            selectedFunctionIndex = script.Functions
-                .FirstOrDefault(value => value.IsCode)?.Index ?? -1;
-        }
         BeginFieldMonsterPlacement();
+    }
+
+    public void EditEncounter(int tableFunctionIndex, int encounterIndex)
+    {
+        if (document is null || script is null) return;
+        var function = script.Functions.ElementAtOrDefault(tableFunctionIndex);
+        if (function?.Table is null
+            || !CreateMonstersTableReader.TryRead(function.Table, out var table)
+            || table is null
+            || encounterIndex < 0
+            || encounterIndex >= table.Encounters.Count)
+        {
+            return;
+        }
+        using var editor = new TableEditorForm(
+            document,
+            tableFunctionIndex,
+            monsterChoices,
+            encounterIndex,
+            battleMapAssets,
+            createBattleMapAsset);
+        editor.TableChanged += (_, _) =>
+            RefreshDocument(selectedFunctionIndex, selectedInstructionIndex);
+        editor.ShowDialog(this);
+        RefreshDocument(selectedFunctionIndex, selectedInstructionIndex);
+    }
+
+    public void CreateEncounter()
+    {
+        if (document is null || script is null) return;
+        var tables = EncounterTables();
+        var tableChoice = ChooseItem(
+            "New encounter",
+            "Create the encounter in this battle table:",
+            tables);
+        if (tableChoice is null) return;
+        var encounterId = tableChoice.Table.Encounters.Count == 0
+            ? 0
+            : tableChoice.Table.Encounters.Max(value => value.Id) + 1;
+        var previousFunction = selectedFunctionIndex;
+        try
+        {
+            CreateMonstersTableEditor.AddEncounter(
+                document,
+                tableChoice.FunctionIndex,
+                tableChoice.Table.Encounters.Count,
+                encounterId,
+                Array.Empty<string>(),
+                Array.Empty<int>());
+            RefreshDocument(previousFunction, selectedInstructionIndex);
+            EditEncounter(
+                tableChoice.FunctionIndex,
+                tableChoice.Table.Encounters.Count);
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+        {
+            MessageBox.Show(
+                this, exception.Message, "Cannot create encounter",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    public void InstantiateEncounter(int tableFunctionIndex, int encounterIndex)
+    {
+        if (document is null || script is null) return;
+        var choice = EncounterTables().FirstOrDefault(value =>
+            value.FunctionIndex == tableFunctionIndex);
+        var encounter = choice?.Table.Encounters.ElementAtOrDefault(encounterIndex);
+        if (choice is null || encounter is null) return;
+        BeginEncounterPlacement(choice, encounter);
+    }
+
+    public void GoToInstruction(int functionIndex, int instructionIndex)
+    {
+        if (script is null) return;
+        var function = script.Functions.ElementAtOrDefault(functionIndex);
+        var instruction = function?.Instructions.FirstOrDefault(value =>
+            value.Index == instructionIndex);
+        if (function is null || instruction is null || !function.IsCode) return;
+        PopulateScenes(functionIndex);
+        SelectInstruction(function, instruction);
+        blocks.ScrollInstructionIntoView(instructionIndex);
     }
 
     public void DeleteFieldMonster(ScriptMonsterSpawn spawn)
@@ -377,6 +475,18 @@ public sealed class ScriptEditorForm : Form
             ShortcutKeys = Keys.Control | Keys.Shift | Keys.S,
         });
         menu.Items.Add(fileMenu);
+        var editMenu = new ToolStripMenuItem("Edit");
+        editMenu.DropDownItems.Add(new ToolStripMenuItem(
+            "Copy selected blocks", null, (_, _) => CopySelectedInstructions())
+        {
+            ShortcutKeys = Keys.Control | Keys.C,
+        });
+        editMenu.DropDownItems.Add(new ToolStripMenuItem(
+            "Paste after selected block", null, (_, _) => PasteInstructionsAfterSelection())
+        {
+            ShortcutKeys = Keys.Control | Keys.V,
+        });
+        menu.Items.Add(editMenu);
 
         editorTools.Items.Add(new ToolStripLabel("Instruction:"));
         editorTools.Items.Add(instructionTypes);
@@ -386,6 +496,8 @@ public sealed class ScriptEditorForm : Form
         editorTools.Items.Add(moveUpButton);
         editorTools.Items.Add(moveDownButton);
         editorTools.Items.Add(deleteInstructionButton);
+        editorTools.Items.Add(copyInstructionsButton);
+        editorTools.Items.Add(pasteInstructionsButton);
         editorTools.Items.Add(placeFieldMonsterButton);
         editorTools.Items.Add(new ToolStripSeparator());
         editorTools.Items.Add(playFunctionButton);
@@ -414,8 +526,10 @@ public sealed class ScriptEditorForm : Form
         };
         deleteInstructionButton.Click += (_, _) =>
         {
-            if (GetSelectedInstruction() is { } instruction) RemoveInstruction(instruction);
+            RemoveSelectedInstructions();
         };
+        copyInstructionsButton.Click += (_, _) => CopySelectedInstructions();
+        pasteInstructionsButton.Click += (_, _) => PasteInstructionsAfterSelection();
         placeFieldMonsterButton.Click += (_, _) => BeginFieldMonsterPlacement();
         blockSearch.KeyDown += (_, eventArgs) =>
         {
@@ -603,6 +717,62 @@ public sealed class ScriptEditorForm : Form
     public bool ConfirmClose() => ConfirmCloseDocument();
 
     public bool SaveCurrent(bool saveAs = false) => Save(saveAs);
+
+    public IReadOnlyList<FishingSpotScriptBinding> FindFishingSpotBindings(string functionName) =>
+        script is null
+            ? Array.Empty<FishingSpotScriptBinding>()
+            : FishingSpotScriptBinding.Read(script, functionName);
+
+    public IReadOnlyList<ShopScriptBinding> FindShopBindings(string functionName) =>
+        script is null
+            ? Array.Empty<ShopScriptBinding>()
+            : ShopScriptBinding.Read(script, functionName);
+
+    public void UpdateShopBinding(ShopScriptBinding binding, int shopId)
+    {
+        ArgumentNullException.ThrowIfNull(binding);
+        if (document is null || script is null)
+            throw new InvalidOperationException("No script is loaded.");
+        var function = script.Functions.FirstOrDefault(value =>
+            value.Index == binding.FunctionIndex);
+        var instruction = function?.Instructions.FirstOrDefault(value =>
+            value.Index == binding.InstructionIndex);
+        if (instruction is null || instruction.Opcode != ShopScriptBinding.ShopOpcode)
+            throw new InvalidOperationException("The linked OP114 no longer exists.");
+        var argument = instruction.Arguments.FirstOrDefault(value =>
+            value.Kind == "scalar")
+            ?? throw new InvalidDataException("The linked OP114 has no scalar shop ID.");
+        document.SetInteger(
+            binding.FunctionIndex,
+            binding.InstructionIndex,
+            argument.Index,
+            shopId);
+        RefreshDocument(binding.FunctionIndex, binding.InstructionIndex);
+    }
+
+    public void UpdateFishingSpotBinding(
+        FishingSpotScriptBinding original,
+        FishingSpotScriptBinding updated)
+    {
+        ArgumentNullException.ThrowIfNull(original);
+        ArgumentNullException.ThrowIfNull(updated);
+        if (document is null || script is null)
+            throw new InvalidOperationException("No script is loaded.");
+        if (original.FunctionIndex != updated.FunctionIndex
+            || original.InstructionIndex != updated.InstructionIndex
+            || original.PayloadArgumentIndex != updated.PayloadArgumentIndex)
+        {
+            throw new ArgumentException(
+                "A fishing payload update cannot change its source instruction.",
+                nameof(updated));
+        }
+        document.SetBytes(
+            original.FunctionIndex,
+            original.InstructionIndex,
+            original.PayloadArgumentIndex,
+            updated.EncodePayload());
+        RefreshDocument(original.FunctionIndex, original.InstructionIndex);
+    }
 
     internal void VerifyEmbeddedInteractionSmoke()
     {
@@ -930,13 +1100,23 @@ public sealed class ScriptEditorForm : Form
     }
 
     /// <summary>Selection raised by the canvas, which knows indices, not models.</summary>
-    private void SelectDrawnInstruction(int index)
+    private void SelectDrawnInstructions(IReadOnlyList<int> indices, int? primaryIndex)
     {
-        if (script is null || selectedFunctionIndex < 0) return;
+        selectedInstructionIndices.Clear();
+        foreach (var selectedIndex in indices) selectedInstructionIndices.Add(selectedIndex);
+        if (script is null || selectedFunctionIndex < 0 || primaryIndex is not { } index)
+        {
+            selectedInstructionIndex = null;
+            SetSelectedInstructionToolsEnabled(-1, 0);
+            return;
+        }
         var function = script.Functions.FirstOrDefault(value => value.Index == selectedFunctionIndex);
         var instruction = function?.Instructions.FirstOrDefault(value => value.Index == index);
         if (function is null || instruction is null) return;
-        SelectInstruction(function, instruction);
+        selectedInstructionIndex = instruction.Index;
+        SetSelectedInstructionToolsEnabled(instruction.Index, function.Instructions.Count);
+        if (!suppressInstructionSelected)
+            InstructionSelected?.Invoke(function, instruction);
     }
 
     private void ActivateDrawnInstruction(int index)
@@ -950,6 +1130,8 @@ public sealed class ScriptEditorForm : Form
 
     private void SelectInstruction(DecompiledFunction function, DecompiledInstruction instruction)
     {
+        selectedInstructionIndices.Clear();
+        selectedInstructionIndices.Add(instruction.Index);
         selectedInstructionIndex = instruction.Index;
         blocks.SelectInstruction(instruction.Index);
         SetSelectedInstructionToolsEnabled(instruction.Index, function.Instructions.Count);
@@ -966,6 +1148,7 @@ public sealed class ScriptEditorForm : Form
 
     private void ClearInstructionInspector()
     {
+        selectedInstructionIndices.Clear();
         selectedInstructionIndex = null;
         SetSelectedInstructionToolsEnabled(-1, 0);
     }
@@ -990,6 +1173,21 @@ public sealed class ScriptEditorForm : Form
         if (message.Msg is KeyDownMessage or SystemKeyDownMessage && ForwardViewportKeyDown(key)) return true;
         if (message.Msg is KeyUpMessage or SystemKeyUpMessage && ForwardViewportKeyUp(key)) return true;
         return base.ProcessKeyPreview(ref message);
+    }
+
+    protected override bool ProcessCmdKey(ref Message message, Keys keyData)
+    {
+        if (!IsTextEntryFocused() && keyData == (Keys.Control | Keys.C))
+        {
+            CopySelectedInstructions();
+            return true;
+        }
+        if (!IsTextEntryFocused() && keyData == (Keys.Control | Keys.V))
+        {
+            PasteInstructionsAfterSelection();
+            return true;
+        }
+        return base.ProcessCmdKey(ref message, keyData);
     }
 
     private void OpenJumpEditor(int instructionIndex, int argumentIndex)
@@ -1103,9 +1301,13 @@ public sealed class ScriptEditorForm : Form
     {
         var selected = index >= 0 && index < instructionCount;
         addAfterButton.Enabled = selected;
-        moveUpButton.Enabled = selected && index > 0;
-        moveDownButton.Enabled = selected && index + 1 < instructionCount;
+        moveUpButton.Enabled = selectedInstructionIndices.Count == 1 && selected && index > 0;
+        moveDownButton.Enabled = selectedInstructionIndices.Count == 1
+            && selected && index + 1 < instructionCount;
         deleteInstructionButton.Enabled = selected;
+        copyInstructionsButton.Enabled = selectedInstructionIndices.Count > 0;
+        pasteInstructionsButton.Enabled = selected
+            && document is { InstructionClipboardCount: > 0 };
     }
 
     private Control BuildScalarEditor(DecompiledInstruction instruction, IReadOnlyList<InstructionArgument> arguments)
@@ -1988,6 +2190,143 @@ public sealed class ScriptEditorForm : Form
         return name.Length == 0 ? null : name;
     }
 
+    private string? PromptForFunctionName(
+        string title,
+        string prompt,
+        string suggestedName)
+    {
+        using var dialog = new Form
+        {
+            Text = title,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterParent,
+            MinimizeBox = false,
+            MaximizeBox = false,
+            ClientSize = new Size(440, 120),
+        };
+        var label = new Label
+        {
+            AutoSize = true,
+            Left = 12,
+            Top = 14,
+            Text = prompt,
+        };
+        var input = new TextBox
+        {
+            Left = 12,
+            Top = 40,
+            Width = 416,
+            Text = suggestedName,
+        };
+        var ok = new Button
+        {
+            Text = "Create",
+            DialogResult = DialogResult.OK,
+            Left = 272,
+            Top = 74,
+            Width = 75,
+        };
+        var cancel = new Button
+        {
+            Text = "Cancel",
+            DialogResult = DialogResult.Cancel,
+            Left = 353,
+            Top = 74,
+            Width = 75,
+        };
+        dialog.Controls.AddRange(new Control[] { label, input, ok, cancel });
+        dialog.AcceptButton = ok;
+        dialog.CancelButton = cancel;
+        if (dialog.ShowDialog(this) != DialogResult.OK) return null;
+        var name = input.Text.Trim();
+        return name.Length == 0 ? null : name;
+    }
+
+    private T? ChooseItem<T>(
+        string title,
+        string prompt,
+        IReadOnlyList<T> choices)
+        where T : class
+    {
+        if (choices.Count == 0)
+        {
+            MessageBox.Show(
+                this,
+                "No compatible item exists in the current script.",
+                title,
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return null;
+        }
+        if (choices.Count == 1) return choices[0];
+        using var dialog = new Form
+        {
+            Text = title,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterParent,
+            MinimizeBox = false,
+            MaximizeBox = false,
+            ClientSize = new Size(560, 125),
+        };
+        var label = new Label
+        {
+            Dock = DockStyle.Top,
+            Height = 28,
+            Text = prompt,
+            Padding = new Padding(10, 7, 0, 0),
+        };
+        var list = new ComboBox
+        {
+            Dock = DockStyle.Top,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+        };
+        list.Items.AddRange(choices.Cast<object>().ToArray());
+        var ok = new Button
+        {
+            Text = "OK",
+            DialogResult = DialogResult.OK,
+            AutoSize = true,
+        };
+        var cancel = new Button
+        {
+            Text = "Cancel",
+            DialogResult = DialogResult.Cancel,
+            AutoSize = true,
+        };
+        var buttons = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 42,
+            FlowDirection = FlowDirection.RightToLeft,
+            Padding = new Padding(6),
+        };
+        buttons.Controls.Add(cancel);
+        buttons.Controls.Add(ok);
+        dialog.Controls.Add(buttons);
+        dialog.Controls.Add(list);
+        dialog.Controls.Add(label);
+        dialog.AcceptButton = ok;
+        dialog.CancelButton = cancel;
+        if (list.Items.Count > 0) list.SelectedIndex = 0;
+        return dialog.ShowDialog(this) == DialogResult.OK
+            ? list.SelectedItem as T
+            : null;
+    }
+
+    private IReadOnlyList<FieldMonsterTableChoice> EncounterTables()
+    {
+        if (script is null) return Array.Empty<FieldMonsterTableChoice>();
+        return script.Functions
+            .Where(value => value.Table is not null
+                && CreateMonstersTableReader.TryRead(value.Table, out _))
+            .Select(value =>
+            {
+                CreateMonstersTableReader.TryRead(value.Table!, out var table);
+                return new FieldMonsterTableChoice(value.Index, value.Name, table!);
+            })
+            .ToArray();
+    }
+
     private void InsertInstruction(int? position)
     {
         if (document is null || selectedFunctionIndex < 0) return;
@@ -2025,20 +2364,94 @@ public sealed class ScriptEditorForm : Form
         RunEdit(() => document!.MoveInstruction(selectedFunctionIndex, from, to), to);
     }
 
-    private void RemoveInstruction(DecompiledInstruction instruction)
+    private void CopySelectedInstructions()
     {
-        var result = MessageBox.Show(this, $"Delete #{instruction.Index} {instruction.Name}?",
-            "Delete instruction", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+        if (document is null || selectedFunctionIndex < 0
+            || selectedInstructionIndices.Count == 0)
+        {
+            return;
+        }
+        try
+        {
+            document.CopyInstructions(selectedFunctionIndex, selectedInstructionIndices);
+            pasteInstructionsButton.Enabled = selectedInstructionIndex is not null;
+            statusLabel.Text = $"Copied {selectedInstructionIndices.Count} instruction block(s).";
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+        {
+            MessageBox.Show(
+                this, exception.Message, "Cannot copy instructions",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private void PasteInstructionsAfterSelection()
+    {
+        if (document is null || script is null || selectedFunctionIndex < 0
+            || selectedInstructionIndex is not { } selected)
+        {
+            return;
+        }
+        var insertion = selected + 1;
+        try
+        {
+            var count = document.PasteInstructions(selectedFunctionIndex, insertion);
+            RefreshDocument(selectedFunctionIndex, selectedInstruction: null);
+            var pasted = Enumerable.Range(insertion, count).ToArray();
+            selectedInstructionIndices.Clear();
+            foreach (var index in pasted) selectedInstructionIndices.Add(index);
+            selectedInstructionIndex = pasted[^1];
+            blocks.SelectInstructions(pasted, selectedInstructionIndex);
+            SetSelectedInstructionToolsEnabled(
+                selectedInstructionIndex.Value,
+                script!.Functions[selectedFunctionIndex].Instructions.Count);
+            var function = script.Functions[selectedFunctionIndex];
+            var instruction = function.Instructions[selectedInstructionIndex.Value];
+            if (!suppressInstructionSelected)
+                InstructionSelected?.Invoke(function, instruction);
+            blocks.ScrollInstructionIntoView(selectedInstructionIndex.Value);
+            statusLabel.Text = $"Pasted {count} instruction block(s) after #{selected}.";
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException)
+        {
+            MessageBox.Show(
+                this, exception.Message, "Cannot paste instructions",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private void RemoveSelectedInstructions()
+    {
+        if (document is null || script is null || selectedFunctionIndex < 0
+            || selectedInstructionIndices.Count == 0)
+        {
+            return;
+        }
+        var selected = selectedInstructionIndices.ToArray();
+        var description = selected.Length == 1
+            ? $"Delete #{selected[0]} {script.Functions[selectedFunctionIndex].Instructions[selected[0]].Name}?"
+            : $"Delete the {selected.Length} selected instruction blocks?";
+        var result = MessageBox.Show(this, description,
+            "Delete instructions", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
         if (result != DialogResult.Yes) return;
-        RunEdit(() => document!.RemoveInstruction(selectedFunctionIndex, instruction.Index),
-            Math.Max(0, instruction.Index - 1));
+        RunEdit(
+            () =>
+            {
+                foreach (var index in selected.OrderByDescending(value => value))
+                    document.RemoveInstruction(selectedFunctionIndex, index);
+            },
+            Math.Max(0, selected.Min() - 1));
     }
 
     private void ShowTable(TreeNode node)
     {
         if (document is null || node.Tag is not DecompiledFunction { Table: not null } function) return;
         using var editor = new TableEditorForm(
-            document, function.Index, monsterChoices);
+            document,
+            function.Index,
+            monsterChoices,
+            battleMapAssets: battleMapAssets,
+            createBattleMapAsset: createBattleMapAsset);
         editor.TableChanged += (_, _) => RefreshDocument(selectedFunctionIndex, selectedInstructionIndex);
         editor.ShowDialog(this);
     }
@@ -2146,76 +2559,128 @@ public sealed class ScriptEditorForm : Form
 
     private void BeginFieldMonsterPlacement()
     {
-        if (document is null || script is null || selectedFunctionIndex < 0
+        if (document is null || script is null) return;
+        var table = ChooseItem(
+            "Instantiate encounter",
+            "Battle table:",
+            EncounterTables());
+        if (table is null) return;
+        var encounter = ChooseItem(
+            "Instantiate encounter",
+            "Encounter:",
+            table.Table.Encounters.Select(value =>
+                new EncounterChoice(value.Index, value, MonsterName)).ToArray());
+        if (encounter is null) return;
+        BeginEncounterPlacement(table, encounter.Encounter);
+    }
+
+    private void BeginEncounterPlacement(
+        FieldMonsterTableChoice table,
+        CreateMonstersEncounter encounter)
+    {
+        if (document is null || script is null
             || semanticContext?.BeginSurfacePositionCapture is not { } beginCapture)
         {
             return;
         }
-        var templates = ScriptMonsterSpawnReader.Read(script);
-        if (templates.Count == 0)
+        var existingSpawns = ScriptMonsterSpawnReader.Read(script);
+        var preferredAssets = encounter.MonsterAssets
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var assets = preferredAssets
+            .Select(ResolveMonsterChoice)
+            .Concat(monsterChoices)
+            .DistinctBy(value => value.AssetId, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (assets.Length == 0)
         {
             MessageBox.Show(
                 this,
-                "This script has no field-monster Entity_Spawn instruction to use as an exact template.",
-                "Place field monster",
+                "No monster model is available. Add a monster to the encounter "
+                + "or load t_mons before instantiating it.",
+                "Cannot instantiate encounter",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
             return;
         }
-        var tables = script.Functions
-            .Where(value => value.Table is not null
-                && CreateMonstersTableReader.TryRead(value.Table, out _))
-            .Select(value =>
-            {
-                CreateMonstersTableReader.TryRead(value.Table!, out var table);
-                return new FieldMonsterTableChoice(value.Index, value.Name, table!);
-            })
+        var targetFunctions = script.Functions
+            .Where(value => value.IsCode)
+            .Select(value => new EncounterTargetChoice(
+                value.Index,
+                $"{value.Name} ({value.Instructions.Count} instructions)"))
             .ToArray();
-        if (tables.Length == 0) return;
+        if (targetFunctions.Length == 0)
+        {
+            MessageBox.Show(
+                this,
+                "The script contains no code function that can receive Entity_Spawn.",
+                "Cannot instantiate encounter",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+        if (encounter.Id is < byte.MinValue or > byte.MaxValue)
+        {
+            MessageBox.Show(
+                this,
+                $"Encounter ID {encounter.Id} cannot be encoded in OP19's u8 operand.",
+                "Cannot instantiate encounter",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
 
+        var nextEntityId = existingSpawns.Count == 0
+            ? 2000
+            : Math.Clamp(existingSpawns.Max(value => value.EntityId) + 1, short.MinValue, short.MaxValue);
+        var defaults = FieldMonsterSpawnParameters.CreateDefault(
+            nextEntityId,
+            assets[0].AssetId,
+            table.FunctionIndex,
+            encounter.Id);
         using var dialog = new Form
         {
-            Text = "Place field monster",
+            Text = $"Instantiate encounter {encounter.Id}",
             StartPosition = FormStartPosition.CenterParent,
-            ClientSize = new Size(520, 260),
+            ClientSize = new Size(650, 590),
             MinimizeBox = false,
             MaximizeBox = false,
             ShowInTaskbar = false,
             FormBorderStyle = FormBorderStyle.FixedDialog,
         };
+        var tabs = new TabControl { Dock = DockStyle.Fill };
+        var generalTab = new TabPage("Encounter instance");
+        var advancedTab = new TabPage("Advanced OP19 fields");
         var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             Padding = new Padding(10),
             ColumnCount = 2,
-            RowCount = 6,
+            RowCount = 8,
+            AutoScroll = true,
         };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 145));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 170));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        var templateList = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
-        templateList.Items.AddRange(templates.Cast<object>().ToArray());
-        templateList.Format += (_, eventArgs) =>
+        var targetFunctionList = new ComboBox
         {
-            if (eventArgs.ListItem is ScriptMonsterSpawn spawn)
-                eventArgs.Value =
-                    $"{MonsterName(spawn.AssetId)} — {spawn.AssetId} — entity {spawn.EntityId}";
+            Dock = DockStyle.Fill,
+            DropDownStyle = ComboBoxStyle.DropDownList,
         };
-        var tableList = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
-        tableList.Items.AddRange(tables.Cast<object>().ToArray());
-        var encounterList = new ComboBox { Dock = DockStyle.Fill, DropDownStyle = ComboBoxStyle.DropDownList };
+        targetFunctionList.Items.AddRange(targetFunctions.Cast<object>().ToArray());
         var assetList = new ComboBox
         {
             Dock = DockStyle.Fill,
             DropDownStyle = ComboBoxStyle.DropDownList,
             DisplayMember = nameof(MonsterTableChoice.Label),
-            ValueMember = nameof(MonsterTableChoice.AssetId),
         };
+        assetList.Items.AddRange(assets.Cast<object>().ToArray());
         var entityId = new NumericUpDown
         {
             Dock = DockStyle.Left,
             Minimum = short.MinValue,
             Maximum = short.MaxValue,
-            Value = Math.Clamp(templates.Max(value => value.EntityId) + 1, short.MinValue, short.MaxValue),
+            Value = defaults.EntityId,
         };
         var heading = new NumericUpDown
         {
@@ -2224,14 +2689,66 @@ public sealed class ScriptEditorForm : Form
             Maximum = 3600,
             DecimalPlaces = 2,
             Increment = 5,
+            Value = (decimal)defaults.HeadingDegrees,
         };
-        AddRow(0, "Exact instruction template", templateList);
-        AddRow(1, "CreateMonsters table", tableList);
-        AddRow(2, "Encounter", encounterList);
-        AddRow(3, "Field model asset", assetList);
-        AddRow(4, "Entity ID", entityId);
-        AddRow(5, "Heading (degrees)", heading);
-        var ok = new Button { Text = "Place on map", AutoSize = true, DialogResult = DialogResult.OK };
+        var flags = IntegerEditor(defaults.Flags);
+        var entityType = IntegerEditor(defaults.EntityType, byte.MinValue, byte.MaxValue);
+        var scale = FloatEditor(defaults.Scale);
+        var collisionHeight = FloatEditor(defaults.CollisionHeight);
+        var collisionRadius = FloatEditor(defaults.CollisionRadius);
+        AddRow(layout, 0, "Target function", targetFunctionList);
+        AddRow(layout, 1, "Monster (t_mons)", assetList);
+        AddRow(layout, 2, "Entity ID", entityId);
+        AddRow(layout, 3, "Heading (degrees)", heading);
+        AddRow(layout, 4, "Entity type", entityType);
+        AddRow(layout, 5, "Flags", flags);
+        AddRow(layout, 6, "Scale", scale);
+        AddRow(
+            layout,
+            7,
+            "Collision",
+            Pair(collisionHeight, collisionRadius, "Height", "Radius"));
+
+        var advanced = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            Padding = new Padding(10),
+            ColumnCount = 2,
+            RowCount = 8,
+            AutoScroll = true,
+        };
+        advanced.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 215));
+        advanced.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        var modelAsset = new TextBox { Dock = DockStyle.Fill, Text = defaults.ModelAsset };
+        var displayName = new TextBox { Dock = DockStyle.Fill, Text = defaults.DisplayName };
+        var scriptFile = new TextBox { Dock = DockStyle.Fill, Text = defaults.ScriptFile };
+        var initFunction = new TextBox { Dock = DockStyle.Fill, Text = defaults.InitFunction };
+        var unknown1 = IntegerEditor(defaults.UnknownParameter1);
+        var unknown2 = IntegerEditor(defaults.UnknownParameter2);
+        var unknown3 = IntegerEditor(defaults.UnknownParameter3, short.MinValue, short.MaxValue);
+        AddRow(advanced, 0, "Model asset (argument 1)", modelAsset);
+        AddRow(advanced, 1, "Display name (argument 2)", displayName);
+        AddRow(advanced, 2, "Script file (argument 13)", scriptFile);
+        AddRow(advanced, 3, "Init function (argument 14)", initFunction);
+        AddRow(advanced, 4, "Battle table function", ReadOnlyValue(
+            $"#{table.FunctionIndex} {table.Name}"));
+        AddRow(advanced, 5, "Encounter ID", ReadOnlyValue(encounter.Id.ToString()));
+        AddRow(
+            advanced,
+            6,
+            "Unknown raw s32",
+            Pair(unknown1, unknown2, "Argument 17", "Argument 18"));
+        AddRow(advanced, 7, "Unknown raw s16 (argument 19)", unknown3);
+        generalTab.Controls.Add(layout);
+        advancedTab.Controls.Add(advanced);
+        tabs.TabPages.Add(generalTab);
+        tabs.TabPages.Add(advancedTab);
+        var ok = new Button
+        {
+            Text = "Choose position on map",
+            AutoSize = true,
+            DialogResult = DialogResult.OK,
+        };
         var cancel = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
         var buttons = new FlowLayoutPanel
         {
@@ -2242,131 +2759,188 @@ public sealed class ScriptEditorForm : Form
         };
         buttons.Controls.Add(cancel);
         buttons.Controls.Add(ok);
-        dialog.Controls.Add(layout);
+        dialog.Controls.Add(tabs);
         dialog.Controls.Add(buttons);
         dialog.AcceptButton = ok;
         dialog.CancelButton = cancel;
-
-        void RefreshEncounterChoices()
+        if (targetFunctionList.Items.Count == 0 || assetList.Items.Count == 0)
         {
-            encounterList.Items.Clear();
-            if (tableList.SelectedItem is not FieldMonsterTableChoice table) return;
-            encounterList.Items.AddRange(table.Table.Encounters.Cast<object>().ToArray());
-            encounterList.Format += (_, eventArgs) =>
-            {
-                if (eventArgs.ListItem is CreateMonstersEncounter encounter)
-                    eventArgs.Value = $"{encounter.Id} — "
-                        + string.Join(", ", encounter.MonsterAssets
-                            .Where(value => value.Length > 0)
-                            .Distinct()
-                            .Select(value => $"{MonsterName(value)} ({value})"));
-            };
-            if (encounterList.Items.Count > 0) encounterList.SelectedIndex = 0;
+            MessageBox.Show(
+                this,
+                "The encounter placement choices could not be populated.",
+                "Cannot instantiate encounter",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
         }
-        void RefreshAssetChoices()
-        {
-            assetList.DataSource = null;
-            if (encounterList.SelectedItem is not CreateMonstersEncounter encounter) return;
-            var assets = encounter.MonsterAssets
-                .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Select(value => monsterChoices.FirstOrDefault(choice =>
-                        choice.AssetId.Equals(value, StringComparison.OrdinalIgnoreCase))
-                    ?? new MonsterTableChoice(value, $"Unknown monster ({value})", string.Empty))
-                .ToArray();
-            assetList.DataSource = assets;
-            if (assets.Length > 0) assetList.SelectedIndex = 0;
-        }
-        tableList.SelectedIndexChanged += (_, _) => RefreshEncounterChoices();
-        encounterList.SelectedIndexChanged += (_, _) => RefreshAssetChoices();
-        templateList.SelectedIndex = 0;
-        tableList.SelectedIndex = 0;
+        var preferredTarget = Array.FindIndex(targetFunctions, value =>
+            value.FunctionIndex == selectedFunctionIndex);
+        targetFunctionList.SelectedIndex = preferredTarget >= 0 ? preferredTarget : 0;
+        assetList.SelectedIndex = 0;
         if (dialog.ShowDialog(this) != DialogResult.OK
-            || templateList.SelectedItem is not ScriptMonsterSpawn template
-            || tableList.SelectedItem is not FieldMonsterTableChoice tableChoice
-            || encounterList.SelectedItem is not CreateMonstersEncounter encounterChoice
-            || assetList.SelectedValue is not string selectedAsset
-            || string.IsNullOrWhiteSpace(selectedAsset))
+            || targetFunctionList.SelectedItem is not EncounterTargetChoice target
+            || assetList.SelectedItem is not MonsterTableChoice selectedModel
+            || string.IsNullOrWhiteSpace(selectedModel.AssetId))
         {
             return;
         }
 
-        var request = new FieldMonsterPlacementRequest(
-            template,
-            tableChoice.FunctionIndex,
-            encounterChoice.Id,
-            selectedAsset,
+        var parameters = new FieldMonsterSpawnParameters(
             decimal.ToInt32(entityId.Value),
+            modelAsset.Text,
+            displayName.Text,
+            selectedModel.AssetId,
+            decimal.ToInt32(entityType.Value),
+            decimal.ToInt32(flags.Value),
+            Vector3.Zero,
             (float)heading.Value,
-            selectedFunctionIndex);
+            (float)scale.Value,
+            (float)collisionHeight.Value,
+            (float)collisionRadius.Value,
+            scriptFile.Text,
+            initFunction.Text,
+            table.FunctionIndex,
+            encounter.Id,
+            decimal.ToInt32(unknown1.Value),
+            decimal.ToInt32(unknown2.Value),
+            decimal.ToInt32(unknown3.Value));
+        var request = new FieldMonsterPlacementRequest(
+            parameters,
+            target.FunctionIndex);
         beginCapture(position => InsertFieldMonster(request, position));
 
-        void AddRow(int row, string label, Control control)
+        static void AddRow(TableLayoutPanel owner, int row, string label, Control control)
         {
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-            layout.Controls.Add(new Label
+            owner.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+            owner.Controls.Add(new Label
             {
                 Text = label,
                 Dock = DockStyle.Fill,
                 TextAlign = ContentAlignment.MiddleLeft,
             }, 0, row);
-            layout.Controls.Add(control, 1, row);
+            owner.Controls.Add(control, 1, row);
         }
+
+        static NumericUpDown IntegerEditor(
+            int value,
+            int minimum = int.MinValue,
+            int maximum = int.MaxValue)
+            => new()
+            {
+                Dock = DockStyle.Left,
+                Width = 190,
+                Minimum = minimum,
+                Maximum = maximum,
+                Value = value,
+            };
+
+        static NumericUpDown FloatEditor(float value)
+            => new()
+            {
+                Dock = DockStyle.Left,
+                Width = 190,
+                Minimum = -1000000,
+                Maximum = 1000000,
+                DecimalPlaces = 4,
+                Increment = 0.1m,
+                Value = (decimal)value,
+            };
+
+        static Control Pair(
+            Control first,
+            Control second,
+            string firstLabel,
+            string secondLabel)
+        {
+            first.Dock = DockStyle.Fill;
+            second.Dock = DockStyle.Fill;
+            var panel = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                Margin = Padding.Empty,
+                ColumnCount = 4,
+                RowCount = 1,
+            };
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            panel.Controls.Add(new Label
+            {
+                AutoSize = true,
+                Text = firstLabel,
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(0, 8, 6, 0),
+            }, 0, 0);
+            panel.Controls.Add(first, 1, 0);
+            panel.Controls.Add(new Label
+            {
+                AutoSize = true,
+                Text = secondLabel,
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(8, 8, 6, 0),
+            }, 2, 0);
+            panel.Controls.Add(second, 3, 0);
+            return panel;
+        }
+
+        static Control ReadOnlyValue(string value)
+            => new TextBox
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                Text = value,
+            };
+
+        MonsterTableChoice ResolveMonsterChoice(string assetId)
+            => monsterChoices.FirstOrDefault(choice =>
+                    choice.AssetId.Equals(assetId, StringComparison.OrdinalIgnoreCase))
+                ?? new MonsterTableChoice(
+                    assetId,
+                    $"Unknown monster ({assetId})",
+                    string.Empty);
     }
 
     private void InsertFieldMonster(FieldMonsterPlacementRequest request, Vector3 position)
     {
         if (document is null || script is null) return;
-        var sourceFunction = script.Functions.FirstOrDefault(value =>
-            value.Index == request.Template.SourceFunctionIndex);
-        var source = sourceFunction?.Instructions.FirstOrDefault(value =>
-            value.Index == request.Template.SourceInstructionIndex);
+        var targetFunctionIndex = request.TargetFunctionIndex;
         var targetFunction = script.Functions.FirstOrDefault(value =>
-            value.Index == request.TargetFunctionIndex);
-        if (source is null || targetFunction is null || source.Opcode != 0x13)
-            throw new InvalidOperationException("The field-monster template is no longer available.");
-        var sourceArguments = source.Arguments.ToArray();
+            value.Index == targetFunctionIndex);
+        if (targetFunction is null)
+            throw new InvalidOperationException("The selected target function is no longer available.");
+        var parameters = request.Parameters with { Position = position };
         var insertion = LastExecutableIndex(targetFunction);
+        selectedFunctionIndex = targetFunctionIndex;
         RunEdit(() =>
         {
-            document.InsertInstruction(request.TargetFunctionIndex, insertion, source.Name);
-            for (var index = 0; index < sourceArguments.Length; index++)
-                CopyArgument(request.TargetFunctionIndex, insertion, sourceArguments[index]);
-            document.SetInteger(request.TargetFunctionIndex, insertion, 0, request.EntityId);
-            document.SetString(request.TargetFunctionIndex, insertion, 3, request.AssetId);
-            document.SetFloat(request.TargetFunctionIndex, insertion, 6, position.X);
-            document.SetFloat(request.TargetFunctionIndex, insertion, 7, position.Y);
-            document.SetFloat(request.TargetFunctionIndex, insertion, 8, position.Z);
-            document.SetFloat(request.TargetFunctionIndex, insertion, 9, request.HeadingDegrees);
+            document.InsertInstruction(targetFunctionIndex, insertion, "Entity_Spawn");
+            document.SetInteger(targetFunctionIndex, insertion, 0, parameters.EntityId);
+            document.SetString(targetFunctionIndex, insertion, 1, parameters.ModelAsset);
+            document.SetString(targetFunctionIndex, insertion, 2, parameters.DisplayName);
+            document.SetString(targetFunctionIndex, insertion, 3, parameters.MonsterAsset);
+            document.SetInteger(targetFunctionIndex, insertion, 4, parameters.EntityType);
+            document.SetInteger(targetFunctionIndex, insertion, 5, parameters.Flags);
+            document.SetFloat(targetFunctionIndex, insertion, 6, parameters.Position.X);
+            document.SetFloat(targetFunctionIndex, insertion, 7, parameters.Position.Y);
+            document.SetFloat(targetFunctionIndex, insertion, 8, parameters.Position.Z);
+            document.SetFloat(targetFunctionIndex, insertion, 9, parameters.HeadingDegrees);
+            document.SetFloat(targetFunctionIndex, insertion, 10, parameters.Scale);
+            document.SetFloat(targetFunctionIndex, insertion, 11, parameters.CollisionHeight);
+            document.SetFloat(targetFunctionIndex, insertion, 12, parameters.CollisionRadius);
+            document.SetString(targetFunctionIndex, insertion, 13, parameters.ScriptFile);
+            document.SetString(targetFunctionIndex, insertion, 14, parameters.InitFunction);
             document.SetInteger(
-                request.TargetFunctionIndex, insertion, 15, request.BattleFunctionIndex);
+                targetFunctionIndex, insertion, 15, parameters.BattleFunctionIndex);
             document.SetInteger(
-                request.TargetFunctionIndex, insertion, 16, request.EncounterId);
+                targetFunctionIndex, insertion, 16, parameters.EncounterIndex);
+            document.SetInteger(
+                targetFunctionIndex, insertion, 17, parameters.UnknownParameter1);
+            document.SetInteger(
+                targetFunctionIndex, insertion, 18, parameters.UnknownParameter2);
+            document.SetInteger(
+                targetFunctionIndex, insertion, 19, parameters.UnknownParameter3);
         }, insertion);
-    }
-
-    private void CopyArgument(int function, int instruction, InstructionArgument argument)
-    {
-        if (document is null) return;
-        switch (argument.Kind)
-        {
-            case "scalar" when argument.Type == "f32":
-                document.SetFloat(function, instruction, argument.Index, argument.FloatValue);
-                break;
-            case "scalar":
-                document.SetInteger(function, instruction, argument.Index, argument.IntValue);
-                break;
-            case "string":
-                document.SetString(
-                    function,
-                    instruction,
-                    argument.Index,
-                    Encoding.Latin1.GetString(argument.Raw).TrimEnd('\0'));
-                break;
-            default:
-                document.SetBytes(function, instruction, argument.Index, argument.Raw);
-                break;
-        }
     }
 
     private sealed record FieldMonsterTableChoice(
@@ -2377,13 +2951,28 @@ public sealed class ScriptEditorForm : Form
         public override string ToString() => $"#{FunctionIndex} {Name} — {Table.MapAsset}";
     }
 
+    private sealed record EncounterChoice(
+        int Index,
+        CreateMonstersEncounter Encounter,
+        Func<string, string> ResolveMonsterName)
+    {
+        public override string ToString()
+        {
+            var monsters = Encounter.MonsterAssets
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(value => $"{ResolveMonsterName(value)} ({value})");
+            return $"Encounter {Encounter.Id} — {string.Join(", ", monsters)}";
+        }
+    }
+
+    private sealed record EncounterTargetChoice(int FunctionIndex, string Label)
+    {
+        public override string ToString() => Label;
+    }
+
     private sealed record FieldMonsterPlacementRequest(
-        ScriptMonsterSpawn Template,
-        int BattleFunctionIndex,
-        int EncounterId,
-        string AssetId,
-        int EntityId,
-        float HeadingDegrees,
+        FieldMonsterSpawnParameters Parameters,
         int TargetFunctionIndex);
 
     private bool ForwardViewportKeyDown(Keys key)

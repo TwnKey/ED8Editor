@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net7.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ED8Editor.Phyre\ED8Editor.Phyre.csproj" />
+    <ProjectReference Include="..\..\src\ED8Editor.Packages\ED8Editor.Packages.csproj" />
+  </ItemGroup>
+</Project>
