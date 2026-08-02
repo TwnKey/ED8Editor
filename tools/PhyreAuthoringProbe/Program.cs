@@ -1532,6 +1532,36 @@ if (args.Length > 3 && args[1] == "--members")
     return 0;
 }
 
+//   PhyreAuthoringProbe x --raw <cluster> <ClassName>
+// Every object of a class, member by member, as bytes. Named fields are what one
+// compares when two clusters agree on their layout and disagree in game.
+if (args.Length > 3 && args[1] == "--raw")
+{
+    var read = new PhyreClusterReader().Read(ReadClusterOrPackage(args[2]));
+    var found = read.Metadata.Classes.FirstOrDefault(value => value.Name == args[3]);
+    var group = read.Metadata.InstanceGroups
+        .FirstOrDefault(value => value.ClassName == args[3] && value.Count != 0);
+    if (found is null || group is null) { Console.WriteLine($"'{args[3]}' absente"); return 1; }
+    var chain = PhyreObjectWriter.Chain(found, read.Metadata.Classes).ToList();
+    var body = read.GetGroupObjectsData(group.Index).Span;
+    var each = (int)(group.ObjectsSize / group.Count);
+    for (var id = 0; id < group.Count; id++)
+    {
+        Console.WriteLine($"  [{id}]");
+        var one = body.Slice(id * each, each);
+        foreach (var member in chain.OrderBy(value => value.ValueOffset))
+        {
+            var at = (int)member.ValueOffset;
+            var next = chain.Where(value => value.ValueOffset > member.ValueOffset)
+                .Select(value => (int)value.ValueOffset).DefaultIfEmpty(each).Min();
+            if (at >= one.Length) continue;
+            var run = Convert.ToHexString(one[at..Math.Min(next, one.Length)]);
+            Console.WriteLine($"    +{at,-4} {member.Name,-28} {run}");
+        }
+    }
+    return 0;
+}
+
 var assets = Path.Combine(args[0], "asset", "D3D11");
 var pattern = args.Length > 1 ? args[1] : "I_EFTEX*.pkg";
 var take = args.Length > 2 ? int.Parse(args[2]) : int.MaxValue;

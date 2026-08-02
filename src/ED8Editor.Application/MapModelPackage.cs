@@ -72,18 +72,23 @@ public static class MapModelPackage
         // its own with the folder. Qualifying ours made the map vanish entirely, so
         // whatever the loader resolves these against, it wants the short form here.
         var authoredModel = model with { AssetName = lower };
-        // Collision surfaces are not scenery: they exist to stop the player and are
-        // never meant to be seen. Drawn, they are the walls standing across the map.
-        // The collision is taken from the whole model, before they are set aside.
-        var collisionMeshes = authoredModel.Meshes.Count(mesh => mesh.IsCollision);
-        var visible = authoredModel.Meshes.Where(mesh => !mesh.IsCollision).ToArray();
-        if (collisionMeshes != 0 && visible.Length != 0)
+        // Collision surfaces stay in the scene. A shipped map hangs each off a node
+        // of its own, WITH a mesh instance on it — four nodes, four instances, four
+        // world matrices for r0510 — and its rigid bodies aim at those nodes. Setting
+        // the surfaces aside left our collision nodes empty, attached to nothing that
+        // the scene walks, which is a shape no map has.
+        //
+        // They are ordered last so a segment's group can be read off its position:
+        // the scenery first, then one run per surface.
+        var scenery = authoredModel.Meshes.Where(mesh => !mesh.IsCollision).ToArray();
+        var surfaces = authoredModel.Meshes.Where(mesh => mesh.IsCollision).ToArray();
+        if (surfaces.Length != 0)
         {
-            say?.Invoke($"collision meshes: {collisionMeshes} set aside, not drawn");
+            say?.Invoke($"collision meshes: {surfaces.Length} kept, each on its own node");
         }
-        var drawn = collisionMeshes != 0 && visible.Length != 0
-            ? authoredModel with { Meshes = visible }
-            : authoredModel;
+        var drawn = surfaces.Length == 0 || scenery.Length == 0
+            ? authoredModel
+            : authoredModel with { Meshes = scenery.Concat(surfaces).ToArray() };
         var packed = PhyreModelGeometryPacker.Pack(drawn);
         // Collision is the render mesh itself, which for a map is far heavier than
         // what the game ships: r0510 carries three simplified shapes totalling 75 KB

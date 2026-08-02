@@ -89,6 +89,29 @@ public static class PhyreModelClusterWriter
         // has, and the first thing a body does is take its transform from that node.
         var bodies = collisions ?? Array.Empty<(string Node, PhyrePhysicsSource Shape)>();
         var physics = bodies.Count == 0 ? null : bodies[0].Shape;
+
+        // A mesh instance per node, as a shipped map has: the scenery on its node,
+        // then one collision surface per collision node. A single instance covering
+        // everything left the collision nodes empty — attached to nothing the scene
+        // walks — and the bodies aiming at them had nothing to be placed by.
+        //
+        // Each group is a run of consecutive segments: the meshes arrive with the
+        // scenery first and the surfaces after it, in body order.
+        var drawnGroups = new List<(int First, int Count, string? Node)>();
+        {
+            var sceneryCount = model.Meshes.Count(mesh => !mesh.IsCollision);
+            if (sceneryCount != 0) drawnGroups.Add((0, sceneryCount, null));
+            var at = sceneryCount;
+            foreach (var (node, _) in bodies)
+            {
+                var count = model.Meshes.Count(
+                    mesh => mesh.IsCollision && mesh.CollisionNode == node);
+                if (count == 0) continue;
+                drawnGroups.Add((at, count, node));
+                at += count;
+            }
+            if (drawnGroups.Count == 0) drawnGroups.Add((0, packed.Count, null));
+        }
         if (packed.Count == 0)
         {
             throw new ArgumentException("A model needs at least one mesh.", nameof(packed));
@@ -597,7 +620,6 @@ public static class PhyreModelClusterWriter
                 (uint)Group(pointer.TargetClass), pointer.TargetId, 0,
                 pointer.Count, null));
         }
-        PointArray("PMesh", 0, "m_meshSegments", "PMeshSegment", 0, (uint)packed.Count);
         // PMaterialSet is a PSharray<PMaterial *>: its count is in the object and
         // each element is an ordinary pointer carrying its array index. Shipped
         // static models do not emit a pointer-array fixup for this member.
@@ -609,14 +631,21 @@ public static class PhyreModelClusterWriter
         // exactly one, so the mistake stayed invisible until a map was written.
         // Each segment names ITS material — the set is indexed by segment, and this
         // is where a model with several materials stops wearing a single skin.
-        for (uint segment = 0; segment < packed.Count; segment++)
+        for (uint at = 0; at < drawnGroups.Count; at++)
         {
-            var mine = segment < materialOfSegment.Length
-                ? (uint)materialOfSegment[segment]
-                : 0u;
-            SharedArrayElement(
-                "PMesh", 0, "m_defaultMaterials", "PMaterial",
-                mine < materialCount ? mine : 0u, segment);
+            var run = drawnGroups[(int)at];
+            for (var slot = 0; slot < run.Count; slot++)
+            {
+                var segment = run.First + slot;
+                var mine = segment < materialOfSegment.Length
+                    ? (uint)materialOfSegment[segment]
+                    : 0u;
+                // The index is local to THIS mesh's set, so it counts from its own
+                // first segment rather than from the map's.
+                SharedArrayElement(
+                    "PMesh", at, "m_defaultMaterials", "PMaterial",
+                    mine < materialCount ? mine : 0u, (uint)slot);
+            }
         }
         // A set of more than one entry also DECLARES itself, as a pointer-array
         // fixup. A shipped map's four meshes hold 1, 1, 6 and 6 materials, and only
@@ -624,32 +653,44 @@ public static class PhyreModelClusterWriter
         // to say shipped models emit none: every model looked at had a single entry.
         // The element pointers alone leave the engine an array it was never told the
         // length of.
-        if (packed.Count > 1)
+        for (uint at = 0; at < drawnGroups.Count; at++)
         {
+            if (drawnGroups[(int)at].Count <= 1) continue;
             var set = Field(descriptors, "PMesh", "m_defaultMaterials");
-            if (set is not null)
-            {
-                pointerArrays.Add(new PhyreArrayFixup(
-                    Group("PMesh"), 0,
-                    0x80000000u | (set.ValueOffset + sizeof(uint)),
-                    (uint)packed.Count, 0));
-            }
+            if (set is null) continue;
+            pointerArrays.Add(new PhyreArrayFixup(
+                Group("PMesh"), at,
+                0x80000000u | (set.ValueOffset + sizeof(uint)),
+                (uint)drawnGroups[(int)at].Count, 0));
         }
-        Point("PMeshInstance", 0, "m_mesh", "PMesh", 0);
-        Point("PMeshInstance", 0, "m_localToWorldMatrix", "PWorldMatrix", 0);
-        // m_materialSet points at the PMaterialSet embedded at PMesh.+0x30.
-        pointers.Add(new PhyrePointerFixup(
-            Group("PMeshInstance"), 0,
-            MemberId(descriptors, "PMeshInstance", "m_materialSet"),
-            (uint)Group("PMesh"), 0,
-            Field(descriptors, "PMesh", "m_defaultMaterials")!.ValueOffset,
-            0, null));
-        Point("PMeshInstance", 0, "m_bounds", "PMeshInstanceBounds", 0);
-        PointArray(
-            "PMeshInstance", 0, "m_segmentContext",
-            "PMeshInstanceSegmentContext", 0, (uint)packed.Count);
-        Point("PMeshInstanceBounds", 0, "m_meshInstance", "PMeshInstance", 0);
-        Point("PMeshInstanceBounds", 0, "m_worldMatrix", "PWorldMatrix", 0);
+        // One instance per node that draws. Each names its own mesh, its own bounds,
+        // the world matrix of the node it hangs from, and the run of segment contexts
+        // that belongs to it.
+        for (uint at = 0; at < drawnGroups.Count; at++)
+        {
+            var mine = drawnGroups[(int)at];
+            // The scenery sits on the mesh node and its matrix; a collision surface
+            // sits on its own, in the order the bodies were given.
+            var matrix = mine.Node is null
+                ? 0u
+                : (uint)(1 + bodies.TakeWhile(value => value.Node != mine.Node).Count());
+            Point("PMeshInstance", at, "m_mesh", "PMesh", at);
+            Point("PMeshInstance", at, "m_localToWorldMatrix", "PWorldMatrix", matrix);
+            // m_materialSet points at the PMaterialSet embedded at PMesh.+0x30.
+            pointers.Add(new PhyrePointerFixup(
+                Group("PMeshInstance"), at,
+                MemberId(descriptors, "PMeshInstance", "m_materialSet"),
+                (uint)Group("PMesh"), at,
+                Field(descriptors, "PMesh", "m_defaultMaterials")!.ValueOffset,
+                0, null));
+            Point("PMeshInstance", at, "m_bounds", "PMeshInstanceBounds", at);
+            PointArray(
+                "PMeshInstance", at, "m_segmentContext",
+                "PMeshInstanceSegmentContext", (uint)mine.First, (uint)mine.Count);
+            Point("PMeshInstanceBounds", at, "m_meshInstance", "PMeshInstance", at);
+            Point("PMeshInstanceBounds", at, "m_worldMatrix", "PWorldMatrix", matrix);
+            PointArray("PMesh", at, "m_meshSegments", "PMeshSegment", (uint)mine.First, (uint)mine.Count);
+        }
         // The root holds the mesh node, and the mesh node holds the transform the
         // instance is placed by — the arrangement every shipped model uses.
         Point("PNode", 0, "m_firstChild", "PNode", 1);
@@ -740,6 +781,8 @@ public static class PhyreModelClusterWriter
                 "PAssetReference" => (uint)named.Count,
                 "PDataBlockD3D11" or "PVertexStream" => (uint)streams.Length,
                 "PMeshSegment" or "PMeshInstanceSegmentContext" => (uint)packed.Count,
+                // One per node that draws, not one for the whole map.
+                "PMesh" or "PMeshInstance" or "PMeshInstanceBounds" => (uint)drawnGroups.Count,
                 "PAssetReferenceImport" => (uint)importAssets.Count,
                 // The visual scene root, and a node for the mesh under it. No model
                 // the game ships has a single node: a0003 has four, a bench eight, a
@@ -822,8 +865,13 @@ public static class PhyreModelClusterWriter
                         // at zero, every segment of a map painted itself with the
                         // first material however many the model carried, which is a
                         // map wearing one skin.
+                        // Its position in ITS OWN mesh's material set, not the index
+                        // of the material in the cluster. A mesh of one segment has a
+                        // set of one, so the only valid index there is zero — writing
+                        // the global one made the reader look past the end of the set.
                         Set("m_materialIndex", (uint)(
-                            id < materialOfSegment.Length ? materialOfSegment[id] : 0));
+                            (int)id - drawnGroups.First(
+                                value => id >= value.First && id < value.First + value.Count).First));
                         Set("m_primitiveType", TriangleList);
                         Set("m_matrixIndex", Unskinned);
                         Set("m_vertexData", (uint)packed[(int)id].Streams.Count);
@@ -839,16 +887,24 @@ public static class PhyreModelClusterWriter
                             Field(descriptors, className, "m_indexData"));
                         break;
                     case "PMesh":
-                        Set("m_meshSegments", (uint)packed.Count);
-                        Set("m_defaultMaterials", (uint)packed.Count);
+                        Set("m_meshSegments", (uint)drawnGroups[(int)id].Count);
+                        Set("m_defaultMaterials", (uint)drawnGroups[(int)id].Count);
                         break;
                     case "PMeshInstance":
-                        Set("m_segmentContext", (uint)packed.Count);
+                        Set("m_segmentContext", (uint)drawnGroups[(int)id].Count);
                         break;
                     case "PMeshInstanceBounds":
-                        members["m_min"] = Vector(Bounds(model).Min);
-                        members["m_size"] = Vector(Bounds(model).Size);
+                    {
+                        // The box this instance's own segments occupy, not the map's.
+                        var own = drawnGroups[(int)id];
+                        var part = model with
+                        {
+                            Meshes = model.Meshes.Skip(own.First).Take(own.Count).ToArray(),
+                        };
+                        members["m_min"] = Vector(Bounds(part).Min);
+                        members["m_size"] = Vector(Bounds(part).Size);
                         break;
+                    }
                     case "PNode":
                         members["m_localMatrix"] = Identity4x4();
                         break;
@@ -1118,6 +1174,16 @@ public static class PhyreModelClusterWriter
         // Those two sizes live past the words the cluster writer names, at 72
         // and 76, so they travel in the header's tail.
         var tail = new byte[84 - 17 * sizeof(uint)];
+        // Word 17 is m_physicsEngineID, and it is what says the cluster carries
+        // physics at all. PInstanceListConvert::updateHeaderForPlatform clears it
+        // when no physics class is present, so a nought there means "no bodies
+        // here" — and the reader accepts a nought without complaint. A cluster
+        // full of well-formed rigid bodies therefore loaded, drew, and let the
+        // player walk through every wall.
+        if (bodies.Count != 0)
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(tail, BulletPhysicsId);
+        }
         BinaryPrimitives.WriteUInt32LittleEndian(tail.AsSpan(72 - 17 * sizeof(uint)), indexRegion);
         BinaryPrimitives.WriteUInt32LittleEndian(tail.AsSpan(76 - 17 * sizeof(uint)), vertexRegion);
 
@@ -1183,6 +1249,9 @@ public static class PhyreModelClusterWriter
             tail,
             schemaProfile);
     }
+
+    /// <summary>PhyreFourCC('B', 'L', 'L', 'T'), the engine the game builds against.</summary>
+    private const uint BulletPhysicsId = 0x424C4C54;
 
     private static (Vector3 Min, Vector3 Size) Bounds(PhyreModelSource model)
     {
