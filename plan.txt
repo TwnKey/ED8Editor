@@ -4011,3 +4011,36 @@ TEXTURAGE : il reste UN materiau pour 171 segments. Le glTF porte 29 materiaux
 noms ne correspondent pas (glTF ground_snow_col / livre ground_col, glTF
 ground_notgo_col / livre notgo_ground_col ; seul colladafxShader6 est commun) et
 les S_* semblent etre des noms de NOEUDS. L'appariement est a reverser.
+
+## 2026-08-02 — point d'arrivee, et etat du texturage
+
+Le point d'entree de z9100 etait a y=53,92 ; les entrees de la VRAIE r0510 sont a
+y=2,83 (go_r0500) et y=32,70 (go_r0520). La sequence d'arrivee n'a pas de
+gravite, donc on reste a l'altitude ou on apparait — d'ou le "sol invisible en
+l'air". Deplace sur (39,671 ; 2,83 ; -24,567). Antoine confirme : on demarre au
+sol. LA COLLISION, ELLE, NE FONCTIONNE TOUJOURS PAS.
+
+Les .ops ne stockent pas les positions en flottants bruts (OpsCoordinateConverter
+les transforme), donc une substitution d'octets ne peut pas marcher : commande
+set-entry ajoutee, qui relit la scene et la reecrit avec notre writer.
+
+TEXTURAGE — etat exact des pieces :
+  cote import  : ImportedMaterial (nom, liaisons), ImportedTexture (donnees
+                 encodees), ImportedMesh.MaterialIndex. Tout est la.
+  adaptateur   : garde le NOM du materiau par mesh, perd sa texture.
+  cote autorat : PhyreMeshSource n'a que MaterialName ; le writer emet UN
+                 materiau, UN tampon, UNE texture.
+  PhyreTextureClusterWriter sait ecrire du DXT1 ; les .dds extraits sont en DXT1.
+
+Les .dds sont extraits a cote du .glb (extracted_fixed/map/images/), donc on peut
+livrer NOS textures sans rien prendre au jeu. Attention : les noms sortis de
+l'extracteur ne correspondent pas aux fichiers du jeu (glTF br05gr00.dds contre
+8r05gr00.dds livre ; br05tre00 et br05ob00 n'existent sous aucune orthographe).
+Raison de plus pour livrer les notres.
+
+RESTE A FAIRE, dans l'ordre :
+  1. porter la texture de chaque materiau jusqu'a PhyreMeshSource
+  2. ecrire N clusters de texture et les declarer au manifeste
+  3. ecrire N materiaux et N tampons — LE gros morceau, chaque tampon etant un
+     groupe d'instances et une classe d'en-tete
+  4. l'index par segment : DEJA FAIT, ils pointent tous vers le meme materiau

@@ -84,6 +84,7 @@ switch (command)
         }
         return 0;
 
+    case "set-entry":
     case "cube-prop":
     case "swap-cluster":
     case "import":
@@ -147,6 +148,56 @@ if (command == "repack")
     project.TrackSave(target);
     Console.WriteLine();
     Console.WriteLine("written. If this crashes, the fault is the container, not the model.");
+    return 0;
+}
+
+// Moves a map's arrival point.
+//
+// A .ops does not hold positions as plain floats — they go through a coordinate
+// conversion on the way in and out — so the only honest way to move one is to
+// read the scene, change it, and write it back with our own writer.
+//
+// The point matters: the sequence that brings the player in has no gravity, so
+// arriving above the ground leaves them standing on nothing at that height. A
+// shipped map puts its entries ON the terrain — r0510's are at y = 2.83 and
+// y = 32.70, where ours sat at 53.92.
+//
+//   MapImport <game> <project> set-entry z9100 <x> <y> <z>
+if (command == "set-entry")
+{
+    var opsPath = Path.Combine(game, "data", "ops", name + ".ops");
+    var reader = new ED8Editor.Ops.OpsReader();
+    var opsScene = reader.Read(opsPath);
+    if (opsScene.Volumes.Count == 0)
+    {
+        Console.Error.WriteLine($"'{name}' has no entry volume to move.");
+        return 1;
+    }
+    var culture = System.Globalization.CultureInfo.InvariantCulture;
+    var target = new System.Numerics.Vector3(
+        float.Parse(args[4], culture),
+        float.Parse(args[5], culture),
+        float.Parse(args[6], culture));
+    var moved = opsScene.Volumes
+        .Select(volume => volume with
+        {
+            Transform = volume.Transform with
+            {
+                Position = target,
+                SourcePosition = target,
+            },
+        })
+        .ToArray();
+    foreach (var volume in opsScene.Volumes)
+    {
+        Console.WriteLine($"  {volume.Name} : {volume.Transform.Position} -> {target}");
+    }
+    var opsEdited = opsScene with { Volumes = moved };
+    var opsBytes = new ED8Editor.Ops.OpsWriter().Serialize(opsScene, opsEdited);
+    project.CaptureOriginal(opsPath);
+    File.WriteAllBytes(opsPath, opsBytes);
+    project.TrackSave(opsPath);
+    Console.WriteLine($"written: {opsBytes.Length} bytes");
     return 0;
 }
 
