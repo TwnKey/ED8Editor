@@ -431,7 +431,7 @@ public static class PhyreModelClusterWriter
             var shape = surface.Length >= 4
                 ? surface[..3] + "Shape" + surface[3]
                 : surface + "Shape";
-            named.Add(("PNode", (uint)(3 + body), colladaId + surface));
+            named.Add(("PNode", (uint)(2 + body), colladaId + surface));
             named.Add(("PShape", (uint)body, colladaId + shape + "-PhysicsShape"));
         }
         for (uint index = 0; index < named.Count; index++)
@@ -691,30 +691,24 @@ public static class PhyreModelClusterWriter
             Point("PMeshInstanceBounds", at, "m_worldMatrix", "PWorldMatrix", matrix);
             PointArray("PMesh", at, "m_meshSegments", "PMeshSegment", (uint)mine.First, (uint)mine.Count);
         }
-        // The root holds the mesh node, and the mesh node holds the transform the
-        // instance is placed by — the arrangement every shipped model uses.
+        // The root holds every other node directly. We used to hang them off an
+        // intermediate "VisualSceneNode1", which nothing the game ships does: in
+        // r0510, e0100, c0100, t0000, r0210 and in the props chr01 and lig03 alike,
+        // the root's children are the scene, and a body's target node is always one
+        // of them. Under an extra level the map still drew — the renderer walks the
+        // whole tree — while the collision never took.
         Point("PNode", 0, "m_firstChild", "PNode", 1);
         Point("PNode", 1, "m_parent", "PNode", 0);
-        var firstCollisionNode = (uint)(authoringLayout ? 3 : 2);
-        if (authoringLayout)
-        {
-            Point("PNode", 1, "m_firstChild", "PNode", 2);
-            Point("PNode", 2, "m_parent", "PNode", 1);
-            Point("PNode", 2, "m_worldMatrix", "PWorldMatrix", 0);
-        }
-        else
-        {
-            Point("PNode", 1, "m_worldMatrix", "PWorldMatrix", 0);
-        }
+        Point("PNode", 1, "m_worldMatrix", "PWorldMatrix", 0);
+        var firstCollisionNode = 2u;
         {
             // A node per collision surface, beside the one that draws rather than
-            // under it, chained as siblings the way a scene lists them. Independent
-            // of the layout: a map carries these whichever class table it uses.
+            // under it, chained as siblings the way a scene lists them.
             for (var body = 0; body < bodies.Count; body++)
             {
                 var node = firstCollisionNode + (uint)body;
                 Point("PNode", node - 1, "m_next", "PNode", node);
-                Point("PNode", node, "m_parent", "PNode", 1);
+                Point("PNode", node, "m_parent", "PNode", 0);
                 Point("PNode", node, "m_worldMatrix", "PWorldMatrix", (uint)(1 + body));
             }
         }
@@ -731,8 +725,7 @@ public static class PhyreModelClusterWriter
             // scene root. Bullet takes a body's transform from the node it aims at —
             // PhyrePhysicsRigidBodyBullet reads node->getLocalToWorldMatrix() — and a
             // shipped map aims each body at its own: CK00, CS00, CA00, CA01, CS01.
-            Point("PPhysicsRigidBody", body, "m_targetNode", "PNode",
-                (uint)(authoringLayout ? 3 : 2) + body);
+            Point("PPhysicsRigidBody", body, "m_targetNode", "PNode", 2 + body);
             Point("PPhysicsRigidBody", body, "m_model", "PPhysicsModel", 0);
             // The type its script callback handler names. Every shipped body carries
             // one — a class descriptor reading "PBase" at raw offset 0xD8, inside
@@ -797,7 +790,7 @@ public static class PhyreModelClusterWriter
                 // of the model's own depends on the layout; the collision ones do
                 // not, and folding them into that test silently dropped them the
                 // moment the layout changed.
-                "PNode" => (uint)((authoringLayout ? 3 : 2) + bodies.Count),
+                "PNode" => (uint)(2 + bodies.Count),
                 // One per node that has one. The engine resolves a node's world
                 // matrix INTO this object, so nodes sharing a single one overwrite
                 // each other — a shipped map carries four for its five nodes.
@@ -1032,14 +1025,13 @@ public static class PhyreModelClusterWriter
                 // The scene node names itself, and the mesh node carries the name the
                 // mesh instance is exported under — not that name plus "Shape", which
                 // is the mesh's own reference and not a node's.
-                NodeName(1, "VisualSceneNode1");
-                if (authoringLayout) NodeName(2, model.AssetName);
+                NodeName(1, model.AssetName);
                 // A collision node carries the name the game gives it — CA00, CK00,
                 // CS00 — whatever class table the map is written with. Folded into
                 // the layout test, these vanished the moment the table changed.
                 for (var body = 0; body < bodies.Count; body++)
                 {
-                    NodeName((uint)((authoringLayout ? 3 : 2) + body), bodies[body].Node);
+                    NodeName((uint)(2 + body), bodies[body].Node);
                 }
             }
             if (className == "PMeshInstance"

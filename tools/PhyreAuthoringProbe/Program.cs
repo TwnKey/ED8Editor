@@ -1532,6 +1532,28 @@ if (args.Length > 3 && args[1] == "--members")
     return 0;
 }
 
+//   PhyreAuthoringProbe x --pointer-arrays <cluster>
+// Which members of which objects hold an array of pointers, and how many.
+if (args.Length > 2 && args[1] == "--pointer-arrays")
+{
+    var image = ReadClusterOrPackage(args[2]);
+    var read = new PhyreClusterReader().Read(image);
+    var all = new PhyreFixupReader().Read(image, read.Metadata);
+    Console.WriteLine($"{all.PointerArrays.Count} fixup(s) de tableau de pointeurs");
+    foreach (var one in all.PointerArrays)
+    {
+        var group = read.Metadata.InstanceGroups
+            .FirstOrDefault(value => value.Index == one.SourceListIndex);
+        var name = group?.ClassName ?? $"groupe {one.SourceListIndex}";
+        var member = one.SourceOffsetOrMember & 0x7FFFFFFFu;
+        Console.WriteLine(
+            $"  {name}[{one.SourceObjectId}] +{member} "
+            + $"({(one.SourceOffsetOrMember >= 0x80000000u ? "octet" : "membre")}) "
+            + $"x{one.Count} -> {one.Offset}");
+    }
+    return 0;
+}
+
 //   PhyreAuthoringProbe x --raw <cluster> <ClassName>
 // Every object of a class, member by member, as bytes. Named fields are what one
 // compares when two clusters agree on their layout and disagree in game.
