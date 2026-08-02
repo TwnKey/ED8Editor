@@ -3984,3 +3984,30 @@ Aucune n'a suffi : une map de 4 sommets sans collision plante encore.
 
 RESTE A OUVRIR : z9200.ops (1663 o.), z9200.dat (69 o. — tres peu pour un script
 de scenario), l'entree de t_place.tbl, et le symbole d'asset du manifeste.
+
+## 2026-08-02 — LA MAP CHARGE
+
+Le teleporteur de Trista vise z9100, PAS z9200 :
+  volume go_z9100, DestinationMap = z9100, DestinationEntry = default
+Toutes les corrections de la soiree avaient ete ecrites dans M_Z9200, un paquet
+que le jeu ne charge jamais. M_Z9100 restait une vieille build (3 entrees, notre
+ancien shader minimal, aucune texture). C'est elle qui plantait a chaque essai.
+
+Convention des teleporteurs livres : le volume de A vers B s'appelle go_B, vise
+B, et demande l'entree go_A. Le notre demande "default", et z9100.ops a bien une
+entree "default" — coherent.
+
+M_Z9100 reconstruit avec la recette qui rend : CHARGE, map visible et texturee.
+
+COLLISION : le profil d'autorat peut desormais la porter. Il fallait
+  1. ajouter les classes de collision A LA FIN de sa table (un id est une position)
+  2. leurs ancetres (PPhysicsMeshBullet...)
+  3. les classes que leurs membres nomment (PPhysicsWorld...)
+d'ou PhyreSchemaLibrary.Closure(). Activer la collision ne change plus la
+disposition du reste : 148 classes, PDataBlockD3D11 64, PMeshInstance 112.
+
+TEXTURAGE : il reste UN materiau pour 171 segments. Le glTF porte 29 materiaux
+(14 utilises) et l'index de chaque primitive ; le cluster livre en a 13. Mais les
+noms ne correspondent pas (glTF ground_snow_col / livre ground_col, glTF
+ground_notgo_col / livre notgo_ground_col ; seul colladafxShader6 est commun) et
+les S_* semblent etre des noms de NOEUDS. L'appariement est a reverser.

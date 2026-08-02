@@ -161,8 +161,17 @@ public static class PhyreModelClusterWriter
             && derived.All(PhyreSchemaLibrary.CanonicalClasses.Contains);
         var canonicalPhysics = !assetProcessorSchema && !canonical
             && derived.All(PhyreSchemaLibrary.CanonicalPhysicsClasses.Contains);
+        // The asset processor's table is fixed and describes a model, so a map that
+        // carries collision names classes it does not list. They go at the END: a
+        // class id is a position in this table, and appending leaves every existing
+        // id where the game expects it.
+        var assetProcessorClasses = PhyreSchemaLibrary.AssetProcessorCanonicalClasses
+            .Concat(PhyreSchemaLibrary.Closure(derived)
+                .Where(name =>
+                    !PhyreSchemaLibrary.AssetProcessorCanonicalClasses.Contains(name)))
+            .ToArray();
         var classNames = assetProcessorSchema
-            ? PhyreSchemaLibrary.AssetProcessorCanonicalClasses.ToArray()
+            ? assetProcessorClasses
             : canonical
             ? PhyreSchemaLibrary.CanonicalClasses.ToArray()
             : canonicalPhysics

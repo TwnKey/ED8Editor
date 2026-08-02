@@ -1262,6 +1262,49 @@ public static partial class PhyreSchemaLibrary
     /// each of its members. A cluster that lists a class has to list these too,
     /// since its own descriptors point at them by index.
     /// </summary>
+    /// <summary>
+    /// A class and every class it descends from, nearest first.
+    ///
+    /// A cluster's table has to list a superclass, or the descriptor that names it
+    /// has no id to give. The asset processor's fixed table already closes over its
+    /// own classes; anything appended to it — the collision classes a map carries —
+    /// has to bring its ancestors along.
+    /// </summary>
+    public static IEnumerable<string> WithAncestors(string className)
+    {
+        // The root of the hierarchy writes "-" for its parent, which is not a class.
+        var name = className;
+        while (!string.IsNullOrEmpty(name) && name != "-")
+        {
+            yield return name;
+            if (!ByName.TryGetValue(name, out var row)) yield break;
+            name = row.SuperClassName;
+        }
+    }
+
+    /// <summary>
+    /// Every class a set of classes drags in: their ancestors, the classes their
+    /// members name, and so on until nothing new appears.
+    ///
+    /// A cluster's table has to list all of them, or a descriptor names something
+    /// with no id. The asset processor's fixed table closes over its own classes;
+    /// what a map appends to it — the collision classes — has to bring its own.
+    /// </summary>
+    public static IReadOnlyList<string> Closure(IEnumerable<string> classNames)
+    {
+        var seen = new SortedSet<string>(StringComparer.Ordinal);
+        var queue = new Queue<string>(classNames);
+        while (queue.Count != 0)
+        {
+            var name = queue.Dequeue();
+            // The root of the hierarchy writes "-" for its parent, which is no class.
+            if (string.IsNullOrEmpty(name) || name == "-" || !seen.Add(name)) continue;
+            if (ByName.TryGetValue(name, out var row)) queue.Enqueue(row.SuperClassName);
+            foreach (var referenced in Referenced(name)) queue.Enqueue(referenced);
+        }
+        return seen.ToArray();
+    }
+
     public static IEnumerable<string> Referenced(string className)
     {
         if (!ByName.TryGetValue(className, out var row)) yield break;
@@ -1298,7 +1341,14 @@ public static partial class PhyreSchemaLibrary
                 or PhyreSchemaProfile.Cs1RuntimeAuthoring
                 ? AssetProcessorByName
                 : ByName;
-            if (!schema.TryGetValue(classNames[index], out var row))
+            // The asset processor's table covers what a model needs and stops there:
+            // it has no collision classes, so a map carrying any could not be written
+            // with the profile that loads. Their layout is the same in both tables —
+            // measured on a shipped map, PShape 28, PPhysicsMesh 108,
+            // PPhysicsRigidBody 228, PPhysicsMaterial and PPhysicsModel 12 — so what
+            // one table does not describe, the other describes identically.
+            if (!schema.TryGetValue(classNames[index], out var row)
+                && !ByName.TryGetValue(classNames[index], out row))
             {
                 throw new InvalidOperationException(
                     $"The schema library does not describe '{classNames[index]}'.");

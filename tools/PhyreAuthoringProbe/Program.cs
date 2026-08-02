@@ -1273,6 +1273,13 @@ if (args.Length > 3 && args[1] == "--ops-diff")
     Count("cameras", before.Cameras.Count, after.Cameras.Count);
     Count("sounds", before.Sounds.Count, after.Sounds.Count);
     Count("lights", before.Lights.Count, after.Lights.Count);
+    Console.WriteLine("  --- contenu du second fichier ---");
+    foreach (var prop in after.Props)
+        Console.WriteLine($"    prop  {prop.AssetId} \"{prop.Name}\" en {prop.Transform.Position}");
+    foreach (var volume in after.Volumes)
+        Console.WriteLine($"    volume {volume}");
+    foreach (var point in after.Points)
+        Console.WriteLine($"    point {point}");
     for (var at = 0; at < Math.Min(before.Props.Count, after.Props.Count); at++)
     {
         var a = before.Props[at];

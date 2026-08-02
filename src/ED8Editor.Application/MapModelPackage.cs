@@ -113,9 +113,12 @@ public static class MapModelPackage
         var modelCluster = PhyreClusterAssembler.Assemble(
             PhyreModelClusterWriter.Contents(
                 authoredModel, material, packed, collision,
-                schemaProfile: collision is null
-                    ? PhyreSchemaProfile.FalcomAssetProcessor
-                    : PhyreSchemaProfile.Cs1Native));
+                // Always the profile that loads. It used to fall back to the
+                // "native" layout as soon as a map carried collision, because that
+                // profile's class table has no physics classes — the table now
+                // borrows them, so collision no longer changes the layout of
+                // everything else.
+                schemaProfile: PhyreSchemaProfile.FalcomAssetProcessor));
         say?.Invoke($"model: {modelCluster.Length} bytes, authored from the imported geometry");
         foreach (var (name, data) in shaders)
         {

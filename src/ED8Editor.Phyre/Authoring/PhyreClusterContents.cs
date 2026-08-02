@@ -76,13 +76,18 @@ public sealed record PhyreClusterContents(
         }
         if (SchemaProfile == PhyreSchemaProfile.FalcomAssetProcessor)
         {
-            if (!Groups.All(group =>
-                    PhyreSchemaLibrary.AssetProcessorCanonicalClasses.Contains(group.ClassName)))
-            {
-                throw new InvalidOperationException(
-                    "The Falcom AssetProcessor profile does not describe every requested group.");
-            }
-            return PhyreSchemaLibrary.AssetProcessorCanonicalClasses;
+            // Its table describes a model and stops there, so a map carrying
+            // collision names classes it does not list. Those go at the END, where
+            // they disturb nothing: a class id is a position, and appending leaves
+            // every canonical id exactly where the game expects it.
+            var extra = PhyreSchemaLibrary
+                .Closure(Groups.Select(group => group.ClassName))
+                .Where(name =>
+                    !PhyreSchemaLibrary.AssetProcessorCanonicalClasses.Contains(name))
+                .ToArray();
+            return extra.Length == 0
+                ? PhyreSchemaLibrary.AssetProcessorCanonicalClasses
+                : PhyreSchemaLibrary.AssetProcessorCanonicalClasses.Concat(extra).ToArray();
         }
 
         // The game's own table when it covers this cluster, in the game's own order.
