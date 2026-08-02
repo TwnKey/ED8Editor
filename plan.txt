@@ -3964,3 +3964,23 @@ RAPPEL DE METHODE, apres trois erreurs de ma part aujourd'hui :
   - verifier `find data/asset/D3D11 -name '*.pkg' -newermt <date>` AVANT l'essai
   - ne jamais annoncer une cause avant de l'avoir mesuree
   - toute substitution d'octets doit avoir une garde sur `find() == -1`
+
+## 2026-08-02 — la geometrie de la map rend, en PROP
+
+r0510.glb (171 maillages, 65 621 sommets) importe dans le slot O_T10CHR01, echelle
+0.02, materiau minimal : RENDU EN JEU, blanc (texture neutre). Le chemin du prop,
+valide ce soir, encaisse la geometrie complete de la map.
+
+DONC : ni la geometrie, ni les 171 segments, ni l'ecrivain de cluster ne sont en
+cause. Tout ce qui reste est la plomberie de MAP.
+
+Corrections apportees a la voie map en chemin (toutes mesurees contre M_R0510) :
+  - une entree de jeu de materiaux par segment (etait fixee a 1)
+  - le fixup de tableau de pointeurs qui declare ce jeu
+  - le profil de schema du prop quand il n'y a pas de collision
+  - la texture du materiau livree ET declaree sous map/images dans le manifeste
+  - plus aucun shader declare sans usage (on ne livre que celui demande)
+Aucune n'a suffi : une map de 4 sommets sans collision plante encore.
+
+RESTE A OUVRIR : z9200.ops (1663 o.), z9200.dat (69 o. — tres peu pour un script
+de scenario), l'entree de t_place.tbl, et le symbole d'asset du manifeste.

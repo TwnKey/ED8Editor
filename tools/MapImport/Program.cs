@@ -517,7 +517,8 @@ var shaderFrom = Array.IndexOf(args, "--shader-from") is var flag && flag >= 0 &
     ? args[flag + 1]
     : null;
 var packagePath = MapModelPackage.WriteMinimal(
-    project, name, converted.Model, Console.WriteLine, shaderFrom);
+    project, name, converted.Model, Console.WriteLine, shaderFrom,
+    withCollision: !args.Contains("--no-collision"));
 
 if (replaceModel)
 {

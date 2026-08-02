@@ -454,7 +454,34 @@ public static class PhyreModelClusterWriter
         // PMaterialSet is a PSharray<PMaterial *>: its count is in the object and
         // each element is an ordinary pointer carrying its array index. Shipped
         // static models do not emit a pointer-array fixup for this member.
-        SharedArrayElement("PMesh", 0, "m_defaultMaterials", "PMaterial", 0, 0);
+        //
+        // ONE ENTRY PER SEGMENT. The set is indexed by segment, so a mesh drawing a
+        // hundred and seventy-one of them needs as many entries — a shipped map with
+        // fourteen segments carries fourteen. This was fixed at one, which is only
+        // ever right for a single-segment mesh; every prop authored so far had
+        // exactly one, so the mistake stayed invisible until a map was written.
+        // Only one material is authored, so every entry names it.
+        for (uint segment = 0; segment < packed.Count; segment++)
+        {
+            SharedArrayElement("PMesh", 0, "m_defaultMaterials", "PMaterial", 0, segment);
+        }
+        // A set of more than one entry also DECLARES itself, as a pointer-array
+        // fixup. A shipped map's four meshes hold 1, 1, 6 and 6 materials, and only
+        // the two with six carry that declaration — which is why the note here used
+        // to say shipped models emit none: every model looked at had a single entry.
+        // The element pointers alone leave the engine an array it was never told the
+        // length of.
+        if (packed.Count > 1)
+        {
+            var set = Field(descriptors, "PMesh", "m_defaultMaterials");
+            if (set is not null)
+            {
+                pointerArrays.Add(new PhyreArrayFixup(
+                    Group("PMesh"), 0,
+                    0x80000000u | (set.ValueOffset + sizeof(uint)),
+                    (uint)packed.Count, 0));
+            }
+        }
         Point("PMeshInstance", 0, "m_mesh", "PMesh", 0);
         Point("PMeshInstance", 0, "m_localToWorldMatrix", "PWorldMatrix", 0);
         // m_materialSet points at the PMaterialSet embedded at PMesh.+0x30.
@@ -617,7 +644,7 @@ public static class PhyreModelClusterWriter
                         break;
                     case "PMesh":
                         Set("m_meshSegments", (uint)packed.Count);
-                        Set("m_defaultMaterials", 1);
+                        Set("m_defaultMaterials", (uint)packed.Count);
                         break;
                     case "PMeshInstance":
                         Set("m_segmentContext", (uint)packed.Count);

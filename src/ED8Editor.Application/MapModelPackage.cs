@@ -56,7 +56,8 @@ public static class MapModelPackage
         string mapName,
         PhyreModelSource model,
         Action<string>? say = null,
-        string? shippedShaderPackage = null)
+        string? shippedShaderPackage = null,
+        bool withCollision = true)
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentNullException.ThrowIfNull(model);
@@ -68,9 +69,16 @@ public static class MapModelPackage
         // has no visual scene for the asset M_Z9100 to instantiate.
         var authoredModel = model with { AssetName = lower };
         var packed = PhyreModelGeometryPacker.Pack(authoredModel);
-        var collision = Collision(authoredModel);
-        say?.Invoke($"collision: {collision.Vertices.Count} vertices,"
-            + $" {collision.Indices.Count / 3} triangles");
+        // Collision is the render mesh itself, which for a map is far heavier than
+        // what the game ships: r0510 carries three simplified shapes totalling 75 KB
+        // where ours is one shape of 1.8 MB. Being able to leave it out separates
+        // "the map does not draw" from "the map's collision is rejected", which is
+        // the order these have to be answered in.
+        var collision = withCollision ? Collision(authoredModel) : null;
+        say?.Invoke(collision is null
+            ? "collision: none"
+            : $"collision: {collision.Vertices.Count} vertices,"
+                + $" {collision.Indices.Count / 3} triangles");
 
         var shaders = shippedShaderPackage is null
             ? new (string Name, byte[] Data)[]
@@ -97,8 +105,17 @@ public static class MapModelPackage
                 : "shaders/" + Path.GetFileNameWithoutExtension(shaders[0].Name));
 
         var material = new PhyreShaderBinding(shaderAsset, parameters);
+        // The same schema profile as a prop, when there is no collision to write.
+        // A prop written this way loads; a map written the "native" way does not, and
+        // the profile is one of the few things that has always differed between the
+        // two paths. It could not be tried before: the profile's class table has no
+        // physics classes, so a map carrying collision could not use it.
         var modelCluster = PhyreClusterAssembler.Assemble(
-            PhyreModelClusterWriter.Contents(authoredModel, material, packed, collision));
+            PhyreModelClusterWriter.Contents(
+                authoredModel, material, packed, collision,
+                schemaProfile: collision is null
+                    ? PhyreSchemaProfile.FalcomAssetProcessor
+                    : PhyreSchemaProfile.Cs1Native));
         say?.Invoke($"model: {modelCluster.Length} bytes, authored from the imported geometry");
         foreach (var (name, data) in shaders)
         {
@@ -109,13 +126,77 @@ public static class MapModelPackage
         }
         say?.Invoke($"the material asks for '{shaderAsset}'");
 
+        // Only the shader the material asks for. A shipped map's package holds five,
+        // but they belong to its thirteen materials and to a second asset — its
+        // minimap, M_R0510_MI, which we do not write. Carrying them all made our
+        // manifest declare a minimap shader with no minimap to use it, a dangling
+        // declaration the shipped file never has.
+        if (shippedShaderPackage is not null)
+        {
+            var asked = Path.GetFileName(shaderAsset) + ".phyre";
+            var only = shaders
+                .Where(value => value.Name.Equals(asked, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            if (only.Length != 0)
+            {
+                foreach (var (name, _) in shaders.Except(only))
+                {
+                    say?.Invoke($"  laisse de cote : {name}");
+                }
+                shaders = only;
+            }
+        }
+
+        // The textures the material names, from the package the material came from.
+        // A map took its material from a shipped package and inherited that
+        // material's texture imports — "map/images/8r05gr00.dds" and its like — while
+        // shipping none of them and declaring none in the manifest. The prop path
+        // carries them; this one never did, so every authored map has been asking the
+        // loader for a texture that is nowhere in the file.
+        var mapTextures = Array.Empty<(string Name, byte[] Data)>();
+        if (shippedShaderPackage is not null && parameters is not null)
+        {
+            var wanted = parameters.Imports
+                .Where(import => import.Member != "m_effectVariant")
+                .Select(import => Path.GetFileName(import.Asset))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var source = new PkgArchiveReader().Read(shippedShaderPackage);
+            mapTextures = source.Entries
+                .Where(entry =>
+                    entry.Name.EndsWith(".dds.phyre", StringComparison.OrdinalIgnoreCase)
+                    && wanted.Contains(Path.GetFileNameWithoutExtension(entry.Name)))
+                .Select(entry => (entry.Name, Data: source.ReadEntry(entry)))
+                .ToArray();
+            foreach (var (name, data) in mapTextures)
+            {
+                say?.Invoke($"texture: {name} — {data.Length} bytes, from "
+                    + Path.GetFileName(shippedShaderPackage));
+            }
+            var missing = wanted
+                .Where(file => mapTextures.All(texture =>
+                    !Path.GetFileNameWithoutExtension(texture.Name)
+                        .Equals(file, StringComparison.OrdinalIgnoreCase)))
+                .ToArray();
+            if (missing.Length != 0)
+            {
+                throw new InvalidDataException(
+                    $"The material names {string.Join(", ", missing)}, which"
+                    + $" '{Path.GetFileName(shippedShaderPackage)}' does not carry."
+                    + " A map that ships neither the texture nor its declaration asks"
+                    + " the loader for something the file does not contain.");
+            }
+        }
+
         var symbol = MapAuthoring.ModelAsset(mapName);
-        var manifest = Manifest(symbol, lower, shaders.Select(value => value.Name).ToArray());
+        var manifest = Manifest(
+            symbol, lower,
+            shaders.Select(value => value.Name).ToArray(),
+            mapTextures.Select(value => value.Name).ToArray());
         var entries = new[]
         {
             ("asset_D3D11.xml", new System.Text.UTF8Encoding(false).GetBytes(manifest)),
             (lower + ".dae.phyre", modelCluster),
-        }.Concat(shaders).ToArray();
+        }.Concat(mapTextures).Concat(shaders).ToArray();
 
         var destination = Path.Combine(
             project.GameDirectory, "data", "asset", "D3D11", symbol + ".pkg");
@@ -434,7 +515,9 @@ public static class MapModelPackage
                 + $" {matches.Length} matching compiled effects.");
     }
 
-    private static string Manifest(string symbol, string lower, IReadOnlyList<string> shaders)
+    private static string Manifest(
+        string symbol, string lower, IReadOnlyList<string> shaders,
+        IReadOnlyList<string>? textures = null)
     {
         static string Quote(string value) => "\"" + value + "\"";
         var text = new System.Text.StringBuilder();
@@ -445,6 +528,14 @@ public static class MapModelPackage
         Line("    <cluster path="
             + Quote($"data/D3D11/map/{lower}/{lower}.dae.phyre")
             + " type=" + Quote("p_collada") + " />");
+        // A texture is declared under map/images, which is the path its asset id
+        // states: a shipped map names "map/images/8r05gr00.dds" and declares
+        // "data/D3D11/map/images/8r05gr00.dds.phyre". The two have to agree.
+        foreach (var texture in textures ?? Array.Empty<string>())
+        {
+            Line("    <cluster path=" + Quote($"data/D3D11/map/images/{texture}")
+                + " type=" + Quote("p_texture") + " />");
+        }
         foreach (var shader in shaders)
         {
             Line("    <cluster path=" + Quote($"data/D3D11/shaders/{shader}")

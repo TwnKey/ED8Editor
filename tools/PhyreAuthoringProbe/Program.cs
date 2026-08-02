@@ -1105,6 +1105,17 @@ if (args.Length > 2 && args[1] == "--shape-of")
             ?? chain.FirstOrDefault(value => value.ValueOffset + 4 == raw);
         return named is null ? $"0x{key:X}" : named.Name;
     }
+    // Les fixups de tableaux de pointeurs, que notre writer n'emet jamais : une map
+    // livree en a deux, portant douze pointeurs, et le commentaire de notre code dit
+    // seulement que les MODELES STATIQUES n'en ont pas.
+    foreach (var array in set.PointerArrays)
+    {
+        Console.WriteLine($"  tableau de pointeurs : {GroupName(array.SourceListIndex)}"
+            + $"[{array.SourceObjectId}].{MemberName(array.SourceListIndex, array.SourceOffsetOrMember)}"
+            + $" — {array.Count} pointeurs a l'offset {array.Offset}");
+    }
+    foreach (var array in set.Arrays.Take(0)) { }
+
     var lines = new List<string>();
     foreach (var pointer in set.Pointers)
     {
