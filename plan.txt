@@ -3937,3 +3937,30 @@ DONC le plantage de la map vient d'ailleurs. Reference disponible et jamais
 utilisee : le cluster de M_R0510.pkg lui-meme, qui se charge et porte sa
 collision. C'est a lui qu'il faut comparer notre z9200, comme on l'a fait pour le
 prop contre la chaise.
+
+## 2026-08-02 (fin de session) — etat de la map
+
+TESTE, TOUS PLANTES :
+  1. z9200 + notre shader ed8editor_minimal.fx
+  2. z9200 + les shaders de M_R0510 (ecarte notre shader)
+  3. z9200 + le marqueur 'TLLB' au mot 17 de l'en-tete (4 octets)
+
+COMPARAISON avec M_R0510.dae.phyre (map LIVREE qui se charge, avec sa collision) :
+  - memes 147 classes, 15 types, meme taille d'espace de noms (24120)
+  - memes classes instanciees des deux cotes, rien qui manque ni en trop
+  - memes tailles d'objets (PDataBlockD3D11 56, PMeshInstance 64, PShape 28,
+    PPhysicsMesh 108, PPhysicsRigidBody 228...)
+  - mot 17 : 'TLLB' chez elle, 0 chez nous (teste, insuffisant seul)
+
+Ce qui n'a PAS ete compare et reste a faire, dans l'ordre :
+  a) les fixups : la livree a 303 tableaux / 722 pointeurs / 7 tableaux de
+     pointeurs / 26 user fixups ; nous 66 / 2674 / 5 / 15. Les ordres de grandeur
+     ne se correspondent pas du tout — c'est la piste la plus grosse.
+  b) le contenu des objets, champ par champ, comme pour le prop.
+  c) bisection par blocs a partir d'un fichier qui charge, methode qui a trouve
+     le defaut d'alignement.
+
+RAPPEL DE METHODE, apres trois erreurs de ma part aujourd'hui :
+  - verifier `find data/asset/D3D11 -name '*.pkg' -newermt <date>` AVANT l'essai
+  - ne jamais annoncer une cause avant de l'avoir mesuree
+  - toute substitution d'octets doit avoir une garde sur `find() == -1`
