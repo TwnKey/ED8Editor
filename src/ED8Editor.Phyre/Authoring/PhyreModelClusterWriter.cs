@@ -653,7 +653,12 @@ public static class PhyreModelClusterWriter
         {
             Point("PPhysicsModel", 0, "m_rigidBodies", "PPhysicsRigidBody", 0);
             Point("PPhysicsRigidBody", 0, "m_material", "PPhysicsMaterial", 0);
-            Point("PPhysicsRigidBody", 0, "m_targetNode", "PNode", 0);
+            // The node that carries a world matrix, not the scene root. Bullet takes
+            // the body's transform from the target node — PhyrePhysicsRigidBodyBullet
+            // reads node->getLocalToWorldMatrix() — and the root has none, so a body
+            // aimed at it is a body placed by nothing. A shipped map aims each of its
+            // bodies at the named node holding its surfaces: CA00, CK00, CS00.
+            Point("PPhysicsRigidBody", 0, "m_targetNode", "PNode", authoringLayout ? 2u : 0u);
             Point("PPhysicsRigidBody", 0, "m_model", "PPhysicsModel", 0);
             Point("PPhysicsMesh", 0, "m_shape", "PShape", 0);
 

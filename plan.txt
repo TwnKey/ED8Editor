@@ -4166,3 +4166,24 @@ RESTE : notre corps rigide vise PNode[0], sans nom, alors que la map livree vise
 des noeuds NOMMES qui portent les surfaces —
   corps 0 -> PNode[1] "CA00" ; corps 1 -> PNode[2] "CK00" ; corps 2 -> PNode[4] "CS00"
 Sonde ajoutee : --bodies <cluster>.
+
+## 2026-08-02 — derniere livraison de la session
+
+Le corps rigide visait PNode[0], la racine de scene, qui ne porte AUCUNE matrice
+monde. Or PhyrePhysicsRigidBodyBullet prend la transformation du corps sur le
+noeud vise : node->getLocalToWorldMatrix(). Un corps vise sur la racine est un
+corps place par rien.
+
+Corrige : il vise desormais PNode[2], celui qui porte la matrice monde.
+  avant : corps 0 -> PNode[0] (sans nom)
+  apres : corps 0 -> PNode[2] "z9100"
+La map livree vise des noeuds nommes portant ses surfaces (CA00, CK00, CS00).
+
+ETAT A LA FIN DE LA SESSION
+  ACQUIS : la chaine complete (importateur, ecrivain de cluster, empaqueteur)
+    produit une map qui se charge, s'affiche et se texture. 14 materiaux, 12
+    textures a nous, 166 segments, collision ecrite et relisible.
+  NON RESOLU : on traverse encore les murs. Et le fil de fer vert du viewer ne
+    s'affiche toujours pas — le libelle de la case dit maintenant ce qu'il a
+    trouve ou pourquoi il n'a rien trouve, c'est par la qu'il faut reprendre.
+  NON TESTE : cette derniere correction (noeud vise) n'a pas ete essayee en jeu.
