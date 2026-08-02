@@ -567,9 +567,18 @@ if (problems.Count != 0)
 var shaderFrom = Array.IndexOf(args, "--shader-from") is var flag && flag >= 0 && flag + 1 < args.Length
     ? args[flag + 1]
     : null;
+// --collision-from <package> : prendre la collision d'un autre paquet plutot que
+// celle du modele. Notre cluster et celui du jeu se ressemblent maintenant partout
+// ou je sais regarder, et l'un porte le joueur tandis que l'autre non ; echanger
+// la seule collision dit laquelle des deux moities est en cause.
+var collisionFromFlag = Array.IndexOf(args, "--collision-from");
+var collisionFrom = collisionFromFlag >= 0 && collisionFromFlag + 1 < args.Length
+    ? args[collisionFromFlag + 1]
+    : null;
 var packagePath = MapModelPackage.WriteMinimal(
     project, name, converted.Model, Console.WriteLine, shaderFrom,
-    withCollision: !args.Contains("--no-collision"));
+    withCollision: !args.Contains("--no-collision"),
+    collisionFrom: collisionFrom);
 
 if (replaceModel)
 {

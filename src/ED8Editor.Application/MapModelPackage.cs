@@ -57,7 +57,8 @@ public static class MapModelPackage
         PhyreModelSource model,
         Action<string>? say = null,
         string? shippedShaderPackage = null,
-        bool withCollision = true)
+        bool withCollision = true,
+        string? collisionFrom = null)
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentNullException.ThrowIfNull(model);
@@ -67,6 +68,9 @@ public static class MapModelPackage
         // Inside a p_collada cluster, however, exported asset IDs belong to the
         // cluster's logical DAE path.  A z9100 cluster exporting r0510 objects
         // has no visual scene for the asset M_Z9100 to instantiate.
+        // Short collada ids — "z9100.dae#Name" — even though a shipped map qualifies
+        // its own with the folder. Qualifying ours made the map vanish entirely, so
+        // whatever the loader resolves these against, it wants the short form here.
         var authoredModel = model with { AssetName = lower };
         // Collision surfaces are not scenery: they exist to stop the player and are
         // never meant to be seen. Drawn, they are the walls standing across the map.
@@ -86,9 +90,11 @@ public static class MapModelPackage
         // where ours is one shape of 1.8 MB. Being able to leave it out separates
         // "the map does not draw" from "the map's collision is rejected", which is
         // the order these have to be answered in.
-        var collisions = withCollision
-            ? Collisions(authoredModel)
-            : Array.Empty<(string Node, PhyrePhysicsSource Shape)>();
+        var collisions = !withCollision
+            ? Array.Empty<(string Node, PhyrePhysicsSource Shape)>()
+            : collisionFrom is not null
+                ? BorrowedCollision(collisionFrom)
+                : Collisions(authoredModel);
         if (collisions.Count == 0) say?.Invoke("collision: none");
         foreach (var (node, shape) in collisions)
         {
@@ -129,11 +135,10 @@ public static class MapModelPackage
         var modelCluster = PhyreClusterAssembler.Assemble(
             PhyreModelClusterWriter.Contents(
                 drawn, material, packed, collisions,
-                // Always the profile that loads. It used to fall back to the
-                // "native" layout as soon as a map carried collision, because that
-                // profile's class table has no physics classes — the table now
-                // borrows them, so collision no longer changes the layout of
-                // everything else.
+                // The processor's layout, always: it is the one proven to draw, and
+                // the game's own table — tried in its place — emptied the map. The
+                // physics classes it lacks are appended, which costs nothing since a
+                // class table is self-describing.
                 schemaProfile: PhyreSchemaProfile.FalcomAssetProcessor));
         say?.Invoke($"model: {modelCluster.Length} bytes, authored from the imported geometry");
         foreach (var (name, data) in shaders)
@@ -653,6 +658,28 @@ public static class MapModelPackage
             .Select(group => (
                 group.Key,
                 Collision(model with { Meshes = group.ToArray() })))
+            .ToArray();
+    }
+
+    /// <summary>
+    /// The collision of another package, read straight out of its cluster.
+    ///
+    /// Our cluster and a shipped one now agree everywhere this can look, and one
+    /// holds the player up while the other does not. Swapping only the collision
+    /// says which half is at fault, which no amount of further comparison can.
+    /// </summary>
+    private static IReadOnlyList<(string Node, PhyrePhysicsSource Shape)> BorrowedCollision(
+        string packagePath)
+    {
+        var archive = new PkgArchiveReader().Read(packagePath);
+        var entry = archive.Entries.First(value =>
+            value.Name.EndsWith(".dae.phyre", StringComparison.OrdinalIgnoreCase));
+        var shapes = ED8Editor.Phyre.PhyreCollisionReader.Read(archive.ReadEntry(entry));
+        var names = new[] { "CA00", "CK00", "CS00", "CA01", "CS01" };
+        return shapes
+            .Select((shape, at) => (
+                at < names.Length ? names[at] : $"CX{at:00}",
+                new PhyrePhysicsSource(shape.Vertices, shape.Indices)))
             .ToArray();
     }
 

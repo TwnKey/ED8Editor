@@ -374,11 +374,13 @@ public static class PhyreModelClusterWriter
 
         // The asset references: one for the cluster's type, then one naming each
         // object the game looks up by name.
-        // Use the short-name convention the engine's own asset processor writes:
-        // "{asset}.dae#Name" — not a path-qualified collada id. The game's
-        // p_collada loader resolves these against the compiled-class registry
-        // keyed by entry name, and a path prefix makes the two disagree.
-        var colladaId = $"{model.AssetName}.dae#";
+        // A prop names itself short — "t10chr01.dae#Name", as the asset processor
+        // writes and as the chair that loads carries. A MAP does not: r0510 writes
+        // "map/r0510/r0510.dae#Name", qualified by the folder its manifest declares
+        // it in. Ours used the short form everywhere, which is a name no map has.
+        var colladaId = model.AssetFolder is { } folder
+            ? $"{folder}/{model.AssetName}.dae#"
+            : $"{model.AssetName}.dae#";
         // The names of the one cluster known to load, in ITS object order: material,
         // node, mesh, instance. That order had been changed to follow the order the
         // name STRINGS appear in the group's array data, which is not the order of the
@@ -397,8 +399,18 @@ public static class PhyreModelClusterWriter
         {
             named.Insert(more, ("PMaterial", (uint)more, colladaId + materialNames[more]));
         }
-        if (physics is not null)
-            named.Add(("PShape", 0, colladaId + model.AssetName + "Shape-PhysicsShape"));
+        // Three per collision surface, as a shipped map writes them: the node, the
+        // shape it carries, and the physics shape itself — "CA00", "CA0Shape0",
+        // "CA0Shape0-PhysicsShape". Ours named only one shape and never a node.
+        for (var body = 0; body < bodies.Count; body++)
+        {
+            var surface = bodies[body].Node;
+            var shape = surface.Length >= 4
+                ? surface[..3] + "Shape" + surface[3]
+                : surface + "Shape";
+            named.Add(("PNode", (uint)(3 + body), colladaId + surface));
+            named.Add(("PShape", (uint)body, colladaId + shape + "-PhysicsShape"));
+        }
         for (uint index = 0; index < named.Count; index++)
         {
             var (target, targetId, text) = named[checked((int)index)];
@@ -642,24 +654,28 @@ public static class PhyreModelClusterWriter
         // instance is placed by — the arrangement every shipped model uses.
         Point("PNode", 0, "m_firstChild", "PNode", 1);
         Point("PNode", 1, "m_parent", "PNode", 0);
+        var firstCollisionNode = (uint)(authoringLayout ? 3 : 2);
         if (authoringLayout)
         {
             Point("PNode", 1, "m_firstChild", "PNode", 2);
             Point("PNode", 2, "m_parent", "PNode", 1);
             Point("PNode", 2, "m_worldMatrix", "PWorldMatrix", 0);
-            // A node per collision surface, beside the one that draws rather than
-            // under it, chained as siblings the way a scene lists them.
-            for (var body = 0; body < bodies.Count; body++)
-            {
-                var node = (uint)(3 + body);
-                Point("PNode", node - 1, "m_next", "PNode", node);
-                Point("PNode", node, "m_parent", "PNode", 1);
-                Point("PNode", node, "m_worldMatrix", "PWorldMatrix", 0);
-            }
         }
         else
         {
             Point("PNode", 1, "m_worldMatrix", "PWorldMatrix", 0);
+        }
+        {
+            // A node per collision surface, beside the one that draws rather than
+            // under it, chained as siblings the way a scene lists them. Independent
+            // of the layout: a map carries these whichever class table it uses.
+            for (var body = 0; body < bodies.Count; body++)
+            {
+                var node = firstCollisionNode + (uint)body;
+                Point("PNode", node - 1, "m_next", "PNode", node);
+                Point("PNode", node, "m_parent", "PNode", 1);
+                Point("PNode", node, "m_worldMatrix", "PWorldMatrix", (uint)(1 + body));
+            }
         }
 
         // Collision: one rigid body per surface, each holding one mesh shape, each
@@ -675,20 +691,24 @@ public static class PhyreModelClusterWriter
             // PhyrePhysicsRigidBodyBullet reads node->getLocalToWorldMatrix() — and a
             // shipped map aims each body at its own: CK00, CS00, CA00, CA01, CS01.
             Point("PPhysicsRigidBody", body, "m_targetNode", "PNode",
-                authoringLayout ? 3u + body : 0u);
+                (uint)(authoringLayout ? 3 : 2) + body);
             Point("PPhysicsRigidBody", body, "m_model", "PPhysicsModel", 0);
+            // The type its script callback handler names. Every shipped body carries
+            // one — a class descriptor reading "PBase" at raw offset 0xD8, inside
+            // m_scriptHandler — and it was the only pointer of theirs we never wrote.
+            pointers.Add(new PhyrePointerFixup(
+                Group("PPhysicsRigidBody"), body, 0x800000D8u,
+                0, 0, 0, 0, UserFixup("PClassDescriptor", "PBase")));
             Point("PPhysicsMesh", body, "m_shape", "PShape", body);
 
-            // m_shapes is a shared array of POINTERS, so it takes a pointer-array
-            // fixup declaring the array and one pointer per element, each carrying
-            // its index. It is the only one of the three fixup kinds this writer
-            // had never produced.
+            // m_shapes takes its element pointer and NOTHING else. A shipped map's
+            // rigid bodies carry no pointer-array fixup at all — measured on r0510,
+            // whose three bodies have zero — where we declared one per body. It was
+            // added on the assumption that an array of pointers needs declaring; the
+            // file that works says otherwise.
             var shapes = Field(descriptors, "PPhysicsRigidBody", "m_shapes");
             if (shapes is not null)
             {
-                pointerArrays.Add(new PhyreArrayFixup(
-                    Group("PPhysicsRigidBody"), body,
-                    0x80000000u | (shapes.ValueOffset + sizeof(uint)), 1, 0));
                 pointers.Add(new PhyrePointerFixup(
                     Group("PPhysicsRigidBody"), body,
                     0x80000000u | (shapes.ValueOffset + sizeof(uint)),
@@ -730,9 +750,15 @@ public static class PhyreModelClusterWriter
                 // collision surfaces off a node of its own, named CA00, CK00, CS00,
                 // and never off the node that draws. Ours shared the mesh node,
                 // which is a shape no shipped map has.
-                "PNode" => authoringLayout
-                    ? (uint)(3 + bodies.Count)
-                    : 2u,
+                // The model's own nodes, plus one per collision surface. The count
+                // of the model's own depends on the layout; the collision ones do
+                // not, and folding them into that test silently dropped them the
+                // moment the layout changed.
+                "PNode" => (uint)((authoringLayout ? 3 : 2) + bodies.Count),
+                // One per node that has one. The engine resolves a node's world
+                // matrix INTO this object, so nodes sharing a single one overwrite
+                // each other — a shipped map carries four for its five nodes.
+                "PWorldMatrix" => (uint)(1 + bodies.Count),
                 "PMaterial" when material is not null => (uint)materialCount,
                 "PShape" or "PPhysicsMesh" or "PPhysicsRigidBody" or "PPhysicsMaterial"
                     when bodies.Count != 0 => (uint)bodies.Count,
@@ -951,15 +977,13 @@ public static class PhyreModelClusterWriter
                 // mesh instance is exported under — not that name plus "Shape", which
                 // is the mesh's own reference and not a node's.
                 NodeName(1, "VisualSceneNode1");
-                if (authoringLayout)
+                if (authoringLayout) NodeName(2, model.AssetName);
+                // A collision node carries the name the game gives it — CA00, CK00,
+                // CS00 — whatever class table the map is written with. Folded into
+                // the layout test, these vanished the moment the table changed.
+                for (var body = 0; body < bodies.Count; body++)
                 {
-                    NodeName(2, model.AssetName);
-                    // The name the game gives a collision node. Its own maps use
-                    // CA00, CK00 and CS00, and nothing else in a map is named so.
-                    for (var body = 0; body < bodies.Count; body++)
-                    {
-                        NodeName((uint)(3 + body), bodies[body].Node);
-                    }
+                    NodeName((uint)((authoringLayout ? 3 : 2) + body), bodies[body].Node);
                 }
             }
             if (className == "PMeshInstance"

@@ -1473,6 +1473,65 @@ if (args.Length > 2 && args[1] == "--read-textures")
     return 0;
 }
 
+// Is there collision under a point? A vertical ray against every shape.
+//
+// A map can carry a correct collision mesh and still drop the player, if the
+// player arrives where that mesh has no floor. Ours comes from CS2's r0510 and
+// the arrival point was taken from CS1's, so the two need not agree.
+//
+//   PhyreAuthoringProbe x --under <cluster> <x> <y> <z>
+if (args.Length > 5 && args[1] == "--under")
+{
+    var culture = System.Globalization.CultureInfo.InvariantCulture;
+    var from = new System.Numerics.Vector3(
+        float.Parse(args[3], culture), float.Parse(args[4], culture), float.Parse(args[5], culture));
+    var shapes = PhyreCollisionReader.Read(ReadClusterOrPackage(args[2]));
+    var best = float.MinValue;
+    var hits = 0;
+    foreach (var solid in shapes)
+    for (var at = 0; at + 2 < solid.Indices.Count; at += 3)
+    {
+        var a = solid.Vertices[solid.Indices[at]];
+        var b = solid.Vertices[solid.Indices[at + 1]];
+        var c = solid.Vertices[solid.Indices[at + 2]];
+        var d = (b.Z - c.Z) * (a.X - c.X) + (c.X - b.X) * (a.Z - c.Z);
+        if (Math.Abs(d) < 1e-9f) continue;
+        var u = ((b.Z - c.Z) * (from.X - c.X) + (c.X - b.X) * (from.Z - c.Z)) / d;
+        var v = ((c.Z - a.Z) * (from.X - c.X) + (a.X - c.X) * (from.Z - c.Z)) / d;
+        var w = 1f - u - v;
+        if (u < 0 || v < 0 || w < 0) continue;
+        var height = u * a.Y + v * b.Y + w * c.Y;
+        hits++;
+        if (height <= from.Y && height > best) best = height;
+    }
+    Console.WriteLine($"point ({from.X}, {from.Y}, {from.Z})");
+    Console.WriteLine($"  {hits} triangle(s) a l'aplomb");
+    Console.WriteLine(best == float.MinValue
+        ? "  AUCUN SOL en dessous"
+        : $"  sol le plus haut sous le point : y = {best:0.###}");
+    return 0;
+}
+
+// The members a cluster declares for a class, in the order it declares them.
+//
+// A fixup names a member by its POSITION in the packed member table, so two files
+// that agree on every object byte can still disagree on what those bytes mean if
+// their class descriptors list different members.
+//
+//   PhyreAuthoringProbe x --members <cluster> <ClassName>
+if (args.Length > 3 && args[1] == "--members")
+{
+    var read = new PhyreClusterReader().Read(ReadClusterOrPackage(args[2]));
+    var found = read.Metadata.Classes.FirstOrDefault(value => value.Name == args[3]);
+    if (found is null) { Console.WriteLine($"'{args[3]}' absente"); return 1; }
+    Console.WriteLine($"{found.Name} : taille {found.Size}, {found.Members.Count} membre(s) propres");
+    foreach (var member in PhyreObjectWriter.Chain(found, read.Metadata.Classes))
+    {
+        Console.WriteLine($"  [{member.Index,3}] +{member.ValueOffset,-4} {member.Name}");
+    }
+    return 0;
+}
+
 var assets = Path.Combine(args[0], "asset", "D3D11");
 var pattern = args.Length > 1 ? args[1] : "I_EFTEX*.pkg";
 var take = args.Length > 2 ? int.Parse(args[2]) : int.MaxValue;
