@@ -77,12 +77,18 @@ public static class PhyreModelClusterWriter
         PhyreModelSource model,
         PhyreShaderBinding shader,
         IReadOnlyList<PhyrePackedGeometry> packed,
-        PhyrePhysicsSource? physics = null,
+        IReadOnlyList<(string Node, PhyrePhysicsSource Shape)>? collisions = null,
         PhyreSchemaProfile schemaProfile = PhyreSchemaProfile.Cs1Native)
     {
         ArgumentNullException.ThrowIfNull(model);
         ArgumentNullException.ThrowIfNull(shader);
         ArgumentNullException.ThrowIfNull(packed);
+        // One rigid body, shape, mesh and material per collision surface, as the
+        // game writes them: r0510 carries five, named CK00, CS00, CA00, CA01, CS01,
+        // each aimed at its own node. One merged shape is a structure no shipped map
+        // has, and the first thing a body does is take its transform from that node.
+        var bodies = collisions ?? Array.Empty<(string Node, PhyrePhysicsSource Shape)>();
+        var physics = bodies.Count == 0 ? null : bodies[0].Shape;
         if (packed.Count == 0)
         {
             throw new ArgumentException("A model needs at least one mesh.", nameof(packed));
@@ -641,26 +647,37 @@ public static class PhyreModelClusterWriter
             Point("PNode", 1, "m_firstChild", "PNode", 2);
             Point("PNode", 2, "m_parent", "PNode", 1);
             Point("PNode", 2, "m_worldMatrix", "PWorldMatrix", 0);
+            // A node per collision surface, beside the one that draws rather than
+            // under it, chained as siblings the way a scene lists them.
+            for (var body = 0; body < bodies.Count; body++)
+            {
+                var node = (uint)(3 + body);
+                Point("PNode", node - 1, "m_next", "PNode", node);
+                Point("PNode", node, "m_parent", "PNode", 1);
+                Point("PNode", node, "m_worldMatrix", "PWorldMatrix", 0);
+            }
         }
         else
         {
             Point("PNode", 1, "m_worldMatrix", "PWorldMatrix", 0);
         }
 
-        // Collision, when there is any: a model holds a rigid body, the body holds
-        // a mesh shape, and the shape holds the collision triangles.
-        if (physics is not null)
+        // Collision: one rigid body per surface, each holding one mesh shape, each
+        // shape holding its triangles — and the bodies chained, since a model's
+        // m_rigidBodies is an intrusive list rather than an array.
+        for (uint body = 0; body < bodies.Count; body++)
         {
-            Point("PPhysicsModel", 0, "m_rigidBodies", "PPhysicsRigidBody", 0);
-            Point("PPhysicsRigidBody", 0, "m_material", "PPhysicsMaterial", 0);
-            // The node that carries a world matrix, not the scene root. Bullet takes
-            // the body's transform from the target node — PhyrePhysicsRigidBodyBullet
-            // reads node->getLocalToWorldMatrix() — and the root has none, so a body
-            // aimed at it is a body placed by nothing. A shipped map aims each of its
-            // bodies at the named node holding its surfaces: CA00, CK00, CS00.
-            Point("PPhysicsRigidBody", 0, "m_targetNode", "PNode", authoringLayout ? 2u : 0u);
-            Point("PPhysicsRigidBody", 0, "m_model", "PPhysicsModel", 0);
-            Point("PPhysicsMesh", 0, "m_shape", "PShape", 0);
+            if (body == 0) Point("PPhysicsModel", 0, "m_rigidBodies", "PPhysicsRigidBody", 0);
+            else Point("PPhysicsRigidBody", body - 1, "m_next", "PPhysicsRigidBody", body);
+            Point("PPhysicsRigidBody", body, "m_material", "PPhysicsMaterial", body);
+            // The node that carries this surface, not the one that draws and not the
+            // scene root. Bullet takes a body's transform from the node it aims at —
+            // PhyrePhysicsRigidBodyBullet reads node->getLocalToWorldMatrix() — and a
+            // shipped map aims each body at its own: CK00, CS00, CA00, CA01, CS01.
+            Point("PPhysicsRigidBody", body, "m_targetNode", "PNode",
+                authoringLayout ? 3u + body : 0u);
+            Point("PPhysicsRigidBody", body, "m_model", "PPhysicsModel", 0);
+            Point("PPhysicsMesh", body, "m_shape", "PShape", body);
 
             // m_shapes is a shared array of POINTERS, so it takes a pointer-array
             // fixup declaring the array and one pointer per element, each carrying
@@ -670,12 +687,12 @@ public static class PhyreModelClusterWriter
             if (shapes is not null)
             {
                 pointerArrays.Add(new PhyreArrayFixup(
-                    Group("PPhysicsRigidBody"), 0,
+                    Group("PPhysicsRigidBody"), body,
                     0x80000000u | (shapes.ValueOffset + sizeof(uint)), 1, 0));
                 pointers.Add(new PhyrePointerFixup(
-                    Group("PPhysicsRigidBody"), 0,
+                    Group("PPhysicsRigidBody"), body,
                     0x80000000u | (shapes.ValueOffset + sizeof(uint)),
-                    (uint)Group("PPhysicsMesh"), 0, 0, 0, null));
+                    (uint)Group("PPhysicsMesh"), body, 0, 0, null));
             }
         }
         for (uint segment = 0; segment < packed.Count; segment++)
@@ -709,10 +726,16 @@ public static class PhyreModelClusterWriter
                 // lamppost seven, and in every one it is a CHILD node that owns the
                 // world matrix and shares it with the mesh instance — the root owns
                 // none. A lone unparented root is a shape the engine never meets.
+                // A fourth when there is collision: the game hangs each of its
+                // collision surfaces off a node of its own, named CA00, CK00, CS00,
+                // and never off the node that draws. Ours shared the mesh node,
+                // which is a shape no shipped map has.
                 "PNode" => authoringLayout
-                    ? 3u
+                    ? (uint)(3 + bodies.Count)
                     : 2u,
                 "PMaterial" when material is not null => (uint)materialCount,
+                "PShape" or "PPhysicsMesh" or "PPhysicsRigidBody" or "PPhysicsMaterial"
+                    when bodies.Count != 0 => (uint)bodies.Count,
                 "PSamplerState" => (uint)(material?.SamplerStates.Count ?? 0),
                 "PShaderParameterDefinition" => (uint)(material?.ParameterDefinitions.Count ?? 0),
                 _ => 1u,
@@ -803,7 +826,7 @@ public static class PhyreModelClusterWriter
                     case "PNode":
                         members["m_localMatrix"] = Identity4x4();
                         break;
-                    case "PPhysicsRigidBody" when physics is not null:
+                    case "PPhysicsRigidBody" when bodies.Count != 0:
                         // A rotation of nothing is not a rotation: a quaternion of
                         // four zeros has no length, and the body it orients collapses.
                         // Shipped maps write the identity, w = 1.
@@ -816,15 +839,15 @@ public static class PhyreModelClusterWriter
                         // And a scale of zero flattens the shape to a point, which is
                         // what a collision mesh that never stops anything looks like.
                         members["m_scale"] = Scale();
-                        Set("m_collisionGroup", physics.CollisionGroup);
-                        Set("m_enabled", physics.Enabled ? 1u : 0u);
-                        Set("m_rigidBodyType", physics.RigidBodyType);
+                        Set("m_collisionGroup", bodies[(int)id].Shape.CollisionGroup);
+                        Set("m_enabled", bodies[(int)id].Shape.Enabled ? 1u : 0u);
+                        Set("m_rigidBodyType", bodies[(int)id].Shape.RigidBodyType);
                         // A mass is a float. Writing the integer 1 into it gives
                         // 1.4e-45, which is not a mass at all.
                         Float("m_mass", 1f);
                         Set("m_shapes", 1);
                         break;
-                    case "PPhysicsMesh" when physics is not null:
+                    case "PPhysicsMesh" when bodies.Count != 0:
                         // Where the shape sits inside its body. Bullet adds it with
                         // addChildShape(convertToBulletTransform(m_transform), ...),
                         // so twelve zeros collapse the collision onto a point —
@@ -839,32 +862,34 @@ public static class PhyreModelClusterWriter
                         // stated rather than left at zero.
                         members["m_scale"] = Scale();
                         break;
-                    case "PPhysicsMaterial" when physics is not null:
-                        members["m_dynamicFriction"] = BitConverter.GetBytes(physics.DynamicFriction);
-                        members["m_staticFriction"] = BitConverter.GetBytes(physics.StaticFriction);
-                        members["m_restitution"] = BitConverter.GetBytes(physics.Restitution);
+                    case "PPhysicsMaterial" when bodies.Count != 0:
+                        members["m_dynamicFriction"] = BitConverter.GetBytes(bodies[(int)id].Shape.DynamicFriction);
+                        members["m_staticFriction"] = BitConverter.GetBytes(bodies[(int)id].Shape.StaticFriction);
+                        members["m_restitution"] = BitConverter.GetBytes(bodies[(int)id].Shape.Restitution);
                         break;
-                    case "PShape" when physics is not null:
-                        Set("m_vertexCount", (uint)physics.Vertices.Count);
-                        Set("m_indexCount", (uint)physics.Indices.Count);
+                    case "PShape" when bodies.Count != 0:
+                    {
+                        var own = bodies[(int)id].Shape;
+                        Set("m_vertexCount", (uint)own.Vertices.Count);
+                        Set("m_indexCount", (uint)own.Indices.Count);
                         Set("m_vertexFormat", 2);
                         // 0x0C, sixteen-bit — the only format shipped maps use, on
                         // every shape of every map looked at. They stay under the
                         // limit by splitting their collision into several shapes, the
                         // largest around three thousand vertices.
-                        if (physics.Vertices.Count >= 0x10000)
+                        if (own.Vertices.Count >= 0x10000)
                         {
                             throw new InvalidOperationException(
-                                $"A collision shape of {physics.Vertices.Count} vertices"
+                                $"A collision shape of {own.Vertices.Count} vertices"
                                 + " cannot be indexed with sixteen bits, and no shipped"
                                 + " map uses anything else. Split it into shapes of"
                                 + " fewer than 65 536 vertices, as the game does.");
                         }
                         Set("m_indexFormat", 12u);
-                        Set("m_vertexData", (uint)(physics.Vertices.Count * 12));
-                        Set("m_indices", (uint)(physics.Indices.Count
-                            * (physics.Vertices.Count < 0x10000 ? 2 : 4)));
+                        Set("m_vertexData", (uint)(own.Vertices.Count * 12));
+                        Set("m_indices", (uint)(own.Indices.Count * 2));
                         break;
+                    }
                     case "PVertexStream":
                         Set("m_type", StreamType(streams[(int)id]));
                         break;
@@ -927,7 +952,15 @@ public static class PhyreModelClusterWriter
                 // is the mesh's own reference and not a node's.
                 NodeName(1, "VisualSceneNode1");
                 if (authoringLayout)
+                {
                     NodeName(2, model.AssetName);
+                    // The name the game gives a collision node. Its own maps use
+                    // CA00, CK00 and CS00, and nothing else in a map is named so.
+                    for (var body = 0; body < bodies.Count; body++)
+                    {
+                        NodeName((uint)(3 + body), bodies[body].Node);
+                    }
+                }
             }
             if (className == "PMeshInstance"
                 && !authoringLayout)
@@ -964,31 +997,32 @@ public static class PhyreModelClusterWriter
                         array.Count, array.Offset));
                 }
             }
-            if (className == "PShape" && physics is not null)
+            if (className == "PShape" && bodies.Count != 0)
             {
-                // The collision triangles: positions, then indices, in this
-                // group's own array data, with an array fixup naming each run.
-                var vertexAt = (uint)arrays.Length;
-                foreach (var point in physics.Vertices)
+                // Each surface's triangles, one run after another in the group's own
+                // array data, with a pair of array fixups naming where each begins.
+                for (uint shape = 0; shape < bodies.Count; shape++)
                 {
-                    arrays.Write(BitConverter.GetBytes(point.X));
-                    arrays.Write(BitConverter.GetBytes(point.Y));
-                    arrays.Write(BitConverter.GetBytes(point.Z));
+                    var own = bodies[(int)shape].Shape;
+                    var vertexAt = (uint)arrays.Length;
+                    foreach (var point in own.Vertices)
+                    {
+                        arrays.Write(BitConverter.GetBytes(point.X));
+                        arrays.Write(BitConverter.GetBytes(point.Y));
+                        arrays.Write(BitConverter.GetBytes(point.Z));
+                    }
+                    var indexAt = (uint)arrays.Length;
+                    foreach (var index in own.Indices)
+                    {
+                        arrays.Write(BitConverter.GetBytes((ushort)index));
+                    }
+                    arrayFixups.Add(new PhyreArrayFixup(group, shape,
+                        0x80000000u | (Field(descriptors, className, "m_vertexData")!.ValueOffset + 4),
+                        (uint)own.Vertices.Count * 12, vertexAt));
+                    arrayFixups.Add(new PhyreArrayFixup(group, shape,
+                        0x80000000u | (Field(descriptors, className, "m_indices")!.ValueOffset + 4),
+                        (uint)(own.Indices.Count * 2), indexAt));
                 }
-                var indexAt = (uint)arrays.Length;
-                var narrow = physics.Vertices.Count < 0x10000;
-                foreach (var index in physics.Indices)
-                {
-                    arrays.Write(narrow
-                        ? BitConverter.GetBytes((ushort)index)
-                        : BitConverter.GetBytes((uint)index));
-                }
-                arrayFixups.Add(new PhyreArrayFixup(group, 0,
-                    0x80000000u | (Field(descriptors, className, "m_vertexData")!.ValueOffset + 4),
-                    (uint)physics.Vertices.Count * 12, vertexAt));
-                arrayFixups.Add(new PhyreArrayFixup(group, 0,
-                    0x80000000u | (Field(descriptors, className, "m_indices")!.ValueOffset + 4),
-                    (uint)(physics.Indices.Count * (narrow ? 2 : 4)), indexAt));
             }
             if (names.TryGetValue(group, out var mine))
             {

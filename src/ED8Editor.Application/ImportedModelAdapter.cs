@@ -90,8 +90,10 @@ public static class ImportedModelAdapter
                 .Select(vertex => Vertex(vertex, basis, ref dropped))
                 .ToArray();
             var indices = Wound(mesh, vertices, basis, ref flipped);
+            collisionMeshes.TryGetValue(index, out var collisionNode);
             meshes.Add(new PhyreMeshSource(
-                material, vertices, indices, texture, collisionMeshes.Contains(index)));
+                material, vertices, indices, texture,
+                collisionNode is not null, collisionNode));
         }
 
         if (scene.Animations.Count != 0)
@@ -242,7 +244,7 @@ public static class ImportedModelAdapter
     /// says which meshes it set aside, and a model that names things differently
     /// simply has none.
     /// </summary>
-    private static HashSet<int> CollisionMeshes(ImportedModelScene scene)
+    private static Dictionary<int, string> CollisionMeshes(ImportedModelScene scene)
     {
         static bool NamesCollision(string name)
             => name.Length == 4
@@ -251,22 +253,25 @@ public static class ImportedModelAdapter
                 && char.IsDigit(name[2])
                 && char.IsDigit(name[3]);
 
-        var found = new HashSet<int>();
+        // The node's NAME travels with it: the game gives each collision surface a
+        // rigid body of its own, aimed at the node that carries it, so the surfaces
+        // have to stay told apart all the way to the writer.
+        var found = new Dictionary<int, string>();
         var byIndex = scene.Nodes;
         for (var at = 0; at < byIndex.Count; at++)
         {
             // The node itself, or any ancestor of it: the mesh usually hangs one
             // level below, as CA00 -> CA00_00.
             var walk = at;
-            var collision = false;
+            string? collision = null;
             var guard = 0;
             while (walk >= 0 && walk < byIndex.Count && guard++ < 64)
             {
-                if (NamesCollision(byIndex[walk].Name)) { collision = true; break; }
+                if (NamesCollision(byIndex[walk].Name)) { collision = byIndex[walk].Name; break; }
                 walk = byIndex[walk].ParentIndex;
             }
-            if (!collision) continue;
-            foreach (var mesh in byIndex[at].MeshIndices) found.Add(mesh);
+            if (collision is null) continue;
+            foreach (var mesh in byIndex[at].MeshIndices) found[mesh] = collision;
         }
         return found;
     }

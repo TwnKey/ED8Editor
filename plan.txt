@@ -4279,3 +4279,26 @@ quoi "douze zeros" ressemblait a une identite.
 Rappel de la disposition (PhyreMatrix4x3.h) : la premiere colonne est rangee dans
 les composantes W des trois autres, donc l'identite n'a PAS ses uns sur une
 diagonale.
+
+## 2026-08-03 — un corps par surface, comme le jeu
+
+Antoine a fourni le M_R0510 de CS2 (collision issue/M_R0510.pkg), celui dont
+notre modele est extrait. Il porte :
+  5 PPhysicsRigidBody, 5 PShape, 5 PPhysicsMesh, 5 PPhysicsMaterial
+  corps 0..4 -> PNode "CK00", "CS00", "CA00", "CA01", "CS01"
+Un corps, une forme, un noeud PAR SURFACE. Nous fusionnions les cinq en une forme
+sur un corps — la derniere difference de structure.
+
+Implemente : la collision est desormais une LISTE. Le nom du noeud voyage depuis
+l'importateur (PhyreMeshSource.CollisionNode), Collisions() groupe par noeud, et
+l'ecrivain emet un corps, une forme, un maillage, un materiau et un noeud par
+surface, les corps chaines par m_next.
+
+  collision CK00 :  1 326 sommets,  1 326 triangles
+  collision CS00 : 18 929 sommets, 35 702 triangles
+  collision CA00 :  1 810 sommets,  2 969 triangles
+  collision CA01 :     63 sommets,     76 triangles
+  collision CS01 :    468 sommets,    884 triangles
+
+Structure identique a celle de CS2, y compris la taille des donnees : 516 896
+octets de chaque cote. 87 PASS.

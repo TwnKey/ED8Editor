@@ -86,11 +86,15 @@ public static class MapModelPackage
         // where ours is one shape of 1.8 MB. Being able to leave it out separates
         // "the map does not draw" from "the map's collision is rejected", which is
         // the order these have to be answered in.
-        var collision = withCollision ? Collision(authoredModel) : null;
-        say?.Invoke(collision is null
-            ? "collision: none"
-            : $"collision: {collision.Vertices.Count} vertices,"
-                + $" {collision.Indices.Count / 3} triangles");
+        var collisions = withCollision
+            ? Collisions(authoredModel)
+            : Array.Empty<(string Node, PhyrePhysicsSource Shape)>();
+        if (collisions.Count == 0) say?.Invoke("collision: none");
+        foreach (var (node, shape) in collisions)
+        {
+            say?.Invoke($"collision {node}: {shape.Vertices.Count} vertices,"
+                + $" {shape.Indices.Count / 3} triangles");
+        }
 
         var shaders = shippedShaderPackage is null
             ? new (string Name, byte[] Data)[]
@@ -124,7 +128,7 @@ public static class MapModelPackage
         // physics classes, so a map carrying collision could not use it.
         var modelCluster = PhyreClusterAssembler.Assemble(
             PhyreModelClusterWriter.Contents(
-                drawn, material, packed, collision,
+                drawn, material, packed, collisions,
                 // Always the profile that loads. It used to fall back to the
                 // "native" layout as soon as a map carried collision, because that
                 // profile's class table has no physics classes — the table now
@@ -629,6 +633,29 @@ public static class MapModelPackage
     /// with sixteen bits, so a shape has to stay under 65 536 points, and the game
     /// keeps well under by splitting a map into several shapes.
     /// </summary>
+    /// <summary>
+    /// One collision body per surface, as the game writes them: r0510 carries five,
+    /// named CK00, CS00, CA00, CA01 and CS01, each with its own shape and its own
+    /// node. Merging them into one shape is a structure no shipped map has.
+    /// </summary>
+    private static IReadOnlyList<(string Node, PhyrePhysicsSource Shape)> Collisions(
+        PhyreModelSource model)
+    {
+        var byNode = model.Meshes
+            .Where(mesh => mesh.IsCollision && mesh.CollisionNode is not null)
+            .GroupBy(mesh => mesh.CollisionNode!, StringComparer.Ordinal)
+            .ToArray();
+        if (byNode.Length == 0)
+        {
+            return new[] { ("collision", Collision(model)) };
+        }
+        return byNode
+            .Select(group => (
+                group.Key,
+                Collision(model with { Meshes = group.ToArray() })))
+            .ToArray();
+    }
+
     private static PhyrePhysicsSource Collision(PhyreModelSource model)
     {
         // The meshes meant to stop the player, when the model marks any. Using the

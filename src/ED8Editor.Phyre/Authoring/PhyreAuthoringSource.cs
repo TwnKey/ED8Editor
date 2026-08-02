@@ -58,7 +58,8 @@ public sealed record PhyreMeshSource(
     IReadOnlyList<PhyreVertexSource> Vertices,
     int[] Indices,
     PhyreMeshTexture? Texture = null,
-    bool IsCollision = false);
+    bool IsCollision = false,
+    string? CollisionNode = null);
 
 /// <summary>
 /// The image a mesh's material paints with, as the file the import read.
