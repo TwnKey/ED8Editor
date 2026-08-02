@@ -56,7 +56,19 @@ public sealed record PhyreVertexSource(
 public sealed record PhyreMeshSource(
     string MaterialName,
     IReadOnlyList<PhyreVertexSource> Vertices,
-    int[] Indices);
+    int[] Indices,
+    PhyreMeshTexture? Texture = null);
+
+/// <summary>
+/// The image a mesh's material paints with, as the file the import read.
+///
+/// It travelled no further than the importer before: a mesh kept the NAME of its
+/// material and nothing else, so a model with fourteen materials was written with
+/// one texture over all of it. The bytes are the source file untouched — the
+/// game's textures are DXT1 .dds and so are the ones an extraction produces, so
+/// nothing has to be decoded to be written back.
+/// </summary>
+public sealed record PhyreMeshTexture(string Name, byte[] Dds);
 
 /// <summary>A joint of the skeleton a mesh is skinned to.</summary>
 public sealed record PhyreJointSource(

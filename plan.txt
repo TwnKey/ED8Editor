@@ -4044,3 +4044,26 @@ RESTE A FAIRE, dans l'ordre :
   3. ecrire N materiaux et N tampons — LE gros morceau, chaque tampon etant un
      groupe d'instances et une classe d'en-tete
   4. l'index par segment : DEJA FAIT, ils pointent tous vers le meme materiau
+
+## 2026-08-02 — TEXTURAGE : les trois points
+
+1. La texture de chaque materiau va desormais jusqu'a l'autorat
+   (PhyreMeshSource.Texture). L'importateur la resolvait deja, octets compris,
+   meme quand le .dds est a cote du modele ; l'adaptateur la jetait.
+2. Un .dds repart en cluster sans etre decode — les blocs DXT1 passent tels
+   quels, seul l'entete est lu pour la taille et le format. Le paquet livre NOS
+   textures ; plus rien n'est emprunte au jeu de ce cote.
+3. N materiaux et N tampons. Un tampon est un GROUPE d'instances a lui seul (une
+   map livree liste PParameterBuffer treize fois), donc le layout en porte autant
+   que de materiaux distincts. Les samplers et les definitions restent partages,
+   comme dans le fichier copie ; ce qui distingue les tampons est l'import de
+   texture.
+4. L'index par segment etait deja fait.
+
+Resultat sur r0510 : PMaterial x14, 14 groupes PParameterBuffer, 171 segments
+pointant chacun vers le sien, 13 imports (un shader + douze textures) toutes
+livrees, collision comprise. 87 PASS.
+
+Piege evite au passage : la texture du DONNEUR restait declaree en import alors
+qu'on ne la livre plus — le meme defaut que celui corrige plus tot. Elle n'est
+gardee que si le modele n'apporte aucune texture.

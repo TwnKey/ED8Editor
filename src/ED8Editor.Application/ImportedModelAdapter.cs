@@ -57,15 +57,33 @@ public static class ImportedModelAdapter
         for (var index = 0; index < scene.Meshes.Count; index++)
         {
             var mesh = scene.Meshes[index];
-            var material = mesh.MaterialIndex >= 0 && mesh.MaterialIndex < scene.Materials.Count
-                ? scene.Materials[mesh.MaterialIndex].Name
-                : "material" + index;
+            var source = mesh.MaterialIndex >= 0 && mesh.MaterialIndex < scene.Materials.Count
+                ? scene.Materials[mesh.MaterialIndex]
+                : null;
+            var material = source?.Name ?? "material" + index;
+
+            // The image the material paints with. The importer already resolves it,
+            // bytes and all — even when the file sits beside the model rather than
+            // inside it — and this is where it used to be dropped, leaving the
+            // authored model with a material name and no picture to go with it.
+            PhyreMeshTexture? texture = null;
+            if (source is not null
+                && source.TextureBindings.TryGetValue(ImportedTextureUsage.BaseColor, out var slot)
+                && slot >= 0 && slot < scene.Textures.Count)
+            {
+                var found = scene.Textures[slot];
+                if (found.EncodedData.Length != 0)
+                {
+                    texture = new PhyreMeshTexture(
+                        Path.GetFileNameWithoutExtension(found.Name), found.EncodedData);
+                }
+            }
 
             var vertices = mesh.Vertices
                 .Select(vertex => Vertex(vertex, basis, ref dropped))
                 .ToArray();
             var indices = Wound(mesh, vertices, basis, ref flipped);
-            meshes.Add(new PhyreMeshSource(material, vertices, indices));
+            meshes.Add(new PhyreMeshSource(material, vertices, indices, texture));
         }
 
         if (scene.Animations.Count != 0)

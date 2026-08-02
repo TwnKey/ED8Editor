@@ -107,12 +107,44 @@ public static class PhyreModelClusterWriter
         // put in them: a group with no objects would still be listed, and a cluster
         // names nothing it does not use.
         var material = shader.Parameters;
+        // One material per distinct material of the imported model, in the order the
+        // meshes first name them; each segment remembers which is its own. A model
+        // was written with a single material whatever it carried, so a map of a
+        // hundred and seventy-one surfaces wore one texture. A shipped map of this
+        // size has thirteen.
+        var materialNames = new List<string>();
+        var materialOfSegment = new int[model.Meshes.Count];
+        for (var mesh = 0; mesh < model.Meshes.Count; mesh++)
+        {
+            var name = model.Meshes[mesh].MaterialName;
+            var at = materialNames.IndexOf(name);
+            if (at < 0) { at = materialNames.Count; materialNames.Add(name); }
+            materialOfSegment[mesh] = at;
+        }
+        // Only when there is a parameter block to put in them: without one there is
+        // nothing to tell the materials apart, and a group per name would be empty
+        // shapes.
+        var materialCount = material is null ? 1 : Math.Max(1, materialNames.Count);
+        var textureOf = new string?[materialCount];
+        for (var mesh = 0; mesh < model.Meshes.Count; mesh++)
+        {
+            var at = materialOfSegment[mesh];
+            if (at < materialCount && textureOf[at] is null)
+            {
+                textureOf[at] = model.Meshes[mesh].Texture?.Name;
+            }
+        }
         var layout = physics is null ? Layout : Layout.Concat(PhysicsLayout).ToArray();
         if (material is not null)
         {
             var extra = new List<string>();
             if (material.SamplerStates.Count != 0) extra.Add("PSamplerState");
             if (material.ParameterDefinitions.Count != 0) extra.Add("PShaderParameterDefinition");
+            // A buffer is a group of its own — a shipped map lists PParameterBuffer
+            // thirteen times, one object each — so the extra materials bring their
+            // own groups. The samplers and the definitions stay shared, as they are
+            // in the file this copies.
+            for (var more = 1; more < materialCount; more++) extra.Add("PParameterBuffer");
             layout = layout.Concat(extra).ToArray();
         }
         // In class order, always. Every cluster the game ships lists its instance
@@ -251,6 +283,11 @@ public static class PhyreModelClusterWriter
             => ImportedPointAt(fromClass, fromId, MemberId(descriptors, fromClass, member), importId);
 
         void ImportedPointAt(string fromClass, uint fromId, uint member, uint importId)
+            => ImportedPointAtGroup((uint)Group(fromClass), member, importId, fromId);
+
+        // The same, for a group named by index rather than by class: several buffers
+        // share the class name, so only their position tells them apart.
+        void ImportedPointAtGroup(uint group, uint member, uint importId, uint fromId = 0)
         {
             if (!importedUserFixups.TryGetValue(importId, out var userId))
             {
@@ -266,7 +303,7 @@ public static class PhyreModelClusterWriter
                 importedUserFixups.Add(importId, userId);
             }
             pointers.Add(new PhyrePointerFixup(
-                Group(fromClass), fromId, member, 0, 0, 0, 0, userId));
+                (int)group, fromId, member, 0, 0, 0, 0, userId));
         }
 
         // An embedded PArray/PSharray stores its pointer in the second word.
@@ -345,11 +382,15 @@ public static class PhyreModelClusterWriter
         // to that same name, so the three agree.
         var named = new List<(string Class, uint Id, string Name)>
         {
-            ("PMaterial", 0, colladaId + "colladadx11Shader1"),
+            ("PMaterial", 0, colladaId + materialNames.FirstOrDefault("colladadx11Shader1")),
             ("PNode", 0, colladaId + "VisualSceneNode"),
             ("PMesh", 0, colladaId + model.AssetName + "Shape"),
             ("PMeshInstance", 0, colladaId + model.AssetName),
         };
+        for (var more = 1; more < materialCount; more++)
+        {
+            named.Insert(more, ("PMaterial", (uint)more, colladaId + materialNames[more]));
+        }
         if (physics is not null)
             named.Add(("PShape", 0, colladaId + model.AssetName + "Shape-PhysicsShape"));
         for (uint index = 0; index < named.Count; index++)
@@ -365,9 +406,14 @@ public static class PhyreModelClusterWriter
         // texture dependencies can leave the asset name passed to the registry
         // lookup null.  Preserve that dependency order explicitly instead of
         // making the shader's import id implicitly zero.
+        // The donor's own pictures are kept only when the model brings none: every
+        // buffer now points at its material's texture, so the donor's would be an
+        // import naming a file the package no longer carries.
+        var ownTextures = textureOf.Any(name => name is not null);
         var importAssets = new List<string>();
         foreach (var import in material?.Imports ?? Array.Empty<PhyreMaterialImport>())
         {
+            if (ownTextures) continue;
             if (!import.Asset.StartsWith("shaders/", StringComparison.Ordinal)
                 && !importAssets.Contains(import.Asset, StringComparer.Ordinal))
             {
@@ -378,8 +424,24 @@ public static class PhyreModelClusterWriter
         {
             importAssets.Add(shader.ShaderAsset);
         }
+        // Each material's own texture, so its buffer has an import to point at. The
+        // list held only what the donor material named, which is one picture however
+        // many materials the model has.
+        foreach (var own in textureOf)
+        {
+            if (own is null) continue;
+            var asset = $"map/images/{own}.dds";
+            if (!importAssets.Contains(asset, StringComparer.Ordinal)) importAssets.Add(asset);
+        }
         foreach (var import in material?.Imports ?? Array.Empty<PhyreMaterialImport>())
         {
+            // Same rule as above: a donor picture is only carried when the model has
+            // none of its own, or the cluster names a file the package does not hold.
+            if (ownTextures
+                && !import.Asset.StartsWith("shaders/", StringComparison.Ordinal))
+            {
+                continue;
+            }
             if (!importAssets.Contains(import.Asset, StringComparer.Ordinal))
             {
                 importAssets.Add(import.Asset);
@@ -421,21 +483,79 @@ public static class PhyreModelClusterWriter
         // would bind the material to an unrelated local PAssetReference and is
         // accepted by our tolerant reader, but cannot be resolved by Phyre.
         // The wire payload is the big-endian index of the effect import.
-        ImportedPoint("PMaterial", 0, "m_effectVariant", (uint)shaderImportId);
-        Point("PMaterial", 0, "m_parameterBuffer", "PParameterBuffer", 0);
+        var firstBuffer = Group("PParameterBuffer");
+        for (uint slot = 0; slot < materialCount; slot++)
+        {
+            ImportedPoint("PMaterial", slot, "m_effectVariant", (uint)shaderImportId);
+            // Each material reaches its own buffer. The groups sit next to each
+            // other because the layout is sorted, so the nth is the first plus n.
+            pointers.Add(new PhyrePointerFixup(
+                Group("PMaterial"), slot,
+                MemberId(descriptors, "PMaterial", "m_parameterBuffer"),
+                (uint)(firstBuffer + slot), 0, 0, 0, null));
+        }
         // Its effect variant, unless the block already names it. A parameter block
         // carries its own references, and m_effectVariant is one of them — writing it
         // here as well emitted the same fixup twice, so the buffer had thirty pointers
         // where the model it copies has twenty-nine. The engine applies each fixup it
         // is given; a repeat writes over what the first one placed.
-        if (material?.Imports.Any(value => value.Member == "m_effectVariant") != true)
+        // Every buffer is wired like the donor's, with one substitution: where the
+        // donor named ITS texture, each buffer names the one its own material paints
+        // with. That is the whole of what tells them apart — the parameter values,
+        // the samplers and the definitions are the shader's and are shared.
+        for (uint slot = 0; slot < materialCount; slot++)
         {
-            ImportedPoint(
-                "PParameterBuffer", 0, "m_effectVariant", (uint)shaderImportId);
+            var buffer = (uint)(firstBuffer + slot);
+            var mine = slot < textureOf.Length && textureOf[slot] is { } ownTexture
+                ? $"map/images/{ownTexture}.dds"
+                : null;
+            void BufferImport(string? member, uint rawOffset, uint importId)
+            {
+                if (member is not null)
+                {
+                    var field = Field(descriptors, "PParameterBuffer", member);
+                    if (field is null) return;
+                    ImportedPointAtGroup(buffer, MemberId(descriptors, "PParameterBuffer", member), importId);
+                }
+                else
+                {
+                    ImportedPointAtGroup(buffer, rawOffset, importId);
+                }
+            }
+            if (material?.Imports.Any(value => value.Member == "m_effectVariant") != true)
+            {
+                BufferImport("m_effectVariant", 0, (uint)shaderImportId);
+            }
+            foreach (var import in material?.Imports ?? Array.Empty<PhyreMaterialImport>())
+            {
+                var asset = import.Asset;
+                // A texture import becomes this material's texture; the shader's own
+                // reference is left alone.
+                if (mine is not null
+                    && !asset.StartsWith("shaders/", StringComparison.Ordinal)
+                    && import.Member != "m_effectVariant")
+                {
+                    asset = mine;
+                }
+                var at = importAssets.IndexOf(asset);
+                if (at < 0) continue;
+                BufferImport(import.Member, import.Source, (uint)at);
+            }
+            foreach (var pointer in material?.Pointers ?? Array.Empty<PhyreMaterialPointer>())
+            {
+                if (Group(pointer.TargetClass) < 0) continue;
+                pointers.Add(new PhyrePointerFixup(
+                    (int)buffer, 0, pointer.SourceOffset,
+                    (uint)Group(pointer.TargetClass), pointer.TargetId, 0,
+                    pointer.Count, null));
+            }
+        }
+        if (false)
+        {
         }
         // The buffer reaches its own sampler states and parameter definitions by raw
         // offset, exactly where the shader's block says they sit.
-        foreach (var import in material?.Imports ?? Array.Empty<PhyreMaterialImport>())
+        foreach (var import in Array.Empty<PhyreMaterialImport>())
         {
             var at = importAssets.IndexOf(import.Asset);
             if (at < 0) continue;
@@ -451,7 +571,7 @@ public static class PhyreModelClusterWriter
                 ImportedPointAt("PParameterBuffer", 0, import.Source, (uint)at);
             }
         }
-        foreach (var pointer in material?.Pointers ?? Array.Empty<PhyreMaterialPointer>())
+        foreach (var pointer in Array.Empty<PhyreMaterialPointer>())
         {
             if (Group(pointer.TargetClass) < 0) continue;
             pointers.Add(new PhyrePointerFixup(
@@ -469,10 +589,16 @@ public static class PhyreModelClusterWriter
         // fourteen segments carries fourteen. This was fixed at one, which is only
         // ever right for a single-segment mesh; every prop authored so far had
         // exactly one, so the mistake stayed invisible until a map was written.
-        // Only one material is authored, so every entry names it.
+        // Each segment names ITS material — the set is indexed by segment, and this
+        // is where a model with several materials stops wearing a single skin.
         for (uint segment = 0; segment < packed.Count; segment++)
         {
-            SharedArrayElement("PMesh", 0, "m_defaultMaterials", "PMaterial", 0, segment);
+            var mine = segment < materialOfSegment.Length
+                ? (uint)materialOfSegment[segment]
+                : 0u;
+            SharedArrayElement(
+                "PMesh", 0, "m_defaultMaterials", "PMaterial",
+                mine < materialCount ? mine : 0u, segment);
         }
         // A set of more than one entry also DECLARES itself, as a pointer-array
         // fixup. A shipped map's four meshes hold 1, 1, 6 and 6 materials, and only
@@ -581,7 +707,7 @@ public static class PhyreModelClusterWriter
                 "PNode" => authoringLayout
                     ? 3u
                     : 2u,
-                "PMaterial" when material is not null => 1u,
+                "PMaterial" when material is not null => (uint)materialCount,
                 "PSamplerState" => (uint)(material?.SamplerStates.Count ?? 0),
                 "PShaderParameterDefinition" => (uint)(material?.ParameterDefinitions.Count ?? 0),
                 _ => 1u,

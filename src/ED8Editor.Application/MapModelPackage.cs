@@ -157,7 +157,24 @@ public static class MapModelPackage
         // carries them; this one never did, so every authored map has been asking the
         // loader for a texture that is nowhere in the file.
         var mapTextures = Array.Empty<(string Name, byte[] Data)>();
-        if (shippedShaderPackage is not null && parameters is not null)
+        // The model's own images, written back out as texture clusters. Nothing is
+        // borrowed from the game: an extraction leaves the .dds beside the model, the
+        // importer resolves them, and each material now names its own.
+        var ownTextures = authoredModel.Meshes
+            .Select(mesh => mesh.Texture)
+            .Where(texture => texture is not null)
+            .GroupBy(texture => texture!.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First()!)
+            .ToArray();
+        if (ownTextures.Length != 0)
+        {
+            mapTextures = ownTextures.Select(TextureCluster).ToArray();
+            foreach (var (name, data) in mapTextures)
+            {
+                say?.Invoke($"texture: {name} — {data.Length} bytes, authored from the model");
+            }
+        }
+        else if (shippedShaderPackage is not null && parameters is not null)
         {
             var wanted = parameters.Imports
                 .Where(import => import.Member != "m_effectVariant")
@@ -517,6 +534,47 @@ public static class MapModelPackage
                 $"Material asks for '{shaderAsset}', but the package contains"
                 + $" {matches.Length} matching compiled effects.");
     }
+
+    /// <summary>
+    /// A .dds file, written back out as the texture cluster the game reads.
+    ///
+    /// Nothing is decoded: the game's textures are DXT1 and so are the ones an
+    /// extraction produces, so the compressed blocks travel from the file to the
+    /// cluster untouched. Only the header is read, for the size and the format.
+    /// </summary>
+    private static (string Name, byte[] Data) TextureCluster(PhyreMeshTexture texture)
+    {
+        var dds = texture.Dds;
+        if (dds.Length < 128 || dds[0] != 'D' || dds[1] != 'D' || dds[2] != 'S' || dds[3] != ' ')
+        {
+            throw new InvalidDataException(
+                $"'{texture.Name}' is not a .dds file, so it cannot be written as one.");
+        }
+        var height = BitConverter.ToInt32(dds, 12);
+        var width = BitConverter.ToInt32(dds, 16);
+        var mips = Math.Max(1, BitConverter.ToInt32(dds, 28));
+        var fourCc = System.Text.Encoding.ASCII.GetString(dds, 84, 4);
+        var format = fourCc switch
+        {
+            "DXT1" => "DXT1",
+            "DXT3" => "DXT3",
+            "DXT5" => "DXT5",
+            _ => throw new InvalidDataException(
+                $"'{texture.Name}' is stored as '{fourCc}', which this writer does not"
+                + " produce. Only the block formats the game uses are written."),
+        };
+        var pixels = dds.AsSpan(128).ToArray();
+        return (
+            texture.Name + ".dds.phyre",
+            PhyreTextureClusterWriter.Write(
+                MapTextureAsset(texture.Name), width, height, format, mips, pixels));
+    }
+
+    /// <summary>
+    /// The id a map's material names its texture by, and the path the manifest
+    /// declares it at, are the same string either side of "data/D3D11/".
+    /// </summary>
+    private static string MapTextureAsset(string name) => $"map/images/{name}.dds";
 
     private static string Manifest(
         string symbol, string lower, IReadOnlyList<string> shaders,
