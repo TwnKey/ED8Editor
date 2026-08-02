@@ -68,7 +68,19 @@ public static class MapModelPackage
         // cluster's logical DAE path.  A z9100 cluster exporting r0510 objects
         // has no visual scene for the asset M_Z9100 to instantiate.
         var authoredModel = model with { AssetName = lower };
-        var packed = PhyreModelGeometryPacker.Pack(authoredModel);
+        // Collision surfaces are not scenery: they exist to stop the player and are
+        // never meant to be seen. Drawn, they are the walls standing across the map.
+        // The collision is taken from the whole model, before they are set aside.
+        var collisionMeshes = authoredModel.Meshes.Count(mesh => mesh.IsCollision);
+        var visible = authoredModel.Meshes.Where(mesh => !mesh.IsCollision).ToArray();
+        if (collisionMeshes != 0 && visible.Length != 0)
+        {
+            say?.Invoke($"collision meshes: {collisionMeshes} set aside, not drawn");
+        }
+        var drawn = collisionMeshes != 0 && visible.Length != 0
+            ? authoredModel with { Meshes = visible }
+            : authoredModel;
+        var packed = PhyreModelGeometryPacker.Pack(drawn);
         // Collision is the render mesh itself, which for a map is far heavier than
         // what the game ships: r0510 carries three simplified shapes totalling 75 KB
         // where ours is one shape of 1.8 MB. Being able to leave it out separates
@@ -112,7 +124,7 @@ public static class MapModelPackage
         // physics classes, so a map carrying collision could not use it.
         var modelCluster = PhyreClusterAssembler.Assemble(
             PhyreModelClusterWriter.Contents(
-                authoredModel, material, packed, collision,
+                drawn, material, packed, collision,
                 // Always the profile that loads. It used to fall back to the
                 // "native" layout as soon as a map carried collision, because that
                 // profile's class table has no physics classes — the table now
@@ -619,10 +631,16 @@ public static class MapModelPackage
     /// </summary>
     private static PhyrePhysicsSource Collision(PhyreModelSource model)
     {
+        // The meshes meant to stop the player, when the model marks any. Using the
+        // whole model instead gave a shape of ninety thousand triangles where the
+        // game's own is a few thousand — and left the collision surfaces drawn as
+        // walls across the map, since they were still among the scenery.
+        var wanted = model.Meshes.Where(mesh => mesh.IsCollision).ToArray();
+        if (wanted.Length == 0) wanted = model.Meshes.ToArray();
         var points = new List<System.Numerics.Vector3>();
         var byPosition = new Dictionary<(float X, float Y, float Z), int>();
         var indices = new List<int>();
-        foreach (var mesh in model.Meshes)
+        foreach (var mesh in wanted)
         {
             var remap = new int[mesh.Vertices.Count];
             for (var at = 0; at < mesh.Vertices.Count; at++)

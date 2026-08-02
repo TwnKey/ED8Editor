@@ -4095,3 +4095,28 @@ Relecture de notre map : 1 forme, 26 253 sommets, 91 405 triangles, 421x157x500 
 VIEWER : case "Show collision of selection (green)". La collision du prop
 selectionne est lue depuis son paquet (le modele charge ne porte que les maillages
 qui dessinent) et tracee en fil de fer vert, mise en cache par asset.
+
+## 2026-08-02 — les murs invisibles etaient dessines
+
+Antoine voit de grands murs textures au milieu de la map : ce sont les surfaces de
+COLLISION, que nous dessinions comme du decor.
+
+Le jeu accroche sa collision a des noeuds cibles de corps rigides. Pour r0510 ce
+sont CA00, CA01, CK00, CS00, CS01 — nommes ainsi dans le cluster livre
+(r0510.dae#CA00, #CA0Shape0-PhysicsShape) ET dans le physics_data.json que
+l'extraction ecrit a cote du modele. Ils survivent dans le glTF, chacun portant un
+enfant avec un maillage (CA00 -> CA00_00).
+
+Regle retenue : deux lettres et deux chiffres, C[AKS]##, sur le noeud ou un de ses
+ancetres. C'est une convention, donc l'import DIT combien de maillages il a mis de
+cote au lieu de le faire en silence.
+
+Resultat : 166 segments dessines au lieu de 171, 13 materiaux au lieu de 14, et la
+collision faite des 5 maillages prevus pour ca — 20 154 sommets, 40 957 triangles,
+153x71x320 m — au lieu du terrain entier (91 405 triangles). Le modele passe de
+7,1 a 4,4 Mo.
+
+A SURVEILLER : le fil de fer vert ne s'affichait pas, probablement parce que la
+collision faisait 75 216 aretes. Elle en fait 58 225 maintenant, ce qui reste
+beaucoup pour l'overlay — si elle ne s'affiche toujours pas, c'est la qu'il faut
+chercher (limite de tampon, ou trop de lignes par image).

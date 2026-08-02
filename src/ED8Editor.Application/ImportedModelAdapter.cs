@@ -53,6 +53,13 @@ public static class ImportedModelAdapter
         var flipped = 0;
         var dropped = 0;
 
+        // Which meshes are collision rather than scenery. The game hangs its
+        // collision off nodes a rigid body targets — r0510's are CA00, CA01, CK00,
+        // CS00 and CS01, named as such both in the cluster it ships and in what an
+        // extraction writes beside the model. They are meant to stop the player and
+        // never to be seen; drawn, they are the walls standing across the map.
+        var collisionMeshes = CollisionMeshes(scene);
+
         var meshes = new List<PhyreMeshSource>();
         for (var index = 0; index < scene.Meshes.Count; index++)
         {
@@ -83,7 +90,8 @@ public static class ImportedModelAdapter
                 .Select(vertex => Vertex(vertex, basis, ref dropped))
                 .ToArray();
             var indices = Wound(mesh, vertices, basis, ref flipped);
-            meshes.Add(new PhyreMeshSource(material, vertices, indices, texture));
+            meshes.Add(new PhyreMeshSource(
+                material, vertices, indices, texture, collisionMeshes.Contains(index)));
         }
 
         if (scene.Animations.Count != 0)
@@ -222,6 +230,47 @@ public static class ImportedModelAdapter
     /// vertex influence keeps pointing at the same joint; a node no skin binds
     /// simply gets an identity bind matrix.
     /// </summary>
+    /// <summary>
+    /// The meshes that are collision rather than scenery, by the node they hang from.
+    ///
+    /// A map's collision lives under nodes a rigid body targets. Their names follow
+    /// the exporter's convention — two letters and two digits, CA00, CK00, CS01 —
+    /// which is what r0510 uses in the cluster the game ships and in the physics data
+    /// an extraction writes. Nothing else in a map is named that way.
+    ///
+    /// It is a convention, so it is reported rather than applied silently: an import
+    /// says which meshes it set aside, and a model that names things differently
+    /// simply has none.
+    /// </summary>
+    private static HashSet<int> CollisionMeshes(ImportedModelScene scene)
+    {
+        static bool NamesCollision(string name)
+            => name.Length == 4
+                && name[0] == 'C'
+                && (name[1] is 'A' or 'K' or 'S')
+                && char.IsDigit(name[2])
+                && char.IsDigit(name[3]);
+
+        var found = new HashSet<int>();
+        var byIndex = scene.Nodes;
+        for (var at = 0; at < byIndex.Count; at++)
+        {
+            // The node itself, or any ancestor of it: the mesh usually hangs one
+            // level below, as CA00 -> CA00_00.
+            var walk = at;
+            var collision = false;
+            var guard = 0;
+            while (walk >= 0 && walk < byIndex.Count && guard++ < 64)
+            {
+                if (NamesCollision(byIndex[walk].Name)) { collision = true; break; }
+                walk = byIndex[walk].ParentIndex;
+            }
+            if (!collision) continue;
+            foreach (var mesh in byIndex[at].MeshIndices) found.Add(mesh);
+        }
+        return found;
+    }
+
     private static PhyreJointSource[] Joints(ImportedModelScene scene, Matrix4x4 basis)
     {
         if (!scene.IsSkinned) return Array.Empty<PhyreJointSource>();
