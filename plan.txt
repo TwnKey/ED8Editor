@@ -3913,3 +3913,27 @@ L'ecart de taille vient de l'encodage : notre writer reecrit plus compactement
 que le jeu. Aucun placement supprime.
 
 Mode ajoute : --ops-diff <a.ops> <b.ops>.
+
+## 2026-08-02 — il n'y a PAS une seule taille d'objet valide
+
+J'ai affirme a Antoine qu'une seule disposition etait acceptee par le jeu, celle
+de la chaise autorisee. Mesure sur M_R0510.pkg, map LIVREE qui se charge :
+
+  PDataBlockD3D11   56   (la chaise : 64)
+  PMeshInstance     64   (la chaise : 112)
+  PParameterBuffer 612
+  PShape            28   PPhysicsMesh      108
+  PPhysicsModel     12   PPhysicsRigidBody 228
+  PPhysicsMaterial  12
+
+Les deux dispositions se chargent. Elles dependent du pipeline, pas d'une verite
+unique. Et les cinq classes de physique de notre z9200 (28/108/12/228/12) sont
+DEJA identiques a celles de la map livree — la table n'etait pas incomplete, mon
+diagnostic etait faux.
+
+Le passage force au profil FalcomAssetProcessor pour les maps est annule.
+
+DONC le plantage de la map vient d'ailleurs. Reference disponible et jamais
+utilisee : le cluster de M_R0510.pkg lui-meme, qui se charge et porte sa
+collision. C'est a lui qu'il faut comparer notre z9200, comme on l'a fait pour le
+prop contre la chaise.
