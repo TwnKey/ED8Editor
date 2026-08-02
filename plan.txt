@@ -4187,3 +4187,23 @@ ETAT A LA FIN DE LA SESSION
     s'affiche toujours pas — le libelle de la case dit maintenant ce qu'il a
     trouve ou pourquoi il n'a rien trouve, c'est par la qu'il faut reprendre.
   NON TESTE : cette derniere correction (noeud vise) n'a pas ete essayee en jeu.
+
+## 2026-08-02 — regression : toutes les primitives disent materiau 0
+
+Le viewer affiche la map en blanc uniforme. Le lecteur du viewer, passe sur les
+deux fichiers :
+
+  NOUS    166 primitives, 151 344 indices, materiaux references : 0
+  LIVREE   14 primitives,  29 064 indices, materiaux references : 0,7,8,9,10,11,12
+
+Le modele charge (rien n'est refuse), les 13 materiaux sont bien la, nos 12
+textures se relisent (bonnes tailles, DXT1) — mais CHAQUE primitive declare le
+materiau 0. Le lien segment -> materiau, ecrit via SharedArrayElement sur
+m_defaultMaterials, ne parvient donc pas au lecteur.
+
+A verifier en premier : comment PhyreD3D11ModelReader deduit MaterialIndex, et si
+notre jeu de materiaux (un seul PMesh, 166 entrees) est lu comme celui d'une map
+livree (4 PMesh, sets de 1/1/6/6).
+
+Sondes ajoutees : --read-model, --read-textures, --bodies, --collision,
+--collision-of.

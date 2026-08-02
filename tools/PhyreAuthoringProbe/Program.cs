@@ -1400,6 +1400,70 @@ if (args.Length > 2 && args[1] == "--bodies")
     return 0;
 }
 
+// Runs the viewer's own model reader over a cluster and says what it got.
+//
+// A map that vanishes from the viewer while the file is well-formed means the
+// reader refused it, not that the geometry is gone — and the reader says nothing
+// when it fails, it simply returns less.
+//
+//   PhyreAuthoringProbe x --read-model <cluster.phyre|package.pkg>
+if (args.Length > 2 && args[1] == "--read-model")
+{
+    try
+    {
+        var model = new PhyreD3D11ModelReader().Read("probe", ReadClusterOrPackage(args[2]));
+        Console.WriteLine($"{model.Meshes.Count} mesh(es)");
+        var drawn = 0;
+        var indices = 0;
+        var empty = 0;
+        var materials = new SortedSet<int>();
+        foreach (var mesh in model.Meshes)
+        foreach (var primitive in mesh.Primitives)
+        {
+            drawn++;
+            indices += primitive.Indices.IndexCount;
+            if (primitive.Indices.IndexCount == 0 || primitive.VertexBuffers.Count == 0) empty++;
+            materials.Add(primitive.MaterialIndex);
+        }
+        Console.WriteLine($"{drawn} primitive(s), {indices} indices, {empty} vides");
+        Console.WriteLine($"materiaux references : {string.Join(", ", materials)}");
+        Console.WriteLine($"{model.Materials.Count} materiau(x) dans le modele,"
+            + $" {model.Textures.Count} texture(s)");
+    }
+    catch (Exception failure)
+    {
+        Console.WriteLine($"REFUSE : {failure.GetType().Name} — {failure.Message}");
+        return 1;
+    }
+    return 0;
+}
+
+// Runs the viewer's texture reader over every image of a package.
+//
+// A map drawn entirely white is a map whose textures were not read. The clusters
+// we write are our own; nothing had ever read one back.
+//
+//   PhyreAuthoringProbe x --read-textures <package.pkg>
+if (args.Length > 2 && args[1] == "--read-textures")
+{
+    var archive = new PkgArchiveReader().Read(args[2]);
+    foreach (var entry in archive.Entries)
+    {
+        if (!entry.Name.EndsWith(".dds.phyre", StringComparison.OrdinalIgnoreCase)) continue;
+        try
+        {
+            var texture = new PhyreD3D11TextureReader().Read(entry.Name, archive.ReadEntry(entry));
+            Console.WriteLine($"  {entry.Name}: {texture.Width}x{texture.Height},"
+                + $" {texture.Format}, {texture.Data.Length} bytes");
+        }
+        catch (Exception failure)
+        {
+            Console.WriteLine($"  {entry.Name}: REFUSE — {failure.GetType().Name}: {failure.Message}");
+        }
+    }
+    return 0;
+}
+
 var assets = Path.Combine(args[0], "asset", "D3D11");
 var pattern = args.Length > 1 ? args[1] : "I_EFTEX*.pkg";
 var take = args.Length > 2 ? int.Parse(args[2]) : int.MaxValue;
