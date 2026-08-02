@@ -4120,3 +4120,22 @@ A SURVEILLER : le fil de fer vert ne s'affichait pas, probablement parce que la
 collision faisait 75 216 aretes. Elle en fait 58 225 maintenant, ce qui reste
 beaucoup pour l'overlay — si elle ne s'affiche toujours pas, c'est la qu'il faut
 chercher (limite de tampon, ou trop de lignes par image).
+
+## 2026-08-02 — le fil de fer ne trouvait pas son asset
+
+Le viewer cree des selections de type Prop depuis DEUX sources : la liste des props
+de la map, et les instances de modele que la scene construit. Les identifiants
+vivent dans le meme espace mais FindProp ne regarde que la premiere, donc cliquer
+sur la geometrie de la map rendait null.
+
+FindAssetId() interroge les deux. Et le catch muet que j'avais ecrit est remplace
+par un message : le libelle de la case dit maintenant combien d'aretes ont ete
+trouvees, ou pourquoi il n'y en a pas.
+
+Verifie hors interface (--collision-of M_Z9100) : resolution OK, cluster trouve,
+1 forme, 58 225 aretes. Le chemin de donnees etait donc bon ; seule la selection
+ne l'etait pas.
+
+TOUJOURS OUVERT : aucune collision en jeu, malgre des objets de physique qui ont
+maintenant la meme forme que ceux de M_R0510 (orientation, echelle, format
+d'index) et une geometrie prise des 5 maillages prevus pour ca.

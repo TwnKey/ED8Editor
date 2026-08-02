@@ -224,6 +224,7 @@ public sealed class ViewerForm : Form
     };
     private readonly Dictionary<string, IReadOnlyList<(Vector3 From, Vector3 To)>> collisionByAsset =
         new(StringComparer.OrdinalIgnoreCase);
+    private string collisionNote = string.Empty;
     private readonly CheckBox showFieldMonstersCheckBox = new()
     {
         Dock = DockStyle.Top,
@@ -4139,13 +4140,18 @@ public sealed class ViewerForm : Form
                     }
                 }
             }
-            catch (Exception)
+            catch (Exception failure)
             {
-                // A package that cannot be opened is not worth interrupting a draw
-                // for; the wireframe simply does not appear.
+                // Swallowing this left a wireframe that simply never appeared, with
+                // nothing to say why — so the reason is shown instead.
+                collisionNote = $"{assetId}: {failure.GetType().Name} — {failure.Message}";
             }
             collisionByAsset[assetId] = edges;
         }
+        collisionNote = edges.Count == 0
+            ? $"{assetId}: no collision found"
+            : $"{assetId}: {edges.Count} edges";
+        showCollisionCheckBox.Text = "Show collision of selection — " + collisionNote;
         if (edges.Count == 0) return;
 
         var world = Matrix4x4.CreateScale(transform.Scale)
@@ -4186,7 +4192,7 @@ public sealed class ViewerForm : Form
         if (showCollisionCheckBox.Checked
             && selection is { Kind: SceneElementKind.Prop }
             && selectedElement is not null
-            && document.FindProp(selection)?.AssetId is { } collisionAsset)
+            && document.FindAssetId(selection) is { } collisionAsset)
         {
             AddCollisionWireframe(overlayLines, collisionAsset, selectedElement.Transform);
         }

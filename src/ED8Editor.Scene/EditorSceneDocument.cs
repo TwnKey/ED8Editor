@@ -144,6 +144,21 @@ public sealed class EditorSceneDocument
     public EditableSceneElement? Find(SceneElementSelection selection)
         => elements.TryGetValue(SceneElementKey.From(selection), out var state) ? state.ToPublic() : null;
 
+    /// <summary>
+    /// Which asset a selected prop draws, whether it came from the map's prop list
+    /// or from a model instance the scene built. Both are selected as props and
+    /// their ids live in the same space, but only the first is in the prop list —
+    /// so asking the prop list alone misses whatever the scene placed itself.
+    /// </summary>
+    public string? FindAssetId(SceneElementSelection selection)
+    {
+        if (selection.Kind != SceneElementKind.Prop) return null;
+        if (props.TryGetValue(selection.SourceIndex, out var prop)) return prop.AssetId;
+        return modelInstances.TryGetValue(selection.SourceIndex, out var instance)
+            ? instance.AssetId
+            : null;
+    }
+
     public MapProp? FindProp(SceneElementSelection selection)
         => selection.Kind == SceneElementKind.Prop && props.TryGetValue(selection.SourceIndex, out var prop) ? prop : null;
 

@@ -1325,6 +1325,30 @@ if (args.Length > 2 && args[1] == "--collision")
     return 0;
 }
 
+// The exact path the viewer takes to draw a collision wireframe: resolve an asset
+// id to a package, open it, read the shape. Run headless so a wireframe that does
+// not appear can be told from a lookup that never found anything.
+//
+//   PhyreAuthoringProbe <game data> --collision-of M_Z9100
+if (args.Length > 2 && args[1] == "--collision-of")
+{
+    var resolver = new ED8Editor.Assets.GameAssetResolverFactory().Create(args[0]);
+    var found = resolver.Resolve(args[2], AssetVariantPreference.Base);
+    Console.WriteLine($"resolution: {found.Status}, {found.Candidates.Count} candidate(s)");
+    foreach (var candidate in found.Candidates) Console.WriteLine($"   {candidate.Path}");
+    var chosen = found.SelectedPackage?.Path;
+    if (chosen is null) { Console.WriteLine("aucun paquet retenu"); return 1; }
+    var archive = new PkgArchiveReader().Read(chosen);
+    var entry = archive.Entries.FirstOrDefault(value =>
+        value.Name.EndsWith(".dae.phyre", StringComparison.OrdinalIgnoreCase));
+    Console.WriteLine($"cluster: {entry?.Name ?? "(aucun)"}");
+    if (entry is null) return 1;
+    var shapes = PhyreCollisionReader.Read(archive.ReadEntry(entry));
+    Console.WriteLine($"{shapes.Count} forme(s), "
+        + $"{PhyreCollisionReader.Edges(shapes).Count} aretes");
+    return 0;
+}
+
 var assets = Path.Combine(args[0], "asset", "D3D11");
 var pattern = args.Length > 1 ? args[1] : "I_EFTEX*.pkg";
 var take = args.Length > 2 ? int.Parse(args[2]) : int.MaxValue;
