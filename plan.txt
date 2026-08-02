@@ -4067,3 +4067,31 @@ livrees, collision comprise. 87 PASS.
 Piege evite au passage : la texture du DONNEUR restait declaree en import alors
 qu'on ne la livre plus — le meme defaut que celui corrige plus tot. Elle n'est
 gardee que si le modele n'apporte aucune texture.
+
+## 2026-08-02 — collision : reparee, et enfin visible
+
+TROIS DEFAUTS, mesures contre M_R0510 :
+  m_initialOrientation  0,0,0,0  -> 0,0,0,1   (un quaternion nul n'est pas une
+                                               rotation)
+  m_scale (corps rigide) 0,0,0   -> 1,1,1     (une echelle nulle aplatit la forme)
+  m_indexFormat          0       -> 0x0C      (16 bits ; TOUTES les maps livrees
+                                               n'utilisent que ca, sur chaque
+                                               forme, sans exception)
+
+Le troisieme se reglait sans decouper : une collision n'a besoin que de POSITIONS,
+et un maillage de rendu duplique ses coins a chaque couture d'UV ou rupture de
+normale. Fusion des positions identiques : 65 620 -> 26 253 sommets, aucun
+triangle perdu, largement sous la limite des 16 bits. Le jeu, lui, decoupe en
+trois formes de quelques milliers de points ; on reste sur une seule.
+
+PhyreCollisionReader lit la collision d'un cluster (PShape). Piege : m_indices et
+m_vertexData ne contiennent PAS l'offset — ils portent la TAILLE puis un pointeur
+laisse a zero, et l'offset vient du fixup de tableau. Le lire comme un offset
+donne une forme dont les triangles pointent n'importe ou.
+
+Relecture de notre map : 1 forme, 26 253 sommets, 91 405 triangles, 421x157x500 m
+— les bornes exactes du modele, aucun index hors limites.
+
+VIEWER : case "Show collision of selection (green)". La collision du prop
+selectionne est lue depuis son paquet (le modele charge ne porte que les maillages
+qui dessinent) et tracee en fil de fer vert, mise en cache par asset.

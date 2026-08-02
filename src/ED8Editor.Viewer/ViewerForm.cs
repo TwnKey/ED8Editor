@@ -207,6 +207,23 @@ public sealed class ViewerForm : Form
         Text = "Show map indicators / triggers",
         Checked = true,
     };
+    /// <summary>
+    /// Draws the selected prop's collision as a green wireframe.
+    ///
+    /// Collision is the one part of a model nothing shows: it lives in PShape, not
+    /// among the meshes that draw, so a shape that stops nothing looks exactly like
+    /// one that works. On a map whose geometry is hard to read to begin with, that
+    /// leaves no way to tell whether it is there at all.
+    /// </summary>
+    private readonly CheckBox showCollisionCheckBox = new()
+    {
+        Dock = DockStyle.Top,
+        Height = 28,
+        Text = "Show collision of selection (green)",
+        Checked = false,
+    };
+    private readonly Dictionary<string, IReadOnlyList<(Vector3 From, Vector3 To)>> collisionByAsset =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly CheckBox showFieldMonstersCheckBox = new()
     {
         Dock = DockStyle.Top,
@@ -364,6 +381,7 @@ public sealed class ViewerForm : Form
         KeyPreview = true;
         assetControlsPanel.Controls.Add(assetList);
         assetControlsPanel.Controls.Add(snapCheckBox);
+        assetControlsPanel.Controls.Add(showCollisionCheckBox);
         assetControlsPanel.Controls.Add(showIndicatorsCheckBox);
         assetControlsPanel.Controls.Add(showFieldMonstersCheckBox);
         assetControlsPanel.Controls.Add(effectMetadataStatus);
@@ -523,6 +541,7 @@ public sealed class ViewerForm : Form
             RefreshRenderInstances(uploadedModels.ToDictionary(value => value.AssetId, StringComparer.OrdinalIgnoreCase));
             RefreshOverlay();
         };
+        showCollisionCheckBox.CheckedChanged += (_, _) => RefreshOverlay();
         showFieldMonstersCheckBox.CheckedChanged += (_, _) =>
         {
             RefreshRenderInstances(uploadedModels.ToDictionary(
@@ -4086,6 +4105,60 @@ public sealed class ViewerForm : Form
         }
     }
 
+    /// <summary>
+    /// The selected prop's collision, in green, placed where the prop stands.
+    ///
+    /// Read straight from the package rather than from the loaded model: the model
+    /// the viewer draws holds only the meshes that draw, and collision is not one of
+    /// them. Kept per asset, since reading it means opening the package again.
+    /// </summary>
+    private void AddCollisionWireframe(
+        List<SceneOverlayLine> lines, string assetId, SceneTransform transform)
+    {
+        if (!collisionByAsset.TryGetValue(assetId, out var edges))
+        {
+            edges = Array.Empty<(Vector3 From, Vector3 To)>();
+            try
+            {
+                var root = session.Script.GameDataPath;
+                if (!string.IsNullOrEmpty(root))
+                {
+                    var resolver = new GameAssetResolverFactory().Create(root);
+                    var found = resolver.Resolve(assetId, AssetVariantPreference.Base);
+                    var package = found.SelectedPackage?.Path;
+                    if (package is not null)
+                    {
+                        var archive = new PkgArchiveReader().Read(package);
+                        var entry = archive.Entries.FirstOrDefault(value =>
+                            value.Name.EndsWith(".dae.phyre", StringComparison.OrdinalIgnoreCase));
+                        if (entry is not null)
+                        {
+                            edges = PhyreCollisionReader.Edges(
+                                PhyreCollisionReader.Read(archive.ReadEntry(entry)));
+                        }
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // A package that cannot be opened is not worth interrupting a draw
+                // for; the wireframe simply does not appear.
+            }
+            collisionByAsset[assetId] = edges;
+        }
+        if (edges.Count == 0) return;
+
+        var world = Matrix4x4.CreateScale(transform.Scale)
+            * Matrix4x4.CreateFromQuaternion(transform.Rotation)
+            * Matrix4x4.CreateTranslation(transform.Position);
+        var green = new Vector4(0.15f, 1f, 0.25f, 1f);
+        foreach (var (from, to) in edges)
+        {
+            lines.Add(new SceneOverlayLine(
+                Vector3.Transform(from, world), Vector3.Transform(to, world), green));
+        }
+    }
+
     private void RefreshOverlay()
     {
         if (viewport is null) return;
@@ -4110,6 +4183,13 @@ public sealed class ViewerForm : Form
             }
         }
         var selectedElement = selection is null ? null : document.Find(selection);
+        if (showCollisionCheckBox.Checked
+            && selection is { Kind: SceneElementKind.Prop }
+            && selectedElement is not null
+            && document.FindProp(selection)?.AssetId is { } collisionAsset)
+        {
+            AddCollisionWireframe(overlayLines, collisionAsset, selectedElement.Transform);
+        }
         var showSelectedGizmo = selection is { Kind: SceneElementKind.Prop }
             || showIndicatorsCheckBox.Checked;
         if (showSelectedGizmo && selectedElement is not null && SupportsMode(selectedElement, gizmoMode))

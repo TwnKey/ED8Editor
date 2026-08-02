@@ -1294,6 +1294,37 @@ if (args.Length > 3 && args[1] == "--ops-diff")
     return 0;
 }
 
+// Reads a cluster's collision back out and says what it holds.
+//
+// Collision is the one thing in a model nobody can look at: it is not among the
+// meshes that draw, so a shape that stops nothing looks exactly like one that
+// works. Reading it back is the only check there is short of walking on it.
+//
+//   PhyreAuthoringProbe x --collision <cluster.phyre|package.pkg>
+if (args.Length > 2 && args[1] == "--collision")
+{
+    var shapes = PhyreCollisionReader.Read(ReadClusterOrPackage(args[2]));
+    Console.WriteLine($"{Path.GetFileName(args[2])}: {shapes.Count} shape(s)");
+    foreach (var body in shapes)
+    {
+        var low = new System.Numerics.Vector3(float.MaxValue);
+        var high = new System.Numerics.Vector3(float.MinValue);
+        foreach (var point in body.Vertices)
+        {
+            low = System.Numerics.Vector3.Min(low, point);
+            high = System.Numerics.Vector3.Max(high, point);
+        }
+        Console.WriteLine($"  {body.Vertices.Count} vertices,"
+            + $" {body.Indices.Count / 3} triangles,"
+            + $" measuring {high.X - low.X:0.#} x {high.Y - low.Y:0.#} x {high.Z - low.Z:0.#}");
+        Console.WriteLine($"    from {low} to {high}");
+        var outside = body.Indices.Count(value => value < 0 || value >= body.Vertices.Count);
+        if (outside != 0) Console.WriteLine($"    {outside} indices point outside the shape");
+    }
+    Console.WriteLine($"  {PhyreCollisionReader.Edges(shapes).Count} distinct edges");
+    return 0;
+}
+
 var assets = Path.Combine(args[0], "asset", "D3D11");
 var pattern = args.Length > 1 ? args[1] : "I_EFTEX*.pkg";
 var take = args.Length > 2 ? int.Parse(args[2]) : int.MaxValue;

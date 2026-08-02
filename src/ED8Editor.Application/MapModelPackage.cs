@@ -607,18 +607,38 @@ public static class MapModelPackage
         return text.ToString();
     }
 
+    /// <summary>
+    /// The collision mesh: the model's triangles, keeping only their positions.
+    ///
+    /// Points that sit in the same place are merged. A render mesh splits a corner
+    /// once per texture seam and once per normal break, which collision has no use
+    /// for — r0510 arrives with 65 620 vertices where its shape needs far fewer.
+    /// That matters beyond tidiness: every collision shape the game ships indexes
+    /// with sixteen bits, so a shape has to stay under 65 536 points, and the game
+    /// keeps well under by splitting a map into several shapes.
+    /// </summary>
     private static PhyrePhysicsSource Collision(PhyreModelSource model)
     {
-        var vertices = model.Meshes
-            .SelectMany(mesh => mesh.Vertices.Select(vertex => vertex.Position))
-            .ToArray();
+        var points = new List<System.Numerics.Vector3>();
+        var byPosition = new Dictionary<(float X, float Y, float Z), int>();
         var indices = new List<int>();
-        var vertexBase = 0;
         foreach (var mesh in model.Meshes)
         {
-            foreach (var index in mesh.Indices) indices.Add(vertexBase + index);
-            vertexBase += mesh.Vertices.Count;
+            var remap = new int[mesh.Vertices.Count];
+            for (var at = 0; at < mesh.Vertices.Count; at++)
+            {
+                var position = mesh.Vertices[at].Position;
+                var key = (position.X, position.Y, position.Z);
+                if (!byPosition.TryGetValue(key, out var found))
+                {
+                    found = points.Count;
+                    points.Add(position);
+                    byPosition.Add(key, found);
+                }
+                remap[at] = found;
+            }
+            foreach (var index in mesh.Indices) indices.Add(remap[index]);
         }
-        return new PhyrePhysicsSource(vertices, indices);
+        return new PhyrePhysicsSource(points, indices);
     }
 }

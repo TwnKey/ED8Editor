@@ -792,6 +792,13 @@ public static class PhyreModelClusterWriter
                         members["m_localMatrix"] = Identity4x4();
                         break;
                     case "PPhysicsRigidBody" when physics is not null:
+                        // A rotation of nothing is not a rotation: a quaternion of
+                        // four zeros has no length, and the body it orients collapses.
+                        // Shipped maps write the identity, w = 1.
+                        members["m_initialOrientation"] = Quaternion();
+                        // And a scale of zero flattens the shape to a point, which is
+                        // what a collision mesh that never stops anything looks like.
+                        members["m_scale"] = Scale();
                         Set("m_collisionGroup", physics.CollisionGroup);
                         Set("m_enabled", physics.Enabled ? 1u : 0u);
                         Set("m_rigidBodyType", physics.RigidBodyType);
@@ -817,7 +824,19 @@ public static class PhyreModelClusterWriter
                         Set("m_vertexCount", (uint)physics.Vertices.Count);
                         Set("m_indexCount", (uint)physics.Indices.Count);
                         Set("m_vertexFormat", 2);
-                        Set("m_indexFormat", physics.Vertices.Count < 0x10000 ? 4u : 0u);
+                        // 0x0C, sixteen-bit — the only format shipped maps use, on
+                        // every shape of every map looked at. They stay under the
+                        // limit by splitting their collision into several shapes, the
+                        // largest around three thousand vertices.
+                        if (physics.Vertices.Count >= 0x10000)
+                        {
+                            throw new InvalidOperationException(
+                                $"A collision shape of {physics.Vertices.Count} vertices"
+                                + " cannot be indexed with sixteen bits, and no shipped"
+                                + " map uses anything else. Split it into shapes of"
+                                + " fewer than 65 536 vertices, as the game does.");
+                        }
+                        Set("m_indexFormat", 12u);
                         Set("m_vertexData", (uint)(physics.Vertices.Count * 12));
                         Set("m_indices", (uint)(physics.Indices.Count
                             * (physics.Vertices.Count < 0x10000 ? 2 : 4)));
@@ -1097,6 +1116,14 @@ public static class PhyreModelClusterWriter
     }
 
     /// <summary>A unit scale, in the sixteen bytes the shape keeps it in.</summary>
+    /// <summary>The identity rotation, x=y=z=0 and w=1.</summary>
+    private static byte[] Quaternion()
+    {
+        var bytes = new byte[16];
+        BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(12), 1f);
+        return bytes;
+    }
+
     private static byte[] Scale()
     {
         var bytes = new byte[16];
