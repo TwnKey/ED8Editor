@@ -1429,6 +1429,15 @@ if (args.Length > 2 && args[1] == "--read-model")
         Console.WriteLine($"materiaux references : {string.Join(", ", materials)}");
         Console.WriteLine($"{model.Materials.Count} materiau(x) dans le modele,"
             + $" {model.Textures.Count} texture(s)");
+        // Ce par quoi le viewer lie une texture : le nom d'echantillonneur vers le
+        // nom de l'image. Vide, il ne peut rien peindre et tout reste blanc.
+        foreach (var (found, at) in model.Materials.Select((value, index) => (value, index)))
+        {
+            var refs = found.SourceTextureReferences;
+            Console.WriteLine($"  materiau {at} : {refs.Count} reference(s)"
+                + (refs.Count == 0 ? "" : " — " + string.Join(", ",
+                    refs.Take(3).Select(pair => $"{pair.Key}={pair.Value}"))));
+        }
     }
     catch (Exception failure)
     {

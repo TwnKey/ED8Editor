@@ -768,6 +768,13 @@ public static class PhyreModelClusterWriter
                         break;
                     }
                     case "PMeshSegment":
+                        // WHICH material this segment draws with — an index into its
+                        // mesh's material set, not into the cluster's materials. Left
+                        // at zero, every segment of a map painted itself with the
+                        // first material however many the model carried, which is a
+                        // map wearing one skin.
+                        Set("m_materialIndex", (uint)(
+                            id < materialOfSegment.Length ? materialOfSegment[id] : 0));
                         Set("m_primitiveType", TriangleList);
                         Set("m_matrixIndex", Unskinned);
                         Set("m_vertexData", (uint)packed[(int)id].Streams.Count);

@@ -4207,3 +4207,28 @@ livree (4 PMesh, sets de 1/1/6/6).
 
 Sondes ajoutees : --read-model, --read-textures, --bodies, --collision,
 --collision-of.
+
+## 2026-08-03 — l'index de materiau vit dans le SEGMENT
+
+Le viewer peignait toute la map avec un seul materiau. Le lecteur remappe :
+  materialPointers[primitive.MaterialIndex]
+et primitive.MaterialIndex vient du PMeshSegment lui-meme — son champ
+m_materialIndex, premier mot de PMeshSegmentBase. Le jeu de materiaux ne sert
+qu'a le TRADUIRE.
+
+Nous ecrivions les 13 materiaux et les 166 entrees du jeu, mais jamais l'index
+dans le segment : chaque segment disait "materiau 0".
+
+Corrige. Les primitives citent maintenant 0..7 au lieu de 0, et Antoine confirme
+que LES TEXTURES SONT BONNES EN JEU.
+
+VIEWER TOUJOURS BLANC, alors que tout ce qu'il demande est verifie :
+  modele lu           166 primitives, 151 344 indices, 0 vide
+  materiaux           13, chacun avec DiffuseMapSampler=<son image>
+                      (meme forme que la map livree)
+  textures            se relisent : 512x512 DXT1, bons volumes
+  noms                nos entrees "br05gr01.dds.phyre" -> le chargeur en tire
+                      "br05gr01.dds", exactement la valeur de la reference
+  bornes              couvrent ce qu'on dessine
+A creuser du cote de l'etat du viewer (modele en cache, camera) plutot que du
+fichier.
