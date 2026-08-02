@@ -796,6 +796,11 @@ public static class PhyreModelClusterWriter
                         // four zeros has no length, and the body it orients collapses.
                         // Shipped maps write the identity, w = 1.
                         members["m_initialOrientation"] = Quaternion();
+                        // The frame the body's mass sits in. Twelve zeros are not a
+                        // transformation: shipped bodies carry a real one, whose
+                        // translation is where their collision node stands. Ours sits
+                        // at the origin, so the identity is what it is.
+                        members["m_massFrameTransform"] = Identity3x4();
                         // And a scale of zero flattens the shape to a point, which is
                         // what a collision mesh that never stops anything looks like.
                         members["m_scale"] = Scale();
@@ -1116,6 +1121,16 @@ public static class PhyreModelClusterWriter
     }
 
     /// <summary>A unit scale, in the sixteen bytes the shape keeps it in.</summary>
+    /// <summary>A 3x4 identity: three unit axes and no translation.</summary>
+    private static byte[] Identity3x4()
+    {
+        var bytes = new byte[48];
+        BinaryPrimitives.WriteSingleLittleEndian(bytes, 1f);
+        BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(20), 1f);
+        BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(40), 1f);
+        return bytes;
+    }
+
     /// <summary>The identity rotation, x=y=z=0 and w=1.</summary>
     private static byte[] Quaternion()
     {

@@ -1349,6 +1349,57 @@ if (args.Length > 2 && args[1] == "--collision-of")
     return 0;
 }
 
+// What each rigid body of a cluster is attached to.
+//
+// A collision that does nothing in game, while its shape reads back correctly, has
+// to be attached wrongly rather than shaped wrongly. A shipped map hangs each body
+// off the node that carries its surfaces; ours has one body, and this says what it
+// points at.
+//
+//   PhyreAuthoringProbe x --bodies <cluster.phyre|package.pkg>
+if (args.Length > 2 && args[1] == "--bodies")
+{
+    var cluster = ReadClusterOrPackage(args[2]);
+    var read = new PhyreClusterReader().Read(cluster);
+    var fixups = new PhyreFixupReader().Read(cluster, read.Metadata);
+    var groups = read.Metadata.InstanceGroups;
+    var nodes = groups.FirstOrDefault(value => value.ClassName == "PNode");
+    var names = new Dictionary<uint, string>();
+    if (nodes is not null && nodes.ArraysSize != 0)
+    {
+        var descriptor = read.Metadata.Classes.First(value => value.Name == "PNode");
+        var member = PhyreObjectWriter.Chain(descriptor, read.Metadata.Classes)
+            .FirstOrDefault(value => value.Name == "m_name");
+        var blob = read.GetArrayData(nodes.Index, 0, nodes.ArraysSize).Span;
+        foreach (var array in fixups.Arrays)
+        {
+            if (array.SourceListIndex != nodes.Index || member is null) continue;
+            if (array.Offset >= blob.Length) continue;
+            var rest = blob[(int)array.Offset..];
+            var end = rest.IndexOf((byte)0);
+            names[array.SourceObjectId] =
+                System.Text.Encoding.ASCII.GetString(rest[..(end < 0 ? rest.Length : end)]);
+        }
+    }
+    foreach (var group in groups.Where(value => value.ClassName == "PPhysicsRigidBody"))
+    {
+        for (uint id = 0; id < group.Count; id++)
+        {
+            var target = fixups.Pointers.FirstOrDefault(value =>
+                value.SourceListIndex == group.Index
+                && value.SourceObjectId == id
+                && value.UserFixupId is null
+                && groups.ElementAtOrDefault((int)value.DestinationListIndex)?.ClassName == "PNode");
+            var node = target is null
+                ? "(aucun)"
+                : $"PNode[{target.DestinationObjectId}]"
+                    + (names.TryGetValue(target.DestinationObjectId, out var found) ? $" \"{found}\"" : " (sans nom)");
+            Console.WriteLine($"  corps {id} -> {node}");
+        }
+    }
+    return 0;
+}
+
 var assets = Path.Combine(args[0], "asset", "D3D11");
 var pattern = args.Length > 1 ? args[1] : "I_EFTEX*.pkg";
 var take = args.Length > 2 ? int.Parse(args[2]) : int.MaxValue;

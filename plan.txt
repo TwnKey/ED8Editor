@@ -4139,3 +4139,30 @@ ne l'etait pas.
 TOUJOURS OUVERT : aucune collision en jeu, malgre des objets de physique qui ont
 maintenant la meme forme que ceux de M_R0510 (orientation, echelle, format
 d'index) et une geometrie prise des 5 maillages prevus pour ca.
+
+## 2026-08-02 — les sources Phyre (ED8_12AssetTool-main) confirment et corrigent
+
+Sources du moteur : coldsteel_studio/docs/ED8_12AssetTool-main. Ce qu'elles
+apprennent :
+
+  PTypeID : PE_TYPE_FLOAT3 = 2, PE_TYPE_USHORT = 12. Nos m_vertexFormat=2 et
+  m_indexFormat=12 sont donc les bons — la correction d'avant est confirmee.
+
+  PPhysicsModel.m_rigidBodies est une LISTE CHAINEE intrusive (m_next, m_model),
+  pas un tableau. Nous l'ecrivons deja ainsi.
+
+  PPhysicsWorld::addPhysicsModelsToWorld(PCluster&) parcourt tous les PPhysicsModel
+  d'un cluster par TYPE : le notre est donc trouve.
+
+  PPhysicsRigidBodyBullet : si getTargetNode() rend un noeud, la transformation du
+  corps vient de CE noeud ; sinon de m_worldMatrix.
+
+DEFAUT CORRIGE : m_massFrameTransform valait douze zeros. Le jeu y met une vraie
+matrice dont la translation est la position du noeud de collision (89,05 ; 37,14 ;
+-272,28 pour r0510). Douze zeros ne sont pas une transformation. Ecrite en
+identite, notre collision etant a l'origine.
+
+RESTE : notre corps rigide vise PNode[0], sans nom, alors que la map livree vise
+des noeuds NOMMES qui portent les surfaces —
+  corps 0 -> PNode[1] "CA00" ; corps 1 -> PNode[2] "CK00" ; corps 2 -> PNode[4] "CS00"
+Sonde ajoutee : --bodies <cluster>.

@@ -4151,7 +4151,7 @@ public sealed class ViewerForm : Form
         collisionNote = edges.Count == 0
             ? $"{assetId}: no collision found"
             : $"{assetId}: {edges.Count} edges";
-        showCollisionCheckBox.Text = "Show collision of selection — " + collisionNote;
+        showCollisionCheckBox.Text = "Show collision — " + collisionNote;
         if (edges.Count == 0) return;
 
         var world = Matrix4x4.CreateScale(transform.Scale)
@@ -4189,12 +4189,32 @@ public sealed class ViewerForm : Form
             }
         }
         var selectedElement = selection is null ? null : document.Find(selection);
-        if (showCollisionCheckBox.Checked
-            && selection is { Kind: SceneElementKind.Prop }
-            && selectedElement is not null
-            && document.FindAssetId(selection) is { } collisionAsset)
+        if (showCollisionCheckBox.Checked)
         {
-            AddCollisionWireframe(overlayLines, collisionAsset, selectedElement.Transform);
+            // Says what happened in every case, not only when something was drawn:
+            // "nothing appeared" looks the same whether the wireframe is empty, the
+            // selection is of the wrong kind, or nothing is selected at all.
+            if (selection is null)
+            {
+                showCollisionCheckBox.Text = "Show collision — nothing selected";
+            }
+            else if (selection is not { Kind: SceneElementKind.Prop })
+            {
+                showCollisionCheckBox.Text = $"Show collision — selection is {selection.Kind}";
+            }
+            else if (document.FindAssetId(selection) is not { } collisionAsset)
+            {
+                showCollisionCheckBox.Text =
+                    $"Show collision — no asset for '{selection.Name}' #{selection.SourceIndex}";
+            }
+            else if (selectedElement is null)
+            {
+                showCollisionCheckBox.Text = $"Show collision — {collisionAsset} has no transform";
+            }
+            else
+            {
+                AddCollisionWireframe(overlayLines, collisionAsset, selectedElement.Transform);
+            }
         }
         var showSelectedGizmo = selection is { Kind: SceneElementKind.Prop }
             || showIndicatorsCheckBox.Checked;
