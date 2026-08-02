@@ -39,12 +39,34 @@ internal static class OpsCoordinateConverter
         MapTransform editorTransform)
     {
         ArgumentNullException.ThrowIfNull(editorTransform);
-        var editorEuler = ToEditorEuler(Quaternion.Normalize(editorTransform.Rotation));
+        var rotation = Quaternion.Normalize(editorTransform.Rotation);
+
+        // A rotation the author did not touch is written back exactly as the file
+        // stated it. Going out through a quaternion and back gives an equivalent
+        // rotation but not the same numbers — "0, -3.141191, 0" comes back as
+        // "3.1415927, -0.0004, 3.1415927", the same turn expressed through gimbal
+        // lock — and rewriting a field nobody edited is how a file drifts.
+        if (SameRotation(FromEditorEuler(editorTransform.SourceEulerRadians), rotation))
+        {
+            return (
+                editorTransform.Position,
+                editorTransform.SourceEulerRadians,
+                editorTransform.Scale);
+        }
+
         return (
             editorTransform.Position,
-            editorEuler,
+            ToEditorEuler(rotation),
             editorTransform.Scale);
     }
+
+    /// <summary>
+    /// Whether two quaternions turn a thing the same way. They may differ in sign
+    /// and still agree, so the comparison is on the angle between them.
+    /// </summary>
+    private static bool SameRotation(Quaternion left, Quaternion right)
+        => Math.Abs(Quaternion.Dot(Quaternion.Normalize(left), Quaternion.Normalize(right)))
+            >= 1f - 1e-6f;
 
     private static Quaternion FromEditorEuler(Vector3 editorEuler)
     {

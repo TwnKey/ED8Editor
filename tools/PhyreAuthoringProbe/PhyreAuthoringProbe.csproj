@@ -9,5 +9,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\ED8Editor.Phyre\ED8Editor.Phyre.csproj" />
     <ProjectReference Include="..\..\src\ED8Editor.Packages\ED8Editor.Packages.csproj" />
+    <ProjectReference Include="..\..\src\ED8Editor.Rendering\ED8Editor.Rendering.csproj" />
   </ItemGroup>
 </Project>

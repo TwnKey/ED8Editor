@@ -25,7 +25,18 @@ namespace ED8Editor.Phyre.Authoring;
 /// namespace this table produces for a shipped cluster has to be, byte for byte,
 /// the one that cluster carries.
 /// </summary>
-public static class PhyreSchemaLibrary
+public enum PhyreSchemaProfile
+{
+    Cs1Native,
+    /// <summary>
+    /// The object layout emitted by Falcom's authoring tool, restricted to the
+    /// 125 compiled classes that the CS1 runtime actually registers.
+    /// </summary>
+    Cs1RuntimeAuthoring,
+    FalcomAssetProcessor,
+}
+
+public static partial class PhyreSchemaLibrary
 {
     private sealed record MemberRow(
         string Name, string TypeName, uint ValueOffset, uint Size, uint Flags, uint FixedArraySize);
@@ -1072,12 +1083,179 @@ public static class PhyreSchemaLibrary
     public static bool Knows(string className) => ByName.ContainsKey(className);
 
     /// <summary>
+    /// The primitive types the given classes refer to. A namespace has to list
+    /// every one of them: a member whose type is neither a listed type nor a
+    /// listed class cannot be written.
+    /// </summary>
+    public static IReadOnlyList<string> PrimitiveTypesFor(IEnumerable<string> classNames)
+    {
+        ArgumentNullException.ThrowIfNull(classNames);
+        var wanted = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var className in classNames)
+        {
+            if (!ByName.TryGetValue(className, out var row)) continue;
+            foreach (var member in row.Members)
+            {
+                if (!ByName.ContainsKey(member.TypeName)) wanted.Add(member.TypeName);
+            }
+        }
+        return wanted.ToArray();
+    }
+
+    /// <summary>
     /// Whether the engine treats this class as a header class — the flag that
     /// puts an entry in the header class section and lets its objects be bigger
     /// than the class itself. Only two classes in the game carry it.
     /// </summary>
+
+    /// <summary>
+    /// The schema every model cluster carries, exactly as the game writes it.
+    ///
+    /// This is not derived per file. Four unrelated clusters — two props and two maps
+    /// — list the same 125 classes in the same order and the same 15 types in the
+    /// same order, byte for byte. So the exporter emits one fixed table, and a class
+    /// is identified by where it sits in it.
+    ///
+    /// Working out a minimal set per model, as this project did, gives every cluster
+    /// its own numbering. Nothing inside such a file contradicts itself, which is why
+    /// it passed every check made against our own readers — and why none of them
+    /// could catch it.
+    /// </summary>
+    public static readonly IReadOnlyList<string> CanonicalTypes = new[]
+    {
+        "PUInt32", "PUInt8", "PSceneRenderPassType", "PUInt16",
+        "PContextSwitch", "PLightType", "PShadowCasterType", "PInt32",
+        "float", "PLODMetricType", "PLODBlendType", "bool",
+        "PRenderDataType", "PChar", "PTextureFormatBase",
+    };
+
+    public static readonly IReadOnlyList<string> CanonicalClasses = new[]
+    {
+        "PAssetReference", "PAssetReferenceImport", "PBase",
+        "PClassDescriptor", "PClusterHeader", "PClusterHeaderD3D11",
+        "PClusterHeaderBase", "PDataBlockD3D11", "PDataBlockBase",
+        "PArray<PVertexStream>", "PInstanceListHeader", "PMaterial",
+        "PEffectVariant", "PArray<PMaterialSwitch>", "PArray<PSceneRenderPass *>",
+        "PArray<PSceneRenderPass>", "PArray<PShaderParameterDefinition>", "PEffect",
+        "PArray<PContextSwitch *>", "PArray<PEffectVariant *>", "PArray<PLightType *>",
+        "PArray<PNodeContext>", "PArray<PShadowCasterType *>", "PMaterialSwitch",
+        "PMesh", "PArray<PInt32>", "PArray<PMatrix4>",
+        "PArray<PMeshSegment>", "PArray<PSkeletonJointBounds>", "PArray<PString>",
+        "PMaterialSet", "PMatrix4", "PMeshInstance",
+        "PArray<PMeshInstanceSegmentContext>", "PArray<PUInt32>", "PDynamicMeshInstance",
+        "PDynamicMesh", "PArray<PDynamicSegmentDesc>", "PDynamicSegmentDesc",
+        "PLODLevel", "PLODGroup", "PArray<PLODLevel>",
+        "PMeshInstanceBounds", "PMeshInstanceSegmentContext", "PMeshSegment",
+        "PMeshSegmentContext", "PMeshSegmentD3D11", "PArray<PDataBlockD3D11>",
+        "PIndexDataBlockD3D11", "PIndexDataBlockBase", "PMeshSegmentBase",
+        "PArray<PSkinBoneRemap>", "PNode", "PNodeContext",
+        "PParameterBuffer", "PParameterBufferBase", "PSamplerStateD3D11",
+        "PSamplerState", "PSamplerStateBase", "PSceneRenderPass",
+        "PArray<PContextVariantFoldingTable>", "PArray<PShader>", "PArray<PShaderPassInfo>",
+        "PContextVariantFoldingTable", "PShader", "PArray<PShaderPass>",
+        "PArray<PShaderStreamDefinition>", "PShaderParameterCaptureBufferSampler", "PShaderParameterCaptureBufferTexture2D",
+        "PShaderParameterCaptureBufferTextureBase", "PShaderParameterDefinition", "PShaderParameterCaptureBufferLocationSize",
+        "PShaderParameterCaptureBufferLocation", "PShaderPass", "PShaderPassD3D11",
+        "PShaderPassBase", "PArray<PShaderParameterCaptureBufferLocation>", "PShaderComputeProgram",
+        "PShaderComputeProgramD3D11", "PShaderFragmentProgram", "PShaderFragmentProgramD3D11",
+        "PShaderGeometryProgram", "PShaderGeometryProgramD3D11", "PShaderPassInfo",
+        "PShaderPassParameterLocationTypesConstantBuffer", "PArray<PShaderParameterCaptureBufferLocationTypeConstantBuffer>", "PShaderParameterCaptureBufferLocationTypeConstantBuffer",
+        "PShaderPassParameterLocationTypesBase", "PShaderPassStateD3D11", "CD3D11_BLEND_DESC",
+        "CD3D11_DEPTH_STENCIL_DESC", "CD3D11_RASTERIZER_DESC", "D3D11_DEPTH_STENCILOP_DESC",
+        "D3D11_RENDER_TARGET_BLEND_DESC", "PShaderPassStateBase", "PShaderProgramD3D11",
+        "PArray<PUInt8>", "PShaderProgramBase", "PShaderStreamDefinition",
+        "PShaderVertexProgram", "PShaderVertexProgramD3D11", "PSharray<PDataBlockBufferD3D11>",
+        "PDataBlockBufferD3D11", "PSharray<PIndexDataBlockBufferD3D11>", "PIndexDataBlockBufferD3D11",
+        "PSharray<PMaterial *>", "PSharray<PMeshInstance *>", "PSharray<PMeshInstanceSegmentStreamBinding *>",
+        "PMeshInstanceSegmentStreamBinding", "PSharray<PUInt32>", "PSkeletonJointBounds",
+        "PSkinBoneRemap", "PStreamInputLayoutD3D11", "PArray<PStreamInputDescD3D11>",
+        "PStreamInputDescD3D11", "PString", "PTexture2D",
+        "PTexture2DD3D11", "PTexture2DBase", "PTextureCommonBase",
+        "PVertexStream", "PWorldMatrix", "PMatrix4x3",
+        "Vector3", "Vector4",
+    };
+
+    /// <summary>
+    /// Fixed DX11 class table used by map clusters carrying Bullet triangle-mesh
+    /// collision. The order is byte-for-byte the one shared by the shipped
+    /// M_R0500 and M_R0510 map clusters; it is a distinct ABI from the 125-class
+    /// render-only table above, not that table with physics names appended.
+    /// </summary>
+    public static readonly IReadOnlyList<string> CanonicalPhysicsClasses = new[]
+    {
+        "PAssetReference", "PAssetReferenceImport", "PBase",
+        "PClassDescriptor", "PClusterHeader", "PClusterHeaderD3D11",
+        "PClusterHeaderBase", "PDataBlockD3D11", "PDataBlockBase",
+        "PArray<PVertexStream>", "PInstanceListHeader", "PMaterial",
+        "PEffectVariant", "PArray<PMaterialSwitch>", "PArray<PSceneRenderPass *>",
+        "PArray<PSceneRenderPass>", "PArray<PShaderParameterDefinition>", "PEffect",
+        "PArray<PContextSwitch *>", "PArray<PEffectVariant *>", "PArray<PLightType *>",
+        "PArray<PNodeContext>", "PArray<PShadowCasterType *>", "PMaterialSwitch",
+        "PMesh", "PArray<PInt32>", "PArray<PMatrix4>",
+        "PArray<PMeshSegment>", "PArray<PSkeletonJointBounds>", "PArray<PString>",
+        "PMaterialSet", "PMatrix4", "PMeshInstance",
+        "PArray<PMeshInstanceSegmentContext>", "PArray<PUInt32>", "PDynamicMeshInstance",
+        "PDynamicMesh", "PArray<PDynamicSegmentDesc>", "PDynamicSegmentDesc",
+        "PLODLevel", "PLODGroup", "PArray<PLODLevel>",
+        "PMeshInstanceBounds", "PMeshInstanceSegmentContext", "PMeshSegment",
+        "PMeshSegmentContext", "PMeshSegmentD3D11", "PArray<PDataBlockD3D11>",
+        "PIndexDataBlockD3D11", "PIndexDataBlockBase", "PMeshSegmentBase",
+        "PArray<PSkinBoneRemap>", "PNode", "PNodeContext",
+        "PParameterBuffer", "PParameterBufferBase",
+        "PPhysicsMaterial", "PPhysicsMesh", "PPhysicsMeshBullet",
+        "PPhysicsMeshBase", "PPhysicsModel", "PPhysicsRigidBody",
+        "PPhysicsRigidBodyBullet", "PPhysicsRigidBodyBase", "PMatrix4x3",
+        "PPhysicsShape", "PPhysicsShapeBullet", "PPhysicsShapeBase",
+        "PPhysicsWorld", "PPhysicsWorldBullet", "PPhysicsWorldBase",
+        "PPhysicsCharacterControllerBase",
+        "PSamplerStateD3D11", "PSamplerState", "PSamplerStateBase",
+        "PSceneRenderPass", "PArray<PContextVariantFoldingTable>",
+        "PArray<PShader>", "PArray<PShaderPassInfo>", "PContextVariantFoldingTable",
+        "PScriptCallbackHandler", "PShader", "PArray<PShaderPass>",
+        "PArray<PShaderStreamDefinition>",
+        "PShaderParameterCaptureBufferSampler",
+        "PShaderParameterCaptureBufferTexture2D",
+        "PShaderParameterCaptureBufferTextureBase",
+        "PShaderParameterDefinition",
+        "PShaderParameterCaptureBufferLocationSize",
+        "PShaderParameterCaptureBufferLocation", "PShaderPass",
+        "PShaderPassD3D11", "PShaderPassBase",
+        "PArray<PShaderParameterCaptureBufferLocation>",
+        "PShaderComputeProgram", "PShaderComputeProgramD3D11",
+        "PShaderFragmentProgram", "PShaderFragmentProgramD3D11",
+        "PShaderGeometryProgram", "PShaderGeometryProgramD3D11",
+        "PShaderPassInfo",
+        "PShaderPassParameterLocationTypesConstantBuffer",
+        "PArray<PShaderParameterCaptureBufferLocationTypeConstantBuffer>",
+        "PShaderParameterCaptureBufferLocationTypeConstantBuffer",
+        "PShaderPassParameterLocationTypesBase", "PShaderPassStateD3D11",
+        "CD3D11_BLEND_DESC", "CD3D11_DEPTH_STENCIL_DESC",
+        "CD3D11_RASTERIZER_DESC", "D3D11_DEPTH_STENCILOP_DESC",
+        "D3D11_RENDER_TARGET_BLEND_DESC", "PShaderPassStateBase",
+        "PShaderProgramD3D11", "PArray<PUInt8>", "PShaderProgramBase",
+        "PShaderStreamDefinition", "PShaderVertexProgram",
+        "PShaderVertexProgramD3D11", "PShape", "PArray<PUInt8,4>",
+        "PSharray<PDataBlockBufferD3D11>", "PDataBlockBufferD3D11",
+        "PSharray<PIndexDataBlockBufferD3D11>", "PIndexDataBlockBufferD3D11",
+        "PSharray<PMaterial *>", "PSharray<PMeshInstance *>",
+        "PSharray<PMeshInstanceSegmentStreamBinding *>",
+        "PMeshInstanceSegmentStreamBinding", "PSharray<PPhysicsShape *>",
+        "PSharray<PUInt32>", "PSkeletonJointBounds", "PSkinBoneRemap",
+        "PStreamInputLayoutD3D11", "PArray<PStreamInputDescD3D11>",
+        "PStreamInputDescD3D11", "PString", "PTexture2D",
+        "PTexture2DD3D11", "PTexture2DBase", "PTextureCommonBase",
+        "PTypedObject", "PVertexStream", "PWorldMatrix",
+        "Point3", "Quat", "Vector3", "Vector4",
+    };
     public static bool IsHeaderClass(string className)
         => ByName.TryGetValue(className, out var row) && (row.Flags & 4) != 0;
+
+    /// <summary>
+    /// Whether this name is one of the engine's classes rather than one of its plain
+    /// types. The two live in separate numbering spaces, and a caller holding a name
+    /// read out of a file has no other way to tell which space it belongs to.
+    /// </summary>
+    public static bool IsClass(string name) => ByName.ContainsKey(name);
 
     /// <summary>
     /// Every class this one drags in: the one it derives from, and the class of
@@ -1101,7 +1279,8 @@ public static class PhyreSchemaLibrary
     /// </summary>
     public static PhyreClassDescriptor[] Descriptors(
         IReadOnlyList<string> typeNames,
-        IReadOnlyList<string> classNames)
+        IReadOnlyList<string> classNames,
+        PhyreSchemaProfile profile = PhyreSchemaProfile.Cs1Native)
     {
         ArgumentNullException.ThrowIfNull(typeNames);
         ArgumentNullException.ThrowIfNull(classNames);
@@ -1115,7 +1294,11 @@ public static class PhyreSchemaLibrary
         var memberIndex = 0;
         for (var index = 0; index < classNames.Count; index++)
         {
-            if (!ByName.TryGetValue(classNames[index], out var row))
+            var schema = profile is PhyreSchemaProfile.FalcomAssetProcessor
+                or PhyreSchemaProfile.Cs1RuntimeAuthoring
+                ? AssetProcessorByName
+                : ByName;
+            if (!schema.TryGetValue(classNames[index], out var row))
             {
                 throw new InvalidOperationException(
                     $"The schema library does not describe '{classNames[index]}'.");

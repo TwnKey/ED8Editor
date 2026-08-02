@@ -9,7 +9,7 @@ namespace ED8Editor.Viewer;
 /// Quest table editor plus an exact index of script-side quest mutations.
 /// Table fields with unresolved meanings remain visible and round-tripped.
 /// </summary>
-internal sealed class QuestEditorWindow : Form
+internal sealed class QuestEditorWindow : Form, IProjectDocumentEditor
 {
     private readonly string sourcePath;
     private readonly Cs1TableDocument document;
@@ -50,6 +50,9 @@ internal sealed class QuestEditorWindow : Form
         AutoEllipsis = true,
     };
     private string? savedPath;
+
+    /// <summary>Whether an applied edit is waiting to be written.</summary>
+    private bool applied;
     private QuestRecord? currentQuest;
     private QuestStage? currentStage;
 
@@ -140,7 +143,12 @@ internal sealed class QuestEditorWindow : Form
     {
         var menu = new MenuStrip();
         var file = new ToolStripMenuItem("File");
-        file.DropDownItems.Add(new ToolStripMenuItem("Save", null, (_, _) => Save(false))
+        // Everything, not just this table: the focus should not decide how much of
+        // the author's work is written. If the main window is gone, this one alone.
+        file.DropDownItems.Add(new ToolStripMenuItem(
+            "Save everything unsaved",
+            null,
+            (_, _) => { if (!ProjectSave.Everything()) Save(false); })
         {
             ShortcutKeys = Keys.Control | Keys.S,
         });
@@ -429,15 +437,47 @@ internal sealed class QuestEditorWindow : Form
         if (currentStage is not null)
             changed |= SetIfChanged(currentStage.Fields, "text", stageText.Text);
         if (!changed) return;
+        applied = true;
         questList.Refresh();
         stageList.Refresh();
-        Text = "Quest editor — t_quest.tbl *";
+        ShowTitle();
     }
 
-    private void Save(bool saveAs)
+    /// <summary>Whether the table has edits that are not on disk.</summary>
+    public bool HasUnsavedChanges => applied || HasPendingFieldEdits();
+
+    /// <summary>Where the table would be written.</summary>
+    public string? DocumentPath => savedPath ?? sourcePath;
+
+    public bool SaveWithoutAsking() => Save(saveAs: false);
+
+    /// <summary>
+    /// Whether what is typed in the fields differs from the quest it belongs to.
+    ///
+    /// Compared on demand rather than watched: the same boxes are filled by the
+    /// editor itself whenever another quest is picked, so a change event would call
+    /// that an edit.
+    /// </summary>
+    private bool HasPendingFieldEdits()
     {
-        if (!TryApplyCurrent()) return;
-        var target = saveAs ? null : savedPath;
+        if (currentQuest is null) return false;
+        if (!Value(currentQuest.TitleFields, "title").Equals(title.Text, StringComparison.Ordinal))
+            return true;
+        if (!Value(currentQuest.TitleFields, "persons").Equals(persons.Text, StringComparison.Ordinal))
+            return true;
+        return currentStage is not null
+            && !Value(currentStage.Fields, "text").Equals(stageText.Text, StringComparison.Ordinal);
+    }
+
+    private void ShowTitle()
+        => Text = "Quest editor — t_quest.tbl" + (HasUnsavedChanges ? " *" : string.Empty);
+
+    private bool Save(bool saveAs)
+    {
+        if (!TryApplyCurrent()) return false;
+        // Over the file it was read from: the project took a pristine copy through
+        // onSaving, and "t_quest.edited.tbl" is a name the game does not read.
+        var target = saveAs ? null : savedPath ?? sourcePath;
         if (string.IsNullOrEmpty(target))
         {
             using var dialog = new SaveFileDialog
@@ -445,12 +485,12 @@ internal sealed class QuestEditorWindow : Form
                 Title = "Save quest table",
                 Filter = "Cold Steel tables (*.tbl)|*.tbl|All files|*.*",
                 InitialDirectory = Path.GetDirectoryName(sourcePath),
-                FileName = $"{Path.GetFileNameWithoutExtension(sourcePath)}.edited.tbl",
+                FileName = Path.GetFileName(sourcePath),
                 DefaultExt = "tbl",
                 AddExtension = true,
                 OverwritePrompt = true,
             };
-            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            if (dialog.ShowDialog(this) != DialogResult.OK) return false;
             target = dialog.FileName;
         }
         try
@@ -465,7 +505,9 @@ internal sealed class QuestEditorWindow : Form
             document.Write(target!);
             onSaving(target!, false);
             savedPath = target;
+            applied = false;
             Text = $"Quest editor — {Path.GetFileName(target)}";
+            return true;
         }
         catch (Exception exception) when (exception is IOException
             or UnauthorizedAccessException or InvalidDataException
@@ -473,6 +515,7 @@ internal sealed class QuestEditorWindow : Form
         {
             MessageBox.Show(this, exception.Message, "Cannot save quest table",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return false;
         }
     }
 

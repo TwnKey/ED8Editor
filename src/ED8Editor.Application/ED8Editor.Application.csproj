@@ -4,4 +4,16 @@
     <ProjectReference Include="..\ED8Editor.ScriptHeaders\ED8Editor.ScriptHeaders.csproj" />
     <ProjectReference Include="..\ED8Editor.Phyre\ED8Editor.Phyre.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ED8Editor.Tables\ED8Editor.Tables.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ED8Editor.Ops\ED8Editor.Ops.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ED8Editor.Packages\ED8Editor.Packages.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ED8Editor.Models\ED8Editor.Models.csproj" />
+  </ItemGroup>
 </Project>

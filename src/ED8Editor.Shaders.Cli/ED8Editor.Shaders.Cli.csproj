@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ED8Editor.Shaders.Cli</RootNamespace>
+    <AssemblyName>ED8Editor.Shaders.Cli</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ED8Editor.Shaders\ED8Editor.Shaders.csproj" />
+    <ProjectReference Include="..\ED8Editor.Packages\ED8Editor.Packages.csproj" />
+    <ProjectReference Include="..\ED8Editor.Phyre\ED8Editor.Phyre.csproj" />
+  </ItemGroup>
+
+</Project>

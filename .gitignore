@@ -9,4 +9,5 @@ dist/
 *.build
 *.exp
 *.lib
+tmp-inspect/*
 *.obj

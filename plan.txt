@@ -1060,3 +1060,2619 @@ implémenté du tout.
          attaches), celles alimentees par PLUSIEURS os (fusion devinee, a
          verifier en premier) et le poids perdu par la limite de quatre
          jointures.
+[OK]     Armes / points d'attache : la chaine est etablie et la brique manquante
+         est ecrite. t_attach.tbl (schema deja connu : character u16,
+         unknown_data 20 o, model cutf8, attach_point cutf8) lie un personnage a
+         un modele d'equipement et au NOM du point ou il se pose. Les modeles
+         portent ces points comme objets PLocator — ply000 en a 16 :
+         Left_SB_point, Right_SB_point, DLC_point1/2, head_point, back2_point,
+         back4_point, L_arm_point, R_arm_point, LeftForeArm_point,
+         RightForeArm_point, LeftShoulder_point, center_point, L_cat_point,
+         R_cat_point, up_point. Les noms concordent exactement avec la table.
+         PhyreLocators.Read les extrait (sonde --locators). A noter : un locator
+         est ANIME comme un os — locator10 etait la cible de canal de ply000 qui
+         ne resolvait pas vers une jointure — donc une arme suit l'animation par
+         son point, elle n'est pas figee.
+[MANQUE] Ce qui reste pour l'arme dans le Character Editor, et c'est du ressort
+         de codex (interface + import) : choisir un point dans la liste,
+         afficher le modele d'arme a la transformation du locator (suivre le
+         pointeur m_localToWorldMatrix vers PWorldMatrix, pas encore fait), et
+         pour une arme custom passer par AssimpModelImporter -> ImportedModelScene
+         -> PhyreModelSource -> remplacement de geometrie dans un C_EQU* existant
+         (verifie a 70/70 sur les personnages, jamais essaye sur un equipement).
+[OK]     Cs1AttachTable : vue typee de t_attach.tbl (character u16, 20 octets
+         non nommes, model cutf8, attach_point cutf8). Set() reecrit un
+         enregistrement existant pour (personnage, point) ou en clone un modele
+         reel, en reportant tels quels les 20 octets que le projet ne nomme pas —
+         meme discipline que Cs1ShopTable. Verifie : 199 attachements lus,
+         aller-retour sans modification IDENTIQUE a l'octet, puis ajout d'un
+         (9001, C_EQU999, R_arm_point) relu correctement, 200 enregistrements.
+[MANQUE] Ce qui reste pour boucler l'arme dans le Character Editor :
+         - la table des ARMES elle-meme : je n'ai pas identifie laquelle c'est
+           (t_item.tbl ?) ni verifie son schema. Non fait.
+         - la transformation du locator : suivre m_localToWorldMatrix (pointeur
+           vers PWorldMatrix) pour poser l'arme au bon endroit. Non fait.
+         - le dialogue et la previsualisation dans ED8Editor.Viewer — territoire
+           de codex, non touche volontairement.
+         - l'import d'une arme custom : AssimpModelImporter -> ImportedModelScene
+           -> PhyreModelSource -> remplacement de geometrie dans un C_EQU*.
+           L'adaptateur entre ImportedModelScene et PhyreModelSource reste a
+           ecrire ; les deux types sont deja format-agnostiques.
+[OK]     Les 20 « octets inconnus » de t_attach n'etaient pas inconnus, je ne
+         les avais pas regardes. Ce sont CINQ entiers 32 bits :
+         slot (0 arme au bras, 5 tenue, 6 lunettes), item_id (1000 pour l'arme,
+         800/801/802 pour les tenues, 9999 sur les lignes par defaut), puis
+         trois mots encore non etablis (263 sur une tenue, deux petits
+         compteurs). item_id pointe vers t_item.tbl, categorie « item », champ
+         « id » (u16). Cs1AttachTable expose donc TOUS les champs et Set() ne
+         clone plus rien : un champ que l'utilisateur ne peut ni voir ni changer
+         est un champ qu'il ne peut pas reparer. Verifie : aller-retour sans
+         modification identique a l'octet, ecriture d'un enregistrement relue.
+         REGLE GENERALE tiree de la : partout ou j'ai ecrit « octets preserves »,
+         aller voir avant de conclure.
+[OK]     AttachmentEditor (ED8Editor.Application) : fait l'operation d'attache A
+         TRAVERS le projet de mod — CaptureOriginal avant, TrackSave apres, sur
+         CHAQUE copie de la table (text/dat et text/dat_us), parce qu'en oublier
+         une donne un mod qui marche dans une langue et pas dans l'autre.
+         ED8Editor.Application reference desormais ED8Editor.Tables.
+[MANQUE] Non fait / non verifie : l'AttachmentEditor n'a jamais tourne sur un
+         vrai projet de mod (il faudrait en ouvrir un). L'edition de t_item.tbl
+         elle-meme (creer/editer l'objet arme) n'est pas ecrite — seul le lien
+         attach.item_id -> item.id est etabli. La transformation du locator
+         (suivre m_localToWorldMatrix vers PWorldMatrix) n'est pas faite. Le
+         dialogue et l'apercu restent chez codex, ainsi que l'adaptateur
+         ImportedModelScene -> PhyreModelSource pour une arme custom.
+[OK]     DIAGNOSTIC collision M_R0510 (CS2, aller-retour via ed8pkg2gltf) :
+         notre lecteur CS1 avale le cluster CS2. Le fichier d'origine porte
+         5 PPhysicsRigidBody (collisionGroup 1, rigidBodyType 0, enabled 1,
+         mass 1) et 5 PPhysicsMesh (m_type 7, hollow 1, scale 1,1,1).
+         Or ed8pkg2gltf.py jette explicitement, par ses propres commentaires :
+         cote corps « m_rigidBodyType, m_initialPosition, m_initialOrientation,
+         m_inertiaTensor, m_angularDamping, m_scale, m_initialTransform,
+         m_collisionGroup, m_enabled, m_scriptHandler, PWorldMatrix » ; cote
+         forme « m_material, m_transform, m_scale, m_type ».
+         Trois pertes suffisent chacune a tuer la collision :
+           - m_type 7 -> 0 : la forme n'est plus declaree comme MAILLAGE, donc
+             la geometrie de collision est presente mais jamais utilisee ainsi.
+             C'est le candidat le plus probable.
+           - m_enabled 1 -> 0 : le corps est simplement eteint.
+           - m_collisionGroup 1 -> 0 : change avec quoi ca collisionne.
+         Non verifie : les valeurs APRES leur aller-retour (je n'ai pas execute
+         leurs scripts). J'ai etabli l'avant et ce que leur code jette.
+         Corrigeable chez nous par construction : on reecrit le cluster EN PLACE
+         et les objets physiques ne sont jamais decodes ni reencodes — d'ou les
+         70 modeles sur 70 rendus a l'octet pres, physique comprise. La garantie
+         ne repose pas sur une liste de champs a maintenir. Sonde : --physics.
+[PLAN]   CREATION DE MAPS — trou identifie, on traite les props et les persos
+         mais pas les maps, alors que c'est ce qu'il faut pour importer une map
+         neuve (et pour verifier le fix collision d'ed8pkg2gltf).
+         Reconnaissance faite. Une map = TROIS fichiers, convention limpide,
+         427 maps dans le jeu. Pour « a0000 » :
+           - data/asset/D3D11/M_A0000.pkg   le modele (+ textures)
+           - data/ops/a0000.ops             les reglages
+           - data/scripts/scena/dat/a0000.dat   le script de scene
+         Le .ops est du XML UTF-8 EN CLAIR (BOM), <Ops version="1"> puis
+         <MapSetting> : DefaultCamera, Shadow, Reflection, UnderWater, Minimap,
+         FilterDepth/Angle, MapColor, Fog, DefaultLight. Donc AUCUN reverse a
+         faire dessus — generer celui d'une map neuve est du templating.
+         Le .dat scena passe par le decompilateur et l'editeur de scripts qui
+         existent deja. Le .pkg passe par la chaine geometrie deja verifiee
+         (70/70), et la collision d'une map hote survit par construction.
+         Chantier a decouper : creer une map (les trois fichiers + suivi de mod),
+         remplacer le modele d'une map existante, puis importer la sortie
+         d'ed8pkg2gltf comme map neuve.
+[OK]     MapAuthoring (ED8Editor.Application) : creer une map devient UN geste,
+         alors que le jeu en garde trois fichiers. Pour « z9001 » :
+         data/ops/z9001.ops, scripts/scena/dat/z9001.dat et son jumeau dat_us,
+         plus le paquet modele M_Z9001. CreateMap part d'une map livree — non
+         par ignorance du format (l'.ops est du XML dont l'editeur lit et ecrit
+         chaque champ) mais parce qu'une map a besoin d'une camera, d'un
+         brouillard, d'un eclairage et d'une entree pour charger, et que partir
+         de valeurs du jeu vaut mieux que de les faire inventer. Tout reste
+         editable ensuite par le meme OpsReader/OpsWriter.
+         SetMapModel recible le modele d'une map existante. Chaque fichier passe
+         par le projet de mod.
+         Verifie sur une COPIE de l'arborescence (jamais l'installation) :
+         creation -> M_Z9001, reciblage -> M_MYCUSTOM, map de base intacte,
+         3 fichiers suivis, aucun faux original.
+[OK]     BUG CORRIGE dans OpsWriter (fichier de codex) : UpdateProps ne
+         reecrivait l'attribut « asset » d'un prop EXISTANT que si sa
+         TRANSFORMATION avait change (« if (SameTransform(...)) continue; »).
+         Changer le modele d'une map sans la bouger etait donc perdu en silence.
+         La condition inclut desormais AssetId et Name.
+         Correction de ce que j'avais affirme : « remplacer le modele d'une map
+         marche deja » etait FAUX — la plomberie existait, la detection de
+         changement l'annulait.
+[MANQUE] Non fait : produire le paquet M_<NOM>.pkg d'une map neuve (le modele
+         lui-meme), l'import de la sortie d'ed8pkg2gltf comme map neuve, et
+         l'interface. Non verifie : « dotnet test » ne rend aucune sortie apres
+         le restore sur cette machine, donc je n'ai PAS de confirmation que la
+         suite existante passe apres ma modification d'OpsWriter.
+[OK]     Le remplacement de geometrie marche aussi sur les MAPS : 11 modeles de
+         map sur 11 rendus a l'octet pres (des modeles LISIBLES par la sonde —
+         elle saute ceux dont la disposition de sommets ne correspond pas).
+         Physique comprise, puisqu'on ne la decode jamais.
+[OK]     MapPackageAuthoring : produit M_<NOM>.pkg depuis le paquet d'une map
+         livree. Trois noms doivent concorder sous peine que la map ne charge
+         rien — le symbole du manifeste, les chemins « data/D3D11/map/<map>/ »,
+         et l'entree du cluster modele. Les trois sont repris ensemble ; les noms
+         de fichiers de textures restent ceux de l'auteur. La geometrie est
+         remplacee si un PhyreModelSource est fourni, et seulement elle.
+         Verifie sur une copie : M_Z9001.pkg, 38 entrees, z9001.dae.phyre
+         present, a0000.dae.phyre absent, symbole M_Z9001, chemins map/z9001,
+         AUCUN reste de « a0000 » dans le manifeste, 4 fichiers suivis.
+         Creer une map est donc desormais UN appel pour QUATRE fichiers.
+[MANQUE] Reste : brancher la sortie d'ed8pkg2gltf comme source de maillage (donc
+         l'adaptateur vers PhyreModelSource, qui manque toujours), l'interface,
+         et le paquet de textures propres a une map neuve si l'auteur en apporte.
+         Toujours pas de confirmation que « dotnet test » passe (aucune sortie
+         sur cette machine).
+[OK]     Comment lancer les tests : « dotnet run --project tests/ED8Editor.Tests ».
+         Le projet est un EXE sans framework de test (ni xunit ni
+         Microsoft.NET.Test.Sdk), donc « dotnet test » ne trouve rien a executer
+         et ne dit rien — ce n'etait pas une panne mais une erreur d'usage de ma
+         part. Etat apres la correction d'OpsWriter : 79 PASS, 0 echec.
+[OK]     CreateMapFromModel : un appel pour QUATRE fichiers (ops, scena x2,
+         paquet modele), tous suivis. Il REFUSE avant d'ecrire quoi que ce soit
+         quand le maillage ne rentre pas, en nommant les nombres. Verifie : sur
+         un refus, 0 fichier ecrit, 0 suivi.
+[!]      LIMITE DECOUVERTE PAR LE TEST, et elle est structurelle : le
+         remplacement tampon par tampon ne permet PAS de substituer un modele
+         quelconque a une map hote. Sur a0000, l'hote tient 34 maillages et 177
+         flux de sommets ; un import de 34 maillages en fournit 170, parce que
+         les maillages de l'hote ne portent pas tous le meme nombre de jeux d'UV.
+         Assouplir le controle ne reglerait rien : un maillage hote a 4 jeux d'UV
+         face a un import qui n'en a qu'un garderait les UV de la map d'origine
+         sur trois d'entre eux — silencieusement faux.
+         Donc le remplacement de geometrie vaut pour un aller-retour du MEME
+         modele (11/11 sur les maps, 70/70 sur les personnages) et pour un
+         maillage dont la disposition par maillage concorde exactement. Pour une
+         map reellement neuve il faut ECRIRE le cluster modele (phases B/C), pas
+         en remplacer un.
+         A noter aussi : mon controle « maillages x (skinne ? 7 : 5) » est plus
+         grossier que la contrainte reelle, qui est par maillage et par
+         semantique. Le message (170 contre 177) est donc indicatif, pas exact.
+[OK]     ANATOMIE D'UN MODELE MINIMAL (sondes --smallest et --model-shape).
+         Le plus petit modele du corpus : O_MOVIESCREEN / moviescreen.dae.phyre,
+         50 objets, 16 groupes, 300 octets de charge. C'est LA cible pour ecrire
+         un modele de zero — pas un personnage.
+         Les 16 groupes et ce qu'ils declarent reellement :
+           0  PAssetReference x5      champs nuls, noms dans 324 o de tableaux
+           1  PAssetReferenceImport x3 champs nuls, 104 o de tableaux
+           2  PDataBlockD3D11 x6      m_dataSize, m_stride (12,12,16...),
+                                      m_elementCount=4, m_offsetInVertexBuffer,
+                                      m_buffers, m_streams
+           3  PMaterial x2            champs declares NULS (tout en pointeurs)
+           4  PMesh x1                m_meshSegments=1, m_defaultMaterials=1
+           5  PMeshInstance x1        m_segmentContext=1
+           6  PMeshInstanceBounds x1  m_min et m_size, triplets de float
+           7  PMeshInstanceSegmentContext x1  nuls
+           8  PMeshSegment x1         m_vertexData=6 (six blocs de donnees),
+                                      m_matrixIndex=0xFFFFFFFF (non skinne),
+                                      m_primitiveType=2
+           9  PNode x8                champs nuls, noms dans 148 o de tableaux
+          10  PParameterBuffer x1     m_parameterBufferSize=64,
+                                      m_tweakableShaderParameterDefinitions=3
+          11  PParameterBuffer x1     idem
+          12  PSamplerState x6        m_minFilter, m_magFilter, m_wrapS/T/R,
+                                      m_maxAnisotropy, m_maxLevel
+          13  PShaderParameterDefinition x6  m_parameterType, m_dataType,
+                                      m_bufferLoc, m_constantBufferLocation
+          14  PVertexStream x6        m_type (02, 02, 03...)
+          15  PWorldMatrix x1         nuls
+         DEUX ENSEIGNEMENTS :
+         (1) La plupart des objets ont leurs champs declares NULS ou triviaux :
+             la substance d'un modele est dans le GRAPHE DE FIXUPS et dans les
+             tableaux de noms, pas dans les octets d'objets. Ca confirme la
+             mesure de --graph-check (24 membres pointeurs, aucun renseigne).
+         (2) Le materiau d'un modele minimal est minuscule — buffer de 64 octets
+             et 6 definitions de parametres, contre 572 et 48 sur ply000. La
+             phase C doit donc commencer ici, pas sur un personnage.
+[MANQUE] Prochain pas, clairement defini : enumerer le GRAPHE DE FIXUPS de ce
+         meme modele minimal (qui pointe vers quoi), ce qui donne la recette
+         complete pour en ecrire un. Ensuite reproduire ses objets depuis des
+         donnees structurees et diffe, comme pour les 174 textures.
+[OK]     GRAPHE D'UN MODELE MINIMAL (sonde --model-graph, sur moviescreen).
+         64 pointeurs, 22 tableaux, 0 tableau de pointeurs. Le motif complet :
+           PAssetReference[i].m_asset      -> l'objet qu'il nomme
+                                             (PMaterial[0], PNode[0], PMesh[0],
+                                              PMeshInstance[0], PMaterial[1])
+           PAssetReference[i].m_assetType  -> PAssetReference[0]  (tous)
+           PAssetReferenceImport[i].m_targetAssetType -> PAssetReference[0]
+           PDataBlockD3D11[i].+0xC         -> PVertexStream[i]   (un pour un)
+           PMaterial[i].m_effectVariant    -> PAssetReference[0]
+           PMaterial[i].m_parameterBuffer  -> PParameterBuffer[0]
+           PMesh[0].+0x4                   -> PMeshSegment[0]
+           PMesh[0].+0x34                  -> PMaterial[1]
+           PMeshInstance[0].m_mesh         -> PMesh[0]
+           PAssetReference[i].+0x18        -> tableau de NOM (compte 0, comme
+                                             prevu pour une chaine : le drapeau
+                                             EXCLUDE_COUNT sert a ca)
+         Un bloc de donnees porte donc exactement un flux de sommets, et les
+         PAssetReference sont l'annuaire du cluster : un par objet nommable,
+         tous typés par le premier d'entre eux.
+[MANQUE] Prochain pas, entierement specifie : CONSTRUIRE ce modele — 16 groupes,
+         50 objets, les champs scalaires releves par --model-shape, ces 64
+         pointeurs, ces 22 tableaux de noms, et 300 octets de charge — puis
+         diffe contre le fichier livre. Meme methode que les 174 textures.
+         Tout l'outillage est pret : PhyreClusterAssembler encode le graphe a
+         l'octet pres (32 761/32 796), PhyreObjectWriter pose les champs
+         (5 171 709 objets), PhyreModelGeometryPacker produit les flux
+         (11 932/11 932). Il ne reste qu'a decrire ce modele-la et comparer.
+[OK]     COMBIEN D'UN MODELE SAIT-ON DECRIRE (sonde --build-minimal, sur
+         moviescreen, 50 objets) : 248 champs qu'une description peut poser,
+         33 encore recopies. Classification honnete des 33 :
+           24  PShaderParameterDefinition x6 (m_parameterType, m_dataType,
+               m_bufferLoc, m_constantBufferLocation) -> C'EST LA PHASE C. Ces
+               valeurs viennent du shader qu'on lie, elles ne s'inventent pas ;
+               et on a etabli qu'elles sont LISIBLES (section en-tete, un
+               enregistrement par parametre, et le tableau
+               m_tweakableShaderParameterDefinitions du tampon).
+            6  PDataBlockD3D11.m_buffers  -> membre de type tableau que mon test
+               de type n'a pas reconnu (il ne commence pas par « PArray »).
+            2  PMesh.m_defaultMaterials, PMeshSegment.m_indexData -> idem.
+            1  PWorldMatrix.m_matrix -> simple choix d'auteur (une transformation).
+         Autrement dit : la seule inconnue reelle pour ecrire un modele minimal
+         de zero tient en VINGT-QUATRE champs, tous dans les definitions de
+         parametres de shader. Le reste est soit du graphe (que l'assembleur
+         ecrit deja a l'octet pres), soit un choix que l'auteur exprime
+         (position d'un noeud, filtrage d'une texture, transformation).
+[MANQUE] Phase C, desormais chiffree et cernee : produire les 6
+         PShaderParameterDefinition d'un materiau minimal. Methode : les lire
+         depuis un materiau livre qui utilise le meme shader, puis exiger les
+         memes octets — comme pour tout le reste. Ensuite le modele minimal
+         s'ecrit entierement et se diffe contre moviescreen.
+[OK]     PHASE C CERNEE (sonde --shader-params). Question posee au corpus : deux
+         modeles qui lient le meme shader portent-ils les memes
+         PShaderParameterDefinition ? Mesure sur les paquets a un shader et un
+         modele : 457 paquets, 141 shaders distincts, 57 utilises par plus d'un
+         modele. Sur ces 57, la grande majorite ne montre AUCUN desaccord —
+         36 modeles/0 desaccord, 15/0, 12/0, 10/0, 8/0, 7/0... Les exceptions se
+         concentrent sur le shader le plus employe : 96 modeles dont 12 en
+         desaccord, plus 1/19 et 1/13.
+         Conclusion : lier un shader DONNE ses definitions de parametres dans la
+         quasi-totalite des cas. Les 24 champs qui bloquaient l'ecriture d'un
+         modele sont donc une TABLE DE CORRESPONDANCE construite depuis le
+         corpus, pas un reverse.
+         Recommandation pratique : pour ecrire le premier modele minimal,
+         choisir un shader a zero desaccord (par exemple
+         ed8.fx#83721B9ACAD56264B42EFB69D00064CA, 36 modeles), pour que la
+         correspondance soit sans ambiguite.
+[MANQUE] Comprendre les 14 desaccords (surtout les 12 du shader le plus employe) :
+         probablement des modeles qui lient plus de textures ou une variante
+         differente. A regarder avant de generaliser la table a tout le corpus,
+         mais ca ne bloque pas le premier modele.
+[OK]     PHASE C : la table de correspondance shader -> definitions est VALIDEE.
+         Correction d'un filtre trop etroit au passage : les shaders ne sont pas
+         tous « ed8.fx# », la forme generale est « *.fx#<hash>.phyre ».
+         moviescreen lie Video.fx#47C02C9B2DC49A1EAA38DC726CC42326 et declare 6
+         definitions ; l'autre modele du corpus qui lie ce meme shader porte des
+         definitions IDENTIQUES A L'OCTET. Les 24 champs qui bloquaient
+         l'ecriture d'un modele se generent donc par lookup pour ce shader.
+         Tableau d'ensemble avec le filtre corrige : 679 paquets a un shader et un
+         modele, 229 shaders distincts, 82 partages. Les partages sont presque
+         tous a zero desaccord (40/0, 25/0, 19/0, 18/0, 15/0...) ; les exceptions
+         restent 12 sur 105 pour le shader le plus employe et 1 sur 19.
+         (A noter : le hash 47C02C9B... apparait aussi derriere ed8_minimap.fx
+         dans le paquet CS2 examine plus tot, donc un hash identifie une
+         PERMUTATION, pas un fichier de shader.)
+[OK]     ARITHMETIQUE D'UN MODELE VERIFIEE (sonde --derive-fields, moviescreen) :
+           - m_dataSize = m_stride x m_elementCount : 6 blocs sur 6.
+           - m_offsetInVertexBuffer = somme des tailles des blocs precedents :
+             6 sur 6 (0, 48, 96, 160, 192, 240 pour des strides 12,12,16,8,12,12
+             a 4 sommets).
+           - PMeshInstanceBounds m_min et m_size = la boite des positions du
+             maillage : identiques au fichier, (-14,1346, -0,4873, -0,0108) et
+             (1,5729, 0,9746, 0).
+         Ces trois champs passent donc de « recopie » a « genere », et ce sont
+         ceux qui portent la lecture des tampons : une taille fausse lit au-dela
+         d'un tampon, des bornes fausses font disparaitre le modele quand la
+         camera tourne. Aucun des deux ne se voit dans un diff d'octets partiel.
+[MANQUE] Assemblage final : ecrire les 50 objets de moviescreen depuis la
+         description (248 champs deja descriptibles + 24 par lookup shader + ces
+         trois-ci derives), poser le graphe (64 pointeurs, 22 tableaux), la
+         charge GPU, et diffe contre le fichier livre. Plus aucune inconnue de
+         format en amont ; c'est de l'ecriture.
+[OK]     ECRITURE DES CHAMPS D'UN MODELE : les derivations tiennent sur le corpus
+         (sonde --write-model). Methode : on part du rebuild depuis contenu, qui
+         reproduit deja un modele a l'octet pres, et on REMPLACE chaque champ
+         qu'une description peut poser par la valeur calculee ; le fichier doit
+         revenir identique quand meme. Un champ qui casse le diff n'etait pas
+         comprise, et le dit precisement.
+         Regles validees :
+           m_dataSize = m_stride x m_elementCount
+           m_offsetInVertexBuffer = somme des tailles des blocs precedents
+           PMeshInstanceBounds m_min/m_size = la boite des positions du maillage
+             que CETTE instance borne — resolu par le graphe
+             (PMeshInstance.m_mesh), pas par la position dans la liste.
+         Resultats :
+           objets   1142 / 1143  (81 582 champs poses)  seul echec :
+                    PCameraPerspective, l'exception caméra deja connue
+           maps       13 / 13    (2 330 champs)
+           persos   1744 / 1744  (23 112 champs)
+           PNJ      1645 / 1645  (23 616 champs)
+         DEUX ERREURS DE MA PART CORRIGEES PAR CE TEST :
+         (1) je bornais avec la boite du modele ENTIER — faux des qu'il y a
+             plusieurs instances ; (2) puis j'ai suppose que l'instance i borne
+             le maillage i, ce qui tenait partout sauf sur une map. C'est
+             exactement ainsi qu'une hypothese positionnelle echoue, et c'est le
+             graphe qui donne la reponse.
+[OK]     COLLISION : la boucle est fermee, et sans compilateur CS2.
+         PhyrePhysicsRepair localise depuis le SCHEMA SEUL les champs qu'un
+         aller-retour glTF perd — m_collisionGroup, m_enabled, m_rigidBodyType
+         cote corps, m_type et m_hollow cote forme — et les reecrit dans un
+         fichier reconstruit depuis le fichier d'origine. Rien n'est decode ni
+         reencode : le reste du fichier reste tel quel.
+         Sur M_R0510 (CS2) : 25 champs localises ; les mettre a zero change bien
+         le fichier ; les reecrire redonne l'original A L'OCTET PRES. La perte est
+         donc simulee au lieu d'etre attendue, ce qui teste la reparation sans
+         le compilateur que personne ici n'a.
+         Garde-fou : la reparation exige que le fichier reconstruit garde la
+         disposition d'objets de la reference (memes classes, memes comptes,
+         memes tailles). Un ecart est REFUSE plutot qu'ecrit au mauvais endroit.
+[MANQUE] Ce qui manque encore pour clore in-game : produire un vrai fichier
+         reinsere (il faut le compilateur CS2, sur le Discord Kiseki), le reparer
+         avec cet outil, et regarder si la collision revient en jeu.
+[OK]     CHAINE COMPLETE EXECUTEE, de l'extraction a une map prete a tester.
+         Entree : M_R0510.pkg (CS2) extrait avec l'outil d'eArmada PATCHE par
+         nous (physique desormais sans perte). Sortie r0510.glb : 171 maillages,
+         65 620 sommets, 91 405 triangles.
+         Chaine : glb -> AssimpModelImporter (codex) -> ImportedModelAdapter ->
+         PhyreModelGeometryPacker -> PhyreModelClusterWriter (de zero) ->
+         PkgArchiveWriter -> MapAuthoring.
+         Resultats mesures : 4 triangles retournes par l'adaptateur ; 1 050 flux
+         packes ; cluster de 5 141 925 octets ecrit SANS AUCUN fichier source ;
+         relu par notre lecteur avec 171 primitives et 65 620 sommets — toute la
+         geometrie survit. Paquet M_Z9100.pkg de 38 entrees (textures, shaders et
+         manifeste de l'hote CS1, manifeste reecrit), plus les trois fichiers de
+         map z9100.
+         Extension faite en route : l'ecrivain etait mono-segment (170 maillages
+         sur 171 perdus) ; il pose maintenant un PMeshSegment par maillage, avec
+         son propre bloc de donnees, ses flux, son bloc d'index et son offset
+         dans la region d'index.
+         Fichiers stages dans %TEMP%/z9100_map et l'arborescence de test.
+[MANQUE] Deux reserves a dire au moment du test :
+         (1) le modele ecrit LIE un shader mais ne bind AUCUNE texture — rien
+             dans ce que j'emets ne relie une PTexture2D a un sampler — donc il
+             faut s'attendre a du blanc ou du noir, pas a la map texturee.
+         (2) il n'a AUCUNE physique : je n'emets pas PPhysicsModel/RigidBody/
+             Mesh/Shape. Le PSharray<PPhysicsShape *> demande des fixups de
+             TABLEAU DE POINTEURS, la seule des trois sortes que je n'aie jamais
+             produite. Donc ce test valide « une map ecrite de zero charge-t-elle »,
+             PAS la collision. C'est la decomposition volontaire : si elle ne
+             charge pas, la physique n'aurait rien prouve.
+[OK]     PHYSIQUE ECRITE DE ZERO dans un modele neuf. Cinq classes ajoutees a
+         l'ecrivain — PPhysicsModel, PPhysicsRigidBody, PPhysicsMesh,
+         PPhysicsMaterial, PShape — avec leur graphe : le modele tient le corps,
+         le corps tient la forme, la forme tient les triangles de collision dans
+         ses propres tableaux (positions puis index, un fixup de tableau par
+         run).
+         PREMIERE PRODUCTION D'UN FIXUP DE TABLEAU DE POINTEURS : m_shapes est un
+         PSharray<PPhysicsShape *>, donc un fixup de tableau declarant l'array
+         plus un pointeur par element. C'etait la seule des trois sortes jamais
+         ecrite.
+         Verifie sur le fichier produit : collisionGroup 1, rigidBodyType 0,
+         enabled 1, mass 1, forme de type 7, hollow 1, echelle (1,1,1) — les
+         memes valeurs que M_R0510 porte lui-meme.
+         DEUX BUGS TROUVES PAR CETTE VERIFICATION, tous deux fatals a la
+         collision et invisibles autrement : m_mass recevait l'ENTIER 1 dans un
+         champ flottant, ce qui donne 1,4e-45 ; et m_scale restait a (0,0,0), ce
+         qui aplatit la forme a neant.
+[OK]     JEU DE FICHIERS A TESTER (11 349 000 octets pour le paquet) :
+           data/asset/D3D11/M_Z9100.pkg
+           data/ops/z9100.ops
+           data/scripts/scena/dat/z9100.dat
+           data/scripts/scena/dat_us/z9100.dat
+         Contenu : geometrie complete de M_R0510 (171 maillages, 65 620 sommets,
+         91 405 triangles) ecrite de zero, plus la collision derivee du maillage
+         dessine, plus les textures/shaders/manifeste de l'hote CS1.
+         Etat : solution compile, 79 PASS, 0 echec.
+[MANQUE] TEXTURES non liees. Le modele lie un shader mais rien ne relie une
+         PTexture2D a un sampler : ca passe par la CHARGE du PParameterBuffer
+         (les PShaderParameterCaptureBufferSampler vus dans la section en-tete),
+         dont la disposition n'est pas etablie. C'est le dernier morceau de la
+         phase C, et c'est du travail d'analyse, pas de cablage.
+         Attendre donc une map en blanc ou en noir, avec sa collision.
+[OK]     OUTIL D'IMPORT DE MAP, suivi et reversible : tools/MapImport.
+           MapImport <racine du jeu> <projet.json> import <nom> <base> <modele> [pkg hote]
+           MapImport <racine du jeu> <projet.json> status
+           MapImport <racine du jeu> <projet.json> revert
+         La racine du jeu est le dossier qui CONTIENT data, pas data lui-meme —
+         convention de ModProject, que j'avais d'abord enfreinte en composant les
+         chemins d'assets sans elle.
+         Tout passe par le projet : CaptureOriginal avant, TrackSave apres. Un
+         fichier livre par le jeu est sauvegarde ; un fichier ajoute est retenu
+         comme ajout, et le revert le supprime.
+         Verifie de bout en bout sur une COPIE : import -> 4 fichiers ecrits et
+         suivis, tous « added by the mod » ; revert -> 4 fichiers reprisis,
+         0 trace restante, 4 fichiers d'origine intacts. Rien n'a jamais ete
+         ecrit dans l'installation reelle.
+[OK]     BUG LATENT CORRIGE dans PhyreModelClusterWriter : une de mes editions
+         avait injecte un octet NUL LITTERAL dans le source a la place de la
+         sequence d'echappement, si bien que le terminateur des noms de
+         semantiques etait un caractere brut dans le fichier .cs. Le
+         comportement etait juste par accident, mais un NUL dans du source C#
+         casse les outils qui le lisent. Remplace par "\0" ; plus aucun octet nul
+         dans le fichier. Notre lecteur ne l'aurait jamais signale : il garde le
+         texte a part et ne relit pas les octets.
+[OK]     Etat final : solution compile, 79 PASS, 0 echec.
+[OK]     TELEPORTEURS ENTRE MAPS : un « ops element » qui teleporte est un
+         EntryBox, et MapVolume porte deja DestinationMap et DestinationEntry
+         (les attributs « next » et « entry »).
+         Convention du jeu, lue dans t1000.ops (28 boites) : une boite nommee
+         « go_t1090 » a next="t1090" et entry="go_t1000". Donc le point d'arrivee
+         dans la map de destination doit etre une boite nommee d'apres la map
+         d'ou l'on vient. Pour relier z9100 a t1000 :
+           dans t1000 : EntryBox « go_z9100 », next=z9100, entry=go_t1000
+           dans z9100 : EntryBox « go_t1000 », next=t1000, entry=go_z9100
+         Verifie : reciblage d'une boite existante SANS la deplacer, et ajout
+         d'une boite neuve — 28 boites deviennent 29, les deux pointant vers
+         z9100, relues correctement.
+[OK]     MEME BUG DE GARDE CORRIGE dans OpsWriter pour les VOLUMES et les
+         CAMERAS : les attributs n'etaient reecrits que si la transformation
+         avait change. Reciblér un teleporteur sans le bouger etait donc perdu en
+         silence, exactement comme le modele d'une map l'etait pour les props.
+         La condition inclut desormais le nom et la destination.
+[MANQUE] AUCUNE INTERFACE pour creer une map. Ce qui existe : la bibliotheque
+         (MapAuthoring, MapPackageAuthoring, ImportedModelAdapter,
+         PhyreModelClusterWriter) et l'outil en ligne de commande
+         tools/MapImport. Il reste a exposer dans l'editeur : choisir un fichier
+         3D, un nom de map, une map de base, puis poser un EntryBox dans une map
+         existante et regler sa destination — tout est deja editable par
+         OpsReader/OpsWriter, c'est du cablage d'interface.
+[OK]     « Create a map » dans l'editeur : Windows > Create a map…
+         Une fenetre autonome (MapStudioForm) qui ne fait QUE ca : un nom, une map
+         de depart, un modele -> les quatre fichiers, tous suivis par le projet de
+         mod. Elle exige un projet ouvert, sans quoi il n'y aurait rien pour
+         defaire un test. Empreinte sur ViewerForm (fichier de codex) : un champ,
+         une entree de menu, une methode.
+[OK]     CORRECTION D'UNE ERREUR DE CONCEPTION A MOI. J'avais ajoute dans cette
+         fenetre un assistant « Put a way through » pour relier deux maps. C'etait
+         faux deux fois : un teleporteur n'est pas un geste a part, c'est UN OPS
+         ELEMENT ; et le projet le faisait DEJA. OpsSpatialCreationProfile expose
+         un profil EntryTransitionType2 qui demande la map de destination et
+         l'entree comme champs ordinaires, nomme la boite « go_{next} » tout seul
+         et pose entryType=2 — la convention que je croyais avoir trouvee dans
+         t1000.ops etait deja encodee. La section est supprimee ; on pose une
+         transition depuis la vue de scene, comme n'importe quel ops element.
+         C'est la cinquieme fois que je re-derive quelque chose qui existait :
+         REGARDER D'ABORD, systematiquement.
+[OK]     MapModelPackage extrait dans ED8Editor.Application et partage par
+         l'interface et tools/MapImport, pour que les deux ne divergent pas. Le
+         7e argument de l'outil (paquet hote) traverse jusqu'au helper — apres
+         refactor il ne faisait plus rien, ce qui aurait fait mentir sa doc.
+[OK]     Etat : solution compile, 79 PASS, 0 echec.
+[OK]     UNE MAP SE CREE SANS RIEN COPIER. Plus de « Start from » : partir du
+         modele d'une autre map etait facile a ecrire et impossible a justifier —
+         personne ne sait ce que « a0000 » implique, et ca traine une camera, un
+         brouillard et un eclairage que personne n'a choisis.
+         Les trois fichiers sont desormais ecrits :
+           - MinimalOpsWriter : l'.ops depuis des reglages EXPLICITES (brouillard,
+             ambiante, camera, boite d'entree). 1 430 octets. Relu par OpsReader,
+             et son aller-retour par OpsWriter rend les memes octets.
+           - MinimalScenaWriter : le script de scene, 69 octets, un Init et un
+             Reinit qui retournent. La disposition a ete relevee sur a0001.dat —
+             le plus petit du jeu — et VERIFIEE en le regenerant A L'OCTET PRES :
+             sept mots, un marqueur ABCDEF00, le nom, la table des offsets de
+             code, celle des offsets de noms (u16), les noms, puis le code aligne
+             sur quatre octets, chaque fonction tenant l'opcode 0x01.
+           - MapModelPackage.WriteMinimal : le paquet avec son PROPRE manifeste
+             (le cluster en p_collada, les shaders en binary) — QUATRE entrees au
+             lieu de 38.
+         Il ne reste donc qu'UN emprunt, et il est nomme dans l'interface : le
+         shader compile, qu'on ne peut pas creer sans reproduire la chaine de
+         compilation de Falcom. La fenetre demande « Shader from » et imprime le
+         nom du shader trouve.
+         Verifie : 4 fichiers ecrits, ops 1 430 o, scena 69 o x2, paquet a 4
+         entrees ; l'ops relu donne 1 prop « map » -> M_Z9200 et 1 boite
+         « default ».
+[OK]     « Reveal in file explorer » au clic droit dans l'onglet Mod project.
+         Il ouvre le fichier LA OU LE JEU LE LIT (dossier du jeu), pas la copie du
+         projet ; un fichier absent ou pas encore applique ouvre son dossier et le
+         dit.
+[OK]     BOITE VIDE A LA CREATION D'UNE MAP : diagnostique et corrige. Le modele
+         etait intact — le paquet ecrit se resout, le manifeste declare bien
+         Model -> z9100.dae.phyre, et le lecteur y trouve 171 primitives,
+         65 626 positions, une etendue de 421 x 156 x 500 allant de Z -465 a +34.
+         La faute etait ma boite d'entree PAR DEFAUT A L'ORIGINE : une map qui ne
+         s'etend pas autour de zero n'a rien a cet endroit, donc la camera arrive
+         a cote de la geometrie et ne voit que la boite. Ce n'etait pas un modele
+         vide mais un point d'arrivee mal place.
+         MapSettings.ArrivingIn place desormais l'arrivee au milieu du modele en X
+         et Z, un peu au-dessus de son point le plus bas, calcule depuis les
+         sommets. Verifie : pos passe de « 0, 0, 0 » a « 37.69, -33.53, -215.63 ».
+         Reserve dite dans le code : c'est la boite englobante, pas le sol — sur un
+         modele creux au centre ca place le joueur au-dessus du vide, et deplacer
+         la boite est une edition dans la vue de scene.
+[OK]     SKYBOX. Un ciel est un AssetObject comme un autre : asset O_S00SKY00 et
+         voisins, nom « sky », flag 0x1, a l'origine. Releve sur les 427 maps :
+         SKY00 (81 usages), SKY02 (47), SKY01 (45), SKY05, SKY10, SKY11, SKY12,
+         SKY03. A noter, skyboxFactor vaut 0 sur 19 203 objets et 0.85 sur trois
+         seulement — ce n'est donc PAS le champ qui designe un ciel.
+         Donc changer le ciel d'une map EXISTANTE marchait deja : c'est l'attribut
+         « asset » d'un prop, que l'editeur d'ops element expose et que OpsWriter
+         reecrit depuis ma correction de la garde. Ce qui manquait, c'est qu'une
+         map neuve n'en declarait aucun ; MinimalOpsWriter en pose un, choisi dans
+         la fenetre (liste des ciels du jeu, champ libre, vide = interieur).
+[OK]     Sauvegarde d'un projet : il n'y a pas de bouton parce qu'il n'y a rien a
+         sauvegarder a la main. ModProject.Save() est appele par TrackSave a chaque
+         fichier ecrit, et par Create/Remove — l'etat du projet est donc toujours
+         sur le disque. Les boutons existants agissent sur le JEU (Re-apply,
+         Restore), pas sur le projet.
+[!]      EDITION A MOITIE APPLIQUEE, attrapee par le test : le champ Skybox avait
+         atterri dans la signature de MapSettings mais le bloc qui l'ECRIT n'avait
+         pas pris — un reglage present et sans effet. Mes remplacements en python
+         sur du C# avec guillemets echappes echouent en silence ; utiliser l'outil
+         d'edition pour ces cas.
+[OK]     TROUVER UN OPS ELEMENT : le simple clic dans la liste cadre desormais la
+         camera dessus (FocusSelection appele depuis SelectFromOpsTree), donc on
+         parcourt la liste et la vue suit, sans rien ouvrir.
+         Constat avant de coder : le DOUBLE-clic cadrait DEJA — EditOpsNode appelle
+         FocusSelection() avant d'ouvrir l'editeur — mais la boite modale s'ouvre
+         par-dessus le viewport, si bien que le deplacement n'est jamais vu. Il n'y
+         avait donc pas le conflit « cadrer OU editer » qu'on supposait.
+         TryGetOverlayFocus gere bien les boites d'entree (centre = position,
+         rayon = moitie de la diagonale de l'echelle).
+[!]      FocusOpsNode (ViewerForm) est du code mort : il fait exactement « cadrer
+         sans ouvrir » et n'est appele nulle part. Laisse en place pour ne pas
+         toucher davantage au fichier de codex, mais a lui signaler — il est
+         redondant depuis le cadrage au simple clic.
+[OK]     LES FLECHES SONT UN VRAI GIZMO, pas un repere. SceneTranslationGizmo et
+         SceneRotationGizmo existent, avec etat de glissement, selection d'axe et
+         application au document. Modes : boutons de la barre d'outils, ou touches
+         1 / 2 / 3 (translation / rotation / echelle), translation par defaut.
+         Les boites d'entree declarent SceneTransformCapabilities.All, donc elles
+         sont deplacables comme un prop. A savoir : pour tout ce qui n'est PAS un
+         prop, le gizmo n'est dessine que si « show indicators » est coche.
+         Trace fait, sans trouver de bug : le dessin et la prise partagent la meme
+         source (document.Find), la meme transformation et la meme longueur ; le
+         rayon et la longueur utilisent la meme taille de client, donc pas de
+         decalage d'echelle ; overlayMarkerSize est plafonne a 1,5 donc c'est bien
+         le terme en pixels qui fixe la taille (~115 px).
+         Seule modification faite, et c'est une amelioration d'usage assumee, pas
+         un correctif diagnostique : la tolerance de prise passe de 8 % a 18 % de
+         la longueur du gizmo — 8 % laissait environ neuf pixels a viser, et
+         manquer l'axe fait pivoter la camera, donc etre etroit coute cher.
+[OK]     GIZMO : LES « DEUX TRIPLETS DE FLECHES » EXPLIQUES. GetGizmoLength faisait
+         Math.Max(worldUnitsPerPixel * 115, overlayMarkerSize * 2.5). Ces deux
+         termes ne vivent pas dans la meme unite — le premier est constant a
+         l'ECRAN, le second constant dans le MONDE — donc le maximum change de
+         camp selon la distance : dimensionne en pixels quand la camera est loin,
+         en unites du monde quand elle est proche. Le gizmo se comportait et
+         s'affichait donc comme deux objets differents selon le zoom, et un
+         element eloigne devenait insaisissable. Sur une map de ~500 unites,
+         overlayMarkerSize est plafonne a 1,5 donc le plancher valait 3,75 unites.
+         Corrige : la longueur est desormais PUREMENT en pixels (150 px), donc la
+         cible garde la meme taille a l'ecran quelle que soit la distance.
+         Le diagnostic vient de l'utilisateur — il a observe que les flèches
+         changent de taille et d'epaisseur avec le zoom et ne repondent que de
+         pres. Ma lecture du code seule ne l'avait pas trouve, et j'avais elargi
+         la tolerance de prise a 18 % en le disant explicitement comme une
+         amelioration d'usage et non un correctif : c'etait bien insuffisant.
+[OK]     « Destination » EN DOUBLE dans le panneau de creation d'ops element :
+         faux probleme de profil, vrai probleme d'affichage. EntryTransitionType2
+         declare bien « Destination map » et « Destination entry » ; c'est la
+         colonne du libelle, fixee a 110 pixels sans ellipse, qui tronquait les
+         deux au meme mot. La colonne se dimensionne desormais sur le plus large
+         des libelles du profil (TextRenderer.MeasureText), plutot que sur un autre
+         nombre magique.
+         A retenir : un libelle tronque ne se signale pas — il MENT, en presentant
+         deux champs differents comme identiques.
+
+--- EntryBox : le champ « name », les deux sens d'une boite (30/07 22h) ---
+[OK] Mesure sur tout le jeu (1231 EntryBox dont le .dat est lisible), nom vs
+     fonctions du script de la meme map :
+        next vide  + entryType 0 : 513 boites, 462 portent le nom d'une fonction
+        next rempli+ entryType 2 :  37 boites,   0 portent le nom d'une fonction
+        next rempli+ entryType 0 : 548 boites,  39 seulement
+     => entryType 2 avec next = le « tp point » pur : teleporte, ne declenche
+        rien, le nom n'est qu'une etiquette. Aucune fonction go_xxxx a creer.
+        Verifie sur t1000 : ses 28 boites, 0 fonction homonyme.
+     => next vide = declencheur d'evenement au passage, le nom EST la fonction.
+[OK] Le profil de creation « TP / EntryBox (type 2) » fait deja exactement ca
+     (next, entry, entryType 2, flag 0x1, nom go_<next>). Rien a ajouter.
+[!]  BUG trouve et corrige : ViewerForm.propertyGrid resolvait le genre du champ
+     « name » une seule fois, a la construction de la grille. CellValueChanged sur
+     « next » ne rafraichissait que la liste des entrees de destination. Donc une
+     boite nee sans destination gardait la combo de fonctions sur « name » apres
+     qu'on lui en donne une — une liste de valeurs qu'il ne FAUT pas y mettre — et
+     inversement une boite qu'on vide n'obtenait jamais la liste dont elle a besoin.
+     Corrige par RefreshPropertyNameKind(), appelee a la construction et a chaque
+     changement de « next », + une infobulle qui dit lequel des deux sens la case
+     porte. Test ajoute : « offers script functions only for an entry box that runs
+     one » (passe par le vrai codec, pas par un dictionnaire ecrit a la main).
+     80 PASS / 0 fail.
+[OK] La regle elle-meme etait bonne et presente dans le binaire (commit 8ad5373) :
+     ce n'etait pas Resolve qui se trompait, c'etait la grille qui ne la rejouait pas.
+[!]  z9100.ops du projet my-mod a sa boite d'arrivee a 0,0,0 : le fichier est ecrit
+     a 20h57, le correctif ArrivingIn de MapAuthoring est a 21h04. Le fichier
+     precede le fix — recreer la map suffit.
+
+--- Pourquoi les deplacements ne se sauvegardaient pas (30/07 22h30) ---
+[!]  Diagnostic : ni le .ops du dossier du jeu ni la copie du projet n'avaient ete
+     reecrits depuis leur creation (les deux a 20h57). La sauvegarde n'a jamais eu
+     lieu — ce n'etait pas une mauvaise destination. Trois causes cumulees :
+       1. savedOpsPath remis a null a l'ouverture, et Ctrl+S appelait
+          SaveOps(eventArgs.Shift || savedOpsPath is null) : le PREMIER Ctrl+S
+          forcait donc un « save as ».
+       2. La boite proposait « z9100.edited.ops » — un nom que le jeu ne lit jamais,
+          il charge une map par son nom. Annulee, rien d'ecrit, rien de dit.
+       3. Aucune entree de menu, aucun bouton : Ctrl+S etait le seul chemin.
+     Meme maladie dans ScriptEditorForm.Save : « t1000.edited.dat ».
+[OK] Le chemin d'ecriture lui-meme etait sain : test « writes an entry box dragged
+     in the viewport back to its own file » (ApplyTransform, le chemin du gizmo, pas
+     les attributs) passe du premier coup. La perte etait 100% cote declenchement.
+[OK] Corrige :
+       - Ctrl+S = SaveProject() : sauve TOUT ce qui est modifie et non sauvegarde
+         (map + script), sans aucun dialogue, sous le nom que le jeu lit. Ctrl+Shift+S
+         reste le « save as » explicite.
+       - Ecriture en place quand le fichier est dans le dossier du jeu d'un projet
+         ouvert (ModProject.RelativePathOf, nouveau public ; CaptureOriginal garde
+         l'original donc c'est reversible). Sans projet, la boite s'affiche encore —
+         ecraser une install sans filet reste une decision.
+       - Plus de suffixe « .edited » nulle part (ops et scripts).
+       - Menu Fichier > « Save everything unsaved » (Ctrl+S affiche).
+       - « * » gras sur les fichiers modifies non sauvegardes dans l'arbre du projet,
+         + compte dans l'entete, + « unsaved map changes (Ctrl+S) » dans le titre.
+         Un fichier edite pour la premiere fois n'est pas encore suivi par le projet :
+         il est ajoute a l'arbre marque « (never saved) », sinon il n'apparaissait pas
+         du tout — justement celui dont l'edit risque le plus d'etre perdu.
+       - La confirmation a la fermeture liste les fichiers concernes.
+[OK] Test de la chaine complete sans WinForms : « saves a moved entry box over the map
+     the game reads, and reverts it » (CaptureOriginal, ecriture en place, TrackSave,
+     RestoreOriginals). 82 PASS / 0 fail.
+[?]  Le « save all » couvre la map et le script de la fenetre principale. Les autres
+     fenetres (TBL, eff, quest, shop, character studio) gardent leur sauvegarde propre
+     — pas encore branchees dessus.
+
+--- « Ctrl+S = tout le projet », etendu a toutes les fenetres (30/07 23h) ---
+[OK] Contrat commun : IProjectDocumentEditor { HasUnsavedChanges, DocumentPath,
+     SaveWithoutAsking() }. ViewerForm.SaveProject() enumere Application.OpenForms
+     plutot que de tenir une liste, donc une fenetre ajoutee plus tard est prise en
+     compte sans rien changer ici. + ProjectSave.Everything() pour que Ctrl+S depuis
+     N'IMPORTE quelle fenetre sauve tout (avant, la fenetre qui avait le focus
+     decidait de la quantite de travail ecrite).
+[OK] Implemente par : ScriptEditorForm (panneau ET fenetre autonome), TblEditorWindow,
+     EffEditorWindow, QuestEditorWindow.
+     - TBL et EFF : dirty existait deja, seulement expose ; leur Save ecrivait deja en
+       place sans suffixe. Save(bool) rendu bool pour rapporter l'echec.
+     - Quest : AUCUN suivi de modification n'existait, seulement un « * » ecrit en dur
+       dans le titre. Ajoute un vrai drapeau `applied` + HasPendingFieldEdits() qui
+       compare les champs saisis a l'enregistrement — compare a la demande et non via
+       TextChanged, car ce sont les memes boites que l'editeur remplit lui-meme quand
+       on change de quete, donc l'evenement compterait ca pour un edit.
+     - Quest ecrivait « t_quest.edited.tbl » : corrige, ecrit sur son fichier source.
+[OK] Hors perimetre, verifie et non suppose : ShopEditorForm et FishingSpotEditorForm
+     sont des dialogues Apply/Cancel sans tampon ; TableEditorForm modifie le
+     ScriptEditorDocument (donc couvert par l'editeur de script) ; CharacterStudioForm
+     ecrit immediatement et son SaveFileDialog est un export volontaire (copie d'un
+     programme ANI), pas une sauvegarde.
+[OK] Plus aucun « .edited » dans le code (verifie : il n'en reste que dans des
+     commentaires qui expliquent pourquoi).
+[OK] Les « * » se recomptent au retour sur la fenetre principale (Activated), avec une
+     signature de l'ensemble non sauvegarde pour ne reconstruire l'arbre que si ca a
+     change. 82 PASS / 0 fail.
+
+--- Pourquoi la map creee ne rend rien : comparaison avec les maps de debug (31/07) ---
+[OK] Reference minimale trouvee : a0003.ops fait 887 octets et rend. Il n'a AUCUN bloc
+     <MapColor> (86 maps sur 428 sont dans ce cas), donc l'absence de MapColor n'est
+     pas la cause. Notre .ops est sain : asset="M_Z9100" suit bien la convention de
+     a0003 (asset="M_A0003"). Manquent seulement <ChrLight> et <Filter> — cosmetique,
+     ca n'explique pas un environnement vide.
+[!]  Le paquet, lui, differe massivement :
+        M_A0003.pkg : 6 entrees, 72 blobs DXBC, profils vs_5_0, 4 PTexture2D,
+                      2 textures .dds.phyre, shader nomme ed8.fx#5BF82F75...phyre
+        M_Z9100.pkg : 3 entrees,  2 blobs DXBC, aucun profil, 0 PTexture2D,
+                      aucune texture, shader nomme ed8editor_minimal.fx.phyre
+[OK] Le shader de codex est un VRAI cluster Phyre (PEffect/PMaterial/PShaderPass/
+     PShaderParameterDefinition presents, HLSL compile en vs_5_0/ps_5_0). Ce n'est pas
+     un faux fichier. Le travail est serieux, le probleme est ailleurs.
+[OK] CONTRAT DU MOTEUR RELEVE (reflexion RDEF d'un ed8.fx#hash reel, verite terrain) :
+     cbuffer $Globals = 848 octets, 59 variables liees PAR NOM. Extraits :
+        +0   scene_EyePosition        +16  scene_View       +80  scene_ViewProjection
+        +192 scene_GlobalAmbientColor +208 scene_FogColor   +288 scene_light1_position
+        +384 PhyreContextSwitches     +388 PhyreMaterialSwitches
+        +400 World (64)               +464 WorldViewProjection (64)
+        +544 GameMaterialDiffuse      +560 GameMaterialEmission
+     Entrees du vertex shader reel : POSITION, NORMAL, TEXCOORD, COLOR.
+     => L'offset 464 devine par codex (_phyreReserved[29] puis WorldViewProjection)
+        est JUSTE. Ce n'etait pas l'erreur.
+[!]  Ecarts restants, par ordre de suspicion :
+     1. Selection de variante. Le shader reel porte PContextVariantFoldingTable,
+        m_contextSwitches, m_packedSwitches, m_supportedLightTypes,
+        m_supportedShadowCasterTypes ; le notre laisse tout a zero et ne declare
+        qu'une seule passe « Opaque ». Le reel en declare une famille complete :
+        Default, DefaultRT, Opaque, OpaqueRT, OpaqueAlphaTest, OpaqueChr, Transparent,
+        ShadowVPShader, EdgeOpaque, Glow, ZFog, UnderWaterOpaque...
+        Si Phyre ne trouve aucune variante correspondant au contexte de rendu, il ne
+        dessine rien — ce qui est exactement le symptome.
+     2. Tampon de parametres du MODELE : --parameters donne 55 enfants declares pour
+        a0003.dae.phyre, et 0 pour z9100.dae.phyre.
+     3. Codes de type devines dans PShaderParameterDefinition (m_parameterType 0x84,
+        m_dataType 0x31, m_bufferLoc {10 00 40 00}) — non verifies contre un reel.
+[PLAN] Experience decisive proposee : livrer le modele en liant un ed8.fx#<hash> reel
+     par son nom (approche deja validee par l'utilisateur : « on va pas faire des
+     shader from scratch mais pointer vers ceux compiles »). Ca ISOLE la question :
+     si ca rend, le modele ecrit de zero est prouve bon et le shader devient un
+     chantier separe ; si ca ne rend toujours pas, le defaut est dans le cluster du
+     modele et pas dans le shader. C'est un pas de diagnostic, pas un renoncement a
+     l'ecriture originale du modele.
+
+--- Experience : le defaut vient-il du shader ? (31/07) ---
+[OK] Implemente : MapModelPackage.WriteMinimal(..., shippedShaderPackage) livre les
+     shaders compiles d'un paquet du jeu SOUS LEUR NOM EXACT (ed8.fx#<HASH>.phyre —
+     le hash est l'identite du shader, une copie sous un autre nom est un shader que
+     personne ne demandera) et fait pointer le materiau sur shaders/ed8.fx#<HASH>.
+     Le modele reste ecrit de zero : seul change le programme compile qu'il nomme.
+     Expose dans MapStudioForm (case a cocher explicitement etiquetee « diagnostic »)
+     et dans MapImport (--shader-from <paquet>).
+[OK] Carte de test z9200 produite depuis r0510.glb (171 meshes, 65 620 sommets,
+     91 405 triangles) en liant les shaders de M_A0003.pkg. Paquet verifie :
+       M_Z9200 : 4 entrees, DXBC=72, vs_5_0=2   (avant : 3 entrees, DXBC=2, vs_5_0=0)
+       M_A0003 : 6 entrees, DXBC=72, vs_5_0=2
+     Le manifeste declare bien les deux shaders sous leur nom hashe.
+     Reste different : PTexture2D 0 contre 4 — on n'embarque toujours aucune texture.
+[?]  A TESTER EN JEU. Trois issues possibles, chacune tranche :
+       - la geometrie apparait (meme sans texture / mal eclairee)
+             => le modele ecrit de zero est BON, le defaut etait le shader, et le
+                chantier « shader custom » devient un projet separe et cadre.
+       - toujours noir et vide
+             => le defaut est dans le cluster du MODELE, pas dans le shader ; il
+                faudra chercher du cote du tampon de parametres (0 contre 55) et des
+                semantiques de flux.
+       - le jeu plante / ne charge pas la map
+             => probleme de paquet ou de manifeste, encore un autre endroit.
+
+--- Le defaut etait dans le cluster du modele : les descripteurs de classe (31/07) ---
+[OK] Test en jeu avec un shader compile REEL lie par son hash : toujours noir et vide.
+     => ce n'etait donc PAS le shader. Diagnostic tranche, l'experience a servi.
+[!]  Trouve en comparant --model-graph de a0003.dae.phyre et du notre. Trois defauts,
+     tous de la meme famille : des fixups « user » manquants ou mal types.
+     1. PAssetReference.m_assetType : le jeu ecrit un fixup user de type
+        PClassDescriptor portant le NOM DE CLASSE de la cible ("PNode", "PMesh",
+        "PMeshInstance", "PMaterial"). Nous ecrivions un simple pointeur objet vers
+        PAssetReference[0], sans aucun descripteur. Sans lui le moteur ne sait pas que
+        #VisualSceneNode est un PNode : l'asset M_Z9200 ne resout rien et la map se
+        comporte comme si le modele n'existait pas. C'ETAIT LA CAUSE PRINCIPALE.
+     2. PAssetReferenceImport.m_targetAssetType : idem, PClassDescriptor
+        "PEffectVariant" (et "PTexture2D" pour une texture). Absent chez nous.
+     3. PVertexStream.m_renderDataType : le fixup avait le type « bool » au lieu de
+        PRenderDataType.
+[!]  Cause racine commune : les identifiants de type des fixups user etaient ECRITS EN
+     DUR (SemanticTypeId = 12). Or la table de types est construite a partir des
+     classes que CE modele utilise — elle n'est pas la meme d'un modele a l'autre, et
+     un numero fige tombe sur le type qui se trouve la. Remplace par une resolution
+     PAR NOM, qui gere les deux espaces de numerotation : id < nombre de types = un
+     type ; au-dela = une classe, en base 1 apres les types (PClassDescriptor est une
+     classe, jamais dans la premiere table — ce qui a fait echouer la premiere
+     tentative et a revele la regle).
+[OK] Verifie : notre graphe reproduit desormais celui de a0003, avec les memes octets
+     de descripteur (504E6F646500 = "PNode\0", 504D65736800 = "PMesh\0",
+     5045666665637456617269616E7400 = "PEffectVariant\0"). 82 PASS / 0 fail.
+[?]  Ecart connu restant : PParameterBuffer declare 0 parametre contre 55 chez a0003,
+     et on n'embarque toujours aucune texture. A TESTER EN JEU (map z9200).
+
+--- Deuxieme test en jeu : toujours noir, mais la map se charge (31/07) ---
+[OK] Ce que l'image prouve : le personnage est rendu ET eclaire, le ciel a son
+     degrade, le jeu ne plante pas, le point d'arrivee fonctionne. La map se charge
+     donc bien ; c'est le MODELE seul qui ne dessine rien.
+[!]  ERREUR DE METHODE de ma part : j'ai regenere z9100 en changeant deux choses a la
+     fois. L'utilisateur a raison, une variable par test. Regle retenue.
+[!]  ERREUR D'ANALYSE, corrigee : j'ai d'abord conclu que PMaterial.m_parameterBuffer
+     manquait chez nous. FAUX — le probe tronquait la liste a 26 pointeurs sur 2301,
+     et le champ etait simplement au-dela de la coupe. Sur a0003, qui n'a que 138
+     fixups, tout tenait. Le probe imprime desormais TOUT (cf. commentaire dans
+     Program.cs). Rappel : ne jamais diffusier sur une sortie tronquee.
+[OK] Diff structurel refait sur donnees completes, contre DEUX modeles du jeu (a0003
+     et a0005) pour ne pas prendre une particularite pour une regle. Champs qu'ils
+     renseignent tous les deux et que nous laissons a zero :
+       PDataBlockD3D11.m_buffers
+       PParameterBuffer.m_parameterBufferSize, m_tweakableShaderParameterDefinitions
+       PSamplerState.m_flags/m_magFilter/m_maxAnisotropy/m_maxLevel/m_minFilter/
+                     m_wrapS/m_wrapT
+       PShaderParameterDefinition.m_bufferLoc/m_constantBufferLocation/m_dataType/
+                     m_parameterType
+[OK] CORRIGE, ET RIEN D'AUTRE : PDataBlockD3D11.m_buffers = 1.
+     C'est un PSharray<PDataBlockBufferD3D11> (offset 24, taille 16). A zero, le bloc
+     decrit un stride, un compte et une taille pour des donnees declarees dans AUCUN
+     tampon : le moteur ne lie rien et la geometrie, presente dans le fichier, n'est
+     jamais dessinee. Tous les blocs de tous les modeles livres disent 1, pointeur
+     nul (le chargeur le remplit). Verifie sur le paquet produit :
+       m_buffers=01000000000000000000000000000000  (identique a a0003)
+     Les trois autres ecarts sont des couleurs/textures, pas une invisibilite : on les
+     garde pour apres, un test a la fois. 82 PASS / 0 fail.
+
+--- Troisieme test : toujours noir. Etat des eliminations (31/07) ---
+[OK] m_buffers=1 ne suffit pas. Toujours rien.
+[OK] Inventaire des classes compare a a0003 ET a0005 : quasi identique. Il ne nous
+     manque que PSamplerState et PShaderParameterDefinition (tous deux textures/
+     materiau). Toutes les classes de geometrie sont la.
+[OK] Liens verifies presents et corrects chez nous : PMesh -> PMeshSegment,
+     PMeshSegment.+0x18 -> PDataBlockD3D11 (par segment), PDataBlockD3D11.+0xC ->
+     PVertexStream, PMeshInstance -> PMesh/-bounds/-localToWorldMatrix,
+     PMaterial.m_parameterBuffer -> PParameterBuffer, descripteurs de classe.
+[OK] Ecarts restants identifies, tous du meme cote : le MATERIAU.
+       PParameterBuffer.m_parameterBufferSize = 0   (a0003 : 624)
+       PParameterBuffer.m_tweakableShaderParameterDefinitions = 0  (a0003 : 55)
+       aucun PSamplerState (a0003 : 24 pointeurs de sampler)
+       aucun PShaderParameterDefinition
+     Detail mineur note au passage : PMeshInstance.m_gameMaterialIDs (1 element chez
+     a0003, absent chez nous) et PNode.+0x4C (tableau vide).
+[OK] NOMS : question posee par l'utilisateur. Reponse = non, ce n'est pas ca.
+     a0003 nomme ses objets #obj_book, #polySurface1984, #polySurfaceShape1984,
+     #nagasi_Shaderw — des noms Maya arbitraires. Seul #VisualSceneNode est une
+     convention, et nous l'avons deja. Des noms libres ne peuvent pas etre la cause.
+[PLAN] Prochain changement UNIQUE : remplir le PParameterBuffer (taille + les
+     definitions + les samplers). Justification : un materiau qui ne peut pas remplir
+     le tampon de constantes que son shader exige ne peut pas emettre de draw — c'est
+     la derniere famille d'ecarts restante, et la seule compatible avec « rien ne se
+     dessine » plutot que « ca se dessine mal ». Les definitions sont une propriete du
+     SHADER (etabli : identiques octet pour octet entre modeles partageant un shader),
+     donc une table indexee par hash, pas un emprunt au modele donneur.
+
+--- Le bloc de parametres du materiau (31/07) ---
+[OK] Ecrit PhyreMaterialTable + PhyreMaterialTableReader : lit, dans le modele du
+     paquet d'ou vient le shader, ce que le shader attend d'un materiau —
+     m_parameterBufferSize, le nombre de definitions, l'objet PParameterBuffer entier
+     (les parametres vivent DANS l'objet, au-dela de la taille de classe), les
+     enregistrements header-class (16 octets : type, offset, flags, compte), les
+     PSamplerState, les PShaderParameterDefinition, et les pointeurs internes du
+     tampon vers ces objets.
+     C'est une propriete du SHADER (identique octet pour octet partout ou ce shader
+     sert), donc une table indexee par shader — meme decision que pour les shaders
+     compiles. Rien de la geometrie ni de la scene du donneur n'est repris.
+[OK] Ecrivain : PhyreShaderBinding porte la table ; les groupes PSamplerState et
+     PShaderParameterDefinition n'apparaissent que s'il y en a ; l'objet du tampon est
+     ecrit avec sa charge ; les enfants d'en-tete sont emis avec leurs identifiants de
+     type RE-RESOLUS contre nos propres tables (ceux du donneur ne valent pas chez
+     nous) ; les pointeurs du tampon sont recrees.
+[!]  Deux pieges rencontres, tous deux du meme genre que le bug d'origine :
+     - les enfants nomment PShaderParameterCaptureBufferSampler, une classe que le
+       modele n'instancie NULLE PART (elle n'existe qu'a l'interieur du tampon). Il
+       faut quand meme la LISTER, sinon l'enregistrement qui la nomme n'a pas d'id.
+     - mais seulement les CLASSES : ajouter aussi les noms de types (float, PUInt32)
+       cassait la table. Ajoute PhyreSchemaLibrary.IsClass pour trancher les deux
+       espaces de numerotation.
+[OK] Verifie sur le paquet produit, identique a a0003 sur ces points :
+       PParameterBuffer x1, objet de 612 octets  (a0003 : 612)
+       55 enfants declares                        (a0003 : 55)
+       tampon de 624 octets, 78 samplers, 110 definitions
+     82 PASS / 0 fail. UN SEUL changement depuis le test precedent.
+
+--- Banc d'essai : remplacer un prop de t1000 (31/07, idee de l'utilisateur) ---
+[!]  4e test en jeu : toujours rien, malgre le bloc de parametres. L'utilisateur
+     propose de valider le rendu sur un PROP existant plutot que sur une map neuve.
+     Bonne idee : ca separe deux echecs que rien ne distinguait tant que les deux
+     etaient neufs — « le modele est mal ecrit » et « la map est mal reliee ».
+[OK] MapModelPackage.WriteProp + MapImport replace-prop <assetId> <modele> [--scale].
+     Le prop garde SON asset id, SA place dans la scene, SON shader et SON bloc de
+     parametres. Seule la geometrie change. C'est le test a une variable le plus pur
+     qu'on puisse construire.
+[OK] O_T10LIG03 (22 exemplaires dans t1000, tres visibles) remplace par une miniature
+     de r0510 a l'echelle 0.006 : 2,53 x 0,94 x 3 metres, 171 meshes, 65 620 sommets.
+     Garde les 3 shaders du lampadaire et son materiau (55 parametres, 130 samplers).
+     Original capture par le projet, donc reversible.
+[?]  Lecture du resultat :
+       - les lampadaires deviennent des mini-maps  => notre modele est BON, le defaut
+         est dans la maniere dont une map neuve est reliee/instanciee.
+       - les lampadaires disparaissent             => le defaut est bien dans le
+         cluster du modele, et on a enfin un banc rapide pour iterer dessus.
+       - le jeu plante                             => le cluster est malforme, pas
+         seulement incomplet.
+
+--- Le prop fait planter : deux bugs que J'AI introduits (31/07) ---
+[!]  BUG 1, celui qui fait planter. Les objets PSamplerState et
+     PShaderParameterDefinition etaient passes en « Trailing » a PhyreObjectWriter.
+     Or Trailing se place APRES la taille de classe : c'est fait pour une classe
+     d'en-tete (PParameterBuffer), dont la charge vit au-dela de sa classe. Ces deux
+     classes-la sont des objets ordinaires, exactement de la taille de leur classe —
+     leurs octets SONT l'objet. Resultat : chaque objet ecrit faisait le double
+     (72 au lieu de 36, 32 au lieu de 16) et le moteur sortait du tableau.
+     Corrige : les octets du donneur sont decoupes en MEMBRES via la chaine du
+     schema (MembersOf), et Trailing ne sert plus qu'au tampon de parametres.
+     Verifie : PSamplerState 36 octets, PShaderParameterDefinition 16 — identiques a
+     a0003 et a0005.
+[!]  BUG 2, silencieux mais reel. L'extracteur aplatissait tous les groupes d'une
+     meme classe en une liste, alors qu'un identifiant d'objet est LOCAL A SON
+     GROUPE. Des le deuxieme groupe, chaque pointeur du tampon visait un autre objet.
+     Corrige : ObjectsOf rend une table (groupe, id) -> nouvel index, et les
+     pointeurs sont renumerotes.
+[OK] Lecon a retenir : les deux bugs sont de la meme famille que le bug d'origine —
+     un identifiant valable dans UN espace de numerotation reutilise dans un autre.
+     C'est le piege structurel de ce format ; le verifier systematiquement.
+[OK] 82 PASS / 0 fail. Prop regenere. UN test : les lampadaires de Trista.
+
+--- Le prop plante encore : les noms des definitions manquaient (31/07) ---
+[OK] Piste donnee par l'utilisateur (souvenir d'un ancien chantier) : PParameterBuffer
+     porte la taille des shader parameters, et le moindre desaccord fait planter.
+     Piste juste dans son principe, et elle a mene au defaut.
+[!]  BUG 3, corrige : je liais shaders[0] et le PREMIER PParameterBuffer sans verifier
+     qu'ils vont ensemble. Un paquet de prop en contient trois. Un bloc apparie au
+     mauvais shader annonce une taille de constant buffer que ce shader n'a pas.
+     Corrige : PhyreMaterialTable lit desormais, DANS le tampon lui-meme, l'import
+     que son m_effectVariant designe, et resout son nom — le shader et son bloc
+     viennent forcement du meme materiau. (Pour ce prop les deux coincidaient deja,
+     donc ce n'etait pas la cause du crash, mais le bug etait bien la.)
+[!]  BUG 4, la cause probable du crash : les PShaderParameterDefinition portent leur
+     NOM dans les donnees de tableau du groupe.
+        a0003 : PShaderParameterDefinition x110 (16 octets, arrays 1024)
+        nous  : ... x165 (16 octets, arrays 0)
+     On copiait les objets sans les octets que leurs noms adressent : 165 definitions
+     pointant chacune dans une region vide. Corrige : la table porte les donnees de
+     tableau du groupe ET les fixups qui y entrent, et l'ecrivain les reemet.
+     Verifie : arrays 1024 chez nous aussi.
+[OK] 82 PASS / 0 fail.
+
+--- Reduction du reproducteur : un cube (31/07) ---
+[!]  4 corrections de suite n'ont pas arrete le crash. J'ai devine trop longtemps ;
+     je reduis le cas au lieu d'ajouter des hypotheses.
+[OK] O_T10LIG03 remplace par un CUBE : 1 mesh, 24 sommets, 1 m de cote, cluster de
+     36 793 octets (contre 7 035 218 pour la miniature). Meme shader, meme materiau,
+     meme chemin de code — seule la geometrie est triviale.
+     Structure verifiee, conforme a a0003 : PParameterBuffer 612 octets,
+     m_tweakableShaderParameterDefinitions=55, m_parameterBufferSize=624,
+     m_buffers=1 partout, bounds min=(-0.5,0,-0.5) size=(1,1,1) exacts.
+[OK] Fausse alerte ecartee au passage : PWorldMatrix parait « tout a zero » dans le
+     probe, mais Identity4x3 ecrit bien 1.0 aux offsets 0/16/32 — la diagonale d'une
+     4x3 de pas 12. Le probe ne l'imprime pas, c'est tout. Verifie avant d'y toucher.
+[?]  Ce que le test tranche, et c'est son seul but :
+       - le cube plante aussi  => le defaut est dans l'ecriture de base du cluster,
+         et on a un cas de 36 Ko a comparer exhaustivement a un vrai. Fini de deviner.
+       - le cube s'affiche      => le defaut est lie a la TAILLE (171 meshes, 1050
+         flux, 2301 pointeurs) : depassement de compte, ou l'empaquetage strided des
+         fixups qui ne se declenche que sur les gros lots.
+
+--- Le cube plante aussi : reduction et comparaison exhaustive (31/07) ---
+[OK] Le cube plante => le defaut est dans l'ecriture de BASE du cluster, pas dans la
+     taille ni dans le materiau. Reproducteur acquis : 36 Ko au lieu de 7 Mo.
+[OK] Ajoute --diff-clusters <a> <b> au probe : compare deux fichiers .phyre par chemin
+     explicite (sections, entetes, groupes), pour tenir un fichier ecrit contre celui
+     qu'il remplace. (Piege : le bloc doit passer AVANT le parsing de args[2], sinon
+     le chemin est lu comme un nombre.)
+[OK] Comparaison de l'original du lampadaire avec notre cube :
+        original : 27 groupes, 142 classes, 6 instances header, 278 enfants,
+                   5 PParameterBuffer (5 materiaux), et des classes d'ANIMATION
+        nous     : 20 groupes, 136 classes, 1 instance header, 55 enfants,
+                   1 PParameterBuffer, et CINQ CLASSES DE PHYSIQUE que l'original
+                   n'a pas du tout
+[!]  Difference structurelle la plus grosse et la plus gratuite : on ajoutait un
+     modele physique complet (PPhysicsModel, PPhysicsRigidBody, PPhysicsMesh,
+     PPhysicsMaterial, PShape) a un decor qui n'en a jamais eu. Le but du banc est de
+     n'avoir AUCUNE difference avec le fichier remplace : la collision est retiree du
+     chemin « prop ». Cluster passe de 20 a 15 groupes, 136 a 114 classes, 36 793 a
+     31 879 octets. 82 PASS / 0 fail.
+[?]  Si ca plante encore, les differences restantes avec l'original sont : l'animation
+     (l'original en a, nous non), le nombre de materiaux (5 contre 1), et le graphe de
+     noeuds (7 PNode chaines contre 1 isole). Dans cet ordre de suspicion.
+
+--- La piste « taille des parametres » testee, et ce qu'elle a revele (31/07) ---
+[OK] Piste de l'utilisateur testee precisement, pas discutee. Le tampon de parametres
+     est IDENTIQUE octet pour octet en tete entre l'original du lampadaire et le
+     notre : 70020000 (=624) 00000000 37000000 (=55) ... Et nos 55 enregistrements
+     header-class resolvent EXACTEMENT les memes noms et offsets que la reference
+     (PUInt32 @608, PUInt32 @604, float @600, float @596, float @592, float @432 x4).
+     => la taille des parametres n'est pas en cause ICI. Piste ecartee sur preuve.
+[!]  Mais la relecture des identifiants a trouve autre chose, et c'est un defaut que
+     J'AI introduit dans le chemin « prop » :
+        original : map/objects/t10lig03/t10lig03.dae#VisualSceneNode
+        nous     : map/t10lig03/t10lig03.dae#VisualSceneNode
+     Or le manifeste que nous ecrivons declare le cluster dans
+     data/D3D11/map/objects/t10lig03/... Les objets d'un cluster sont nommes d'apres
+     son CHEMIN, et le moteur les cherche par le nom entier : un cluster range dans un
+     dossier dont les objets en revendiquent un autre est un cluster dont la scene
+     visuelle est introuvable.
+     Corrige : PhyreModelSource porte AssetFolder ; un prop vaut map/objects/<nom>,
+     une map garde map/<nom> (ou elle etait deja juste — le defaut ne touchait que
+     les props, donc uniquement le banc d'essai, pas les tests de map precedents).
+     Verifie : nos identifiants disent desormais map/objects/t10lig03/...
+[OK] Note methodologique : c'est la 5e fois que le defaut est « une donnee correcte
+     dans un contexte, reutilisee sans etre retraduite dans un autre ». Ici le nom de
+     dossier. Verifier ce point AVANT d'ecrire, pas apres le crash.
+     82 PASS / 0 fail.
+
+--- REGLE TROUVEE : les groupes d'instances sont tries par nom de classe (31/07) ---
+[OK] Au lieu d'ajouter une hypothese, cherche le decor de Trista dont le cluster
+     ressemble le plus a ce qu'on ecrit : O_T10CHR01 (16 groupes, AUCUNE animation,
+     2 materiaux, 8 exemplaires). En le comparant a notre cube, une seule difference
+     structurelle restait : l'ORDRE DES GROUPES.
+[OK] Regle verifiee sur 6 modeles, de 15 a 334 groupes (O_T10CHR01, O_T10ETC02,
+     M_A0003, M_A0005, O_T10LIG00, M_T1000) : SANS EXCEPTION, les groupes d'instances
+     sont listes dans l'ordre alphabetique du nom de classe.
+[!]  Notre Layout de base etait ecrit trie — volontairement, semble-t-il. Puis
+     PhysicsLayout a ete concatene a la fin (PPhysics*/PShape apres PWorldMatrix), et
+     j'ai ensuite ajoute PSamplerState/PShaderParameterDefinition a la fin aussi. Les
+     deux ajouts ont casse l'invariant en silence.
+     Corrige : le layout est trie ordinalement apres avoir ete constitue. Group() s'y
+     adapte tout seul puisque tout passe par lui.
+     Verifie : nos 15 groupes sortent desormais dans l'ordre exact du banc.
+[?]  A noter : ca vaut AUSSI pour les maps testees precedemment, qui embarquaient la
+     physique et etaient donc non triees depuis le debut. Si l'ordre est bien la
+     cause, il explique les ecrans noirs autant que les crashes.
+     82 PASS / 0 fail.
+
+--- L'HYPOTHESE JAMAIS TESTEE : le conteneur .pkg lui-meme (31/07) ---
+[!]  L'ordre alphabetique des groupes n'a pas suffi non plus. En cherchant ailleurs,
+     trouve une hypothese enoncee comme un fait dans PkgArchiveWriter et jamais
+     verifiee en jeu — alors que TOUS nos essais (maps ET props) reposent dessus :
+       « Entries are stored uncompressed. The loader reads that as well as it reads
+         the game's own NISLZSS entries — the flag says which. »
+[OK] Mesure des entetes de paquets :
+       O_T10CHR01 (jeu) : t10chr01.dae.phyre  47126 / 20490 / offset / flag=1
+       M_A0003    (jeu) : a0003.dae.phyre     34329 / 13277 / offset / flag=1
+       le notre         : t10lig03.dae.phyre  31912 / 31912 / offset / flag=0
+     Les paquets livres compressent TOUTES leurs entrees (taille stockee < taille
+     reelle, drapeau 1). Nous ecrivons en clair avec le drapeau 0.
+     Le magic differe aussi d'un paquet a l'autre (0x59B85914, 0x59B85A34,
+     0x59B82D17) alors que nous ecrivons une constante 0x59679451.
+[OK] EXPERIENCE DE CONTROLE, la plus propre de la session : commande « repack ».
+     Elle relit le paquet d'ORIGINE du lampadaire et le reecrit avec NOTRE writer,
+     entrees identiques octet pour octet, memes noms, meme ordre. Aucun modele ecrit
+     par nous n'y participe.
+       - si ca plante => le defaut est le CONTENEUR, et il l'etait depuis le debut :
+         ca expliquerait d'un coup les 5 ecrans noirs et les 4 crashes.
+       - si ca ne plante pas => le conteneur est hors de cause, definitivement, et le
+         defaut est bien dans le cluster.
+
+--- Le conteneur est INNOCENT (31/07) ---
+[OK] L'experience « repack » ne plante pas : le paquet d'origine du lampadaire,
+     reecrit par NOTRE PkgArchiveWriter avec ses entrees intactes, se charge sans
+     probleme. Donc :
+       - notre ecrivain de paquets est bon ;
+       - les entrees non compressees (drapeau 0) sont bien acceptees par le jeu,
+         l'hypothese du commentaire etait juste ;
+       - le magic constant 0x59679451 passe, il n'est pas verifie.
+     ELIMINE DEFINITIVEMENT. Le defaut est dans le cluster que nous ecrivons.
+[OK] Bissection suivante, avec du code deja prouve octet pour octet :
+     commande « graft-prop ». Elle garde le cluster D'ORIGINE du prop et n'y remplace
+     que les tampons de geometrie, via PhyreModelReplacement.Replace (le chemin
+     valide : rendre a un modele sa propre geometrie redonne le fichier a l'octet).
+     Materiaux, noeuds, animation, tampons de parametres : tout reste tel que livre.
+     Applique a O_T10LIG03 avec le cube : 66 703 octets contre 65 523 a l'origine.
+[?]  Ce que ca tranche :
+       - ca marche  => le defaut est dans l'ECRITURE DE CLUSTER DE ZERO, pas dans la
+         geometrie ni dans la charge GPU. Et on a au passage un chemin utilisable
+         « importer un mesh dans un decor existant ».
+       - ca plante  => le defaut est dans notre ecriture de GEOMETRIE / de charge GPU,
+         perimetre beaucoup plus etroit et directement testable.
+
+--- LA CAUSE : l'identifiant de plateforme du cluster (31/07) ---
+[OK] Le greffon MARCHE en jeu. Donc prouves : le conteneur .pkg, l'ecriture de
+     geometrie, la charge GPU, et le chemin PhyreModelReplacement. Le defaut etait
+     dans l'ecriture d'un cluster DE ZERO — et le greffon a montre ou chercher : il
+     reutilise tout le structurel du fichier livre (entete, namespace, en-tetes de
+     groupes, tables de fixups) et ne reecrit que la charge.
+[!]  TROUVE, et c'est UN SEUL MOT :
+        PhyreClusterAssembler.cs : private const uint PlatformId = 6;
+        PhyreTextureClusterWriter.cs : private const uint PlatformId = 0x44583131;
+     Le 4e mot de l'entete de cluster est l'identifiant de plateforme. Tous les
+     clusters livres portent 0x44583131 = les quatre caracteres « DX11 » (visibles
+     « 11XD » a l'offset 12). Notre ecrivain de TEXTURES utilisait deja la bonne
+     valeur ; l'assembleur de clusters ecrivait 6.
+     Le moteur lit la plateforme AVANT d'interpreter quoi que ce soit destine au GPU :
+     un modele ecrit par nous n'a jamais eu la moindre chance d'etre regarde.
+     C'est le seul mot que le chemin du greffon preservait et que celui-ci ecrasait.
+[OK] Corrige. Verifie sur le paquet produit :
+        livre : 50485952 00000054 000059C5 44583131  -> "11XD"
+        nous  : 50485952 00000054 0000469E 44583131  -> "11XD"
+     82 PASS / 0 fail.
+[!]  Lecon : le symptome (crash au chargement, ecran noir) etait le meme pour un mot
+     d'entete faux que pour n'importe quel defaut de structure, et j'ai passe huit
+     corrections dans la structure. Ce qui a tranche, c'est la BISSECTION avec un
+     chemin prouve, pas l'inspection. A refaire dans cet ordre la prochaine fois.
+
+--- L'oracle de FIDELITE, et ce qu'il revele (31/07) ---
+[!]  PlatformId corrige ("DX11") mais ca plante encore. Constat plus grave, fait en
+     cherchant pourquoi : --assemble-check ne verifie PAS la fidelite. Il relit nos
+     octets avec NOS lecteurs et exige les memes groupes. Son propre commentaire
+     l'admet. Donc les « 32 761 clusters reassembles » prouvaient de l'auto-coherence,
+     pas la compatibilite avec le moteur. Tout notre socle etait prouve contre
+     nous-memes. Seuls le conteneur .pkg et le greffon sont verifies PAR LE JEU.
+[OK] Ajoute --fidelity <paquet> : reassemble un cluster livre depuis sa propre
+     description et exige LES OCTETS DU JEU. C'est l'oracle qui manquait ; chaque
+     ecart qu'il imprime est un defaut reel, trouvable sans lancer le jeu.
+[!]  Premier verdict, immediat :
+        t10chr01 : livre 47126, reconstruit 44904 — 1re difference a l'offset 8
+        a0005    : livre 28339, reconstruit 26117 — meme ecart, 2222 octets
+     L'ecart est EXACTEMENT 2222 dans les deux cas : un bloc de taille fixe manquant.
+[OK] Defaut trouve et corrige au passage : le mot 1 du namespace est SA PROPRE TAILLE
+     (verifie egal a l'entete[2] sur 5 clusters livres). Nous y ecrivions la constante
+     0x8D7 = 2263. Corrige : la taille calculee est ecrite.
+[?]  Ecart restant, localise mais pas encore explique : pour les MEMES classes lues du
+     fichier livre (15 types, 125 classes, 363 membres), notre table de chaines fait
+     4774 octets contre 6996. Les descripteurs font 13304 des deux cotes. Il manque
+     donc ~2222 octets de NOMS. La table livree contient 391 chaines uniques, toutes
+     referencees, et notre PhyreStringTable ne fait que dedupliquer (pas de partage de
+     suffixe). Conclusion probable : notre lecture des classes ne rend pas tous les
+     noms de membres. A REPRENDRE ICI, hors jeu.
+
+--- LES 2222 OCTETS : onze classes que rien n'instancie (31/07) ---
+[OK] L'oracle --fidelity, enrichi des compteurs de namespace, a localise l'ecart en
+     un coup :
+        livre : 15 types, 125 classes, 363 membres, 6996 de chaines, 20300 au total
+        nous  : 15 types, 114 classes, 321 membres, 6178 de chaines, 18078 au total
+     Onze classes manquaient, LES MEMES dans une map et dans un prop :
+        PClusterHeader, PClusterHeaderD3D11, PClusterHeaderBase, PInstanceListHeader,
+        PShaderParameterCaptureBufferSampler, ...Texture2D, ...TextureBase,
+        PTexture2D, PTexture2DD3D11, PTexture2DBase, PTextureCommonBase
+[!]  Pourquoi notre fermeture ne les trouvait pas : RIEN NE LES INSTANCIE. Elles ne
+     sont ni un groupe ni le type d'un membre atteignable depuis un groupe. Deux
+     d'entre elles decrivent le FICHIER : le moteur lit l'entete d'un cluster a
+     travers PClusterHeader et ses listes d'instances a travers PInstanceListHeader.
+     Les autres sont le chemin par lequel un materiau atteint une texture, que le
+     tampon de parametres nomme par type sans en detenir.
+     Corrige : PhyreClusterContents.ClassNames() les liste toujours.
+[OK] Resultat immediat, les TAILLES correspondent desormais exactement :
+        t10chr01 : livre 47126, reconstruit 47126
+        a0005    : livre 28339, reconstruit 28339
+        a0003    : livre 34329, reconstruit 34329
+     Premiere fois de la session qu'un fichier reconstruit a la bonne taille.
+[?]  Ecart restant : commence a l'offset 176, soit exactement le debut des
+     descripteurs de classe. L'ordre livre n'est PAS alphabetique — c'est un ordre de
+     declaration, chaque classe suivie de ses ancetres (PClusterHeader -> ...D3D11 ->
+     ...Base ; PDataBlockD3D11 -> ...Base). Notre assembleur trie alphabetiquement.
+     Reproduire cet ordre est le prochain pas vers zero difference.
+     82 PASS / 0 fail.
+
+--- LA TABLE DE SCHEMA EST FIXE, PAS DERIVEE (31/07) ---
+[OK] Constat decisif : quatre clusters sans rapport — O_T10CHR01, O_T10ETC02, M_A0005,
+     M_A0003, soit deux props et deux maps — listent LES MEMES 125 classes DANS LE
+     MEME ORDRE, et les memes 15 types dans le meme ordre. Le namespace n'est donc pas
+     derive par fichier : l'exportateur emet une table fixe, et une classe est
+     identifiee par SA PLACE dedans.
+[!]  Notre approche etait fausse a la racine : PhyreClusterContents.ClassNames()
+     calculait une fermeture minimale par modele. Chaque cluster ecrit recevait donc
+     sa propre numerotation de classes, de types et de membres. Rien dedans ne se
+     contredisait — c'est precisement pourquoi tous les controles faits contre nos
+     propres lecteurs passaient, et pourquoi aucun ne pouvait l'attraper.
+[OK] Corrige : PhyreSchemaLibrary porte CanonicalTypes (15) et CanonicalClasses (125),
+     extraites d'un cluster livre. ClassNames() et PhyreModelClusterWriter s'en
+     servent des qu'elles couvrent le modele, et retombent sur la fermeture sinon.
+     Verifie que notre bibliotheque decrit bien les 125 : 0 manquante.
+[OK] ORACLE SATISFAIT, pour la premiere fois de la session :
+        t10chr01 : livre 47126, reconstruit 47126 — IDENTIQUE
+        a0005    : livre 28339, reconstruit 28339 — IDENTIQUE
+        a0003    : livre 34329, reconstruit 34329 — IDENTIQUE
+        t10etc02 : IDENTIQUE
+     Notre ecrivain reproduit un cluster du jeu octet pour octet.
+[?]  Limite connue et assumee : les modeles AVEC animation portent une table plus
+     large que les 125 canoniques (O_T10LIG00, O_T10DOR01, M_A0000, M_A0009 diffe-
+     rent encore). Ce n'est pas la forme que nous ecrivons ; a traiter le jour ou on
+     ecrira des modeles animes.
+     82 PASS / 0 fail. Cube regenere.
+
+--- Etat apres la table canonique (31/07) ---
+[OK] Le namespace de NOTRE cluster ecrit est desormais IDENTIQUE octet pour octet a
+     celui d'un cluster livre : 20300 octets, 15 types, 125 classes, 363 membres,
+     6996 de table. Consequence importante : nos identifiants de classe ET de membre
+     coincident enfin avec ceux du jeu (PAssetReference=1, PAssetReferenceImport=2,
+     PDataBlockD3D11=8, PMaterial=12 des deux cotes). Avant cette correction, TOUS nos
+     fixups designaient des membres selon une numerotation qui n'etait qu'a nous.
+[OK] En-tetes de groupes d'instances : structure coherente avec le banc
+     (classe, compte, taille totale = objets + tableaux, puis deux compteurs).
+[!]  Et pourtant le jeu plante toujours. La difference restante est donc dans les
+     OBJETS ou les FIXUPS, pas dans le schema.
+[PLAN] Prochain pas, meme methode : etendre l'oracle a une comparaison par groupe
+     entre notre cluster ecrit et un cluster livre de meme forme — octets d'objets
+     classe par classe, puis fixups. La ou le contenu differe legitimement (geometrie),
+     comparer les CHAMPS non nuls plutot que les octets.
+
+--- Comparaison du CABLAGE, classe par classe (31/07) ---
+[OK] Ajoute --diff-wiring <livre> <notre> : pour chaque classe, quels membres portent
+     un lien chez l'un et pas chez l'autre. Deux modeles de meme espece ne se comparent
+     pas octet a octet (leur geometrie differe) mais doivent etre cables pareil.
+     Sortie : TROIS ecarts seulement, ce qui est enfin une liste exploitable.
+       PMeshInstance  : m_gameMaterialIDs — jamais pose chez nous
+       PNode          : m_parent, m_firstChild, m_next, +0x4C — 8 noeuds chaines
+                        chez eux, 1 isole chez nous
+       PParameterBuffer : +0x1C — un SECOND lien d'import, vers une TEXTURE
+[!]  Le +0x1C etait un lien pendant de mon fait : PhyreMaterialTableReader filtrait
+     explicitement les pointeurs a user-fixup (« UserFixupId is not null »), donc on
+     copiait un bloc de parametres qui reference une texture sans jamais reprendre la
+     reference — ni la texture.
+     Corrige : la table porte maintenant ses Imports PAR NOM (un index d'import ne veut
+     rien dire hors de la liste qui l'a produit), l'ecrivain cree un
+     PAssetReferenceImport par reference et les recable, et WriteProp embarque aussi
+     les .dds.phyre du donneur (paquet passe de 5 a 7 entrees, manifeste p_texture).
+[?]  Reste apres correction : le second import sort chez nous avec l'identifiant de
+     membre 226 la ou le jeu ecrit 28. Les identifiants de membre sont des index dans
+     la table de membres empaquetee ; ma resolution s'est trompee d'espace. A REPRENDRE.
+     Restent aussi m_gameMaterialIDs et la hierarchie de noeuds.
+     82 PASS / 0 fail.
+
+--- Cablage aligne grace a la doc de l'utilisateur (31/07) ---
+[OK] Documentation fournie par l'utilisateur (reverse d'un ancien chantier). Points
+     retenus et VERIFIES plutot que crus sur parole :
+     - « m_memoryType should be set to VRAM » : verifie, les blocs livres l'ont a 0 et
+       nous aussi. Deja conforme, rien a changer.
+     - « PMeshInstance in particular is problematic » : CONFIRME de facon spectaculaire.
+       Le descripteur declare PMeshInstance de 64 octets ET place m_gameMaterialIDs a
+       +96. Les objets livres font bien 64 octets, avec le compteur a +48. Le moteur
+       utilise donc sa propre disposition compilee et ne lit celle du fichier que pour
+       resoudre les noms. Les octets sont poses la ou le jeu les pose.
+     - « gameMaterialID necessaire pour CS1 » : implemente. Un identifiant par segment,
+       valeur 0 (celle de tous les exemplaires livres), avec son tableau et son fixup
+       NOMME PAR MEMBRE (pas par offset — le moteur resout l'id contre sa propre
+       disposition).
+[!]  Encore le meme piege, deux fois de plus : les imports du tampon etaient portes par
+     l'identifiant de membre DU DONNEUR. Corrige en portant le NOM ; et quand la source
+     ne designe aucun membre (0x1C tombe au-dela des 16 octets de la classe, donc dans
+     la charge : c'est un emplacement de texture DANS le tampon), l'offset est repris
+     tel quel, ce qui est valide puisque la charge est copiee entiere.
+[OK] --diff-wiring ne signale plus qu'un ecart, et il est LEGITIME :
+        PNode (livre x8, nous x1) : m_parent, m_firstChild, m_next
+     Le banc a huit noeuds a chainer, notre cube un seul — donc ni parent, ni enfant,
+     ni frere. Rien d'anormal ne reste.
+     Paquet a 7 entrees (modele + 2 textures + 3 shaders + manifeste). 82 PASS / 0 fail.
+
+--- Comparaison des VALEURS d'objets : le bloc d'indices (31/07) ---
+[OK] Passation ecrite : doc/phyre_authoring_handoff.md (principe, methode, oracles,
+     defauts trouves, pieges, suites) pour qu'un autre modele reprenne.
+[OK] Le cablage etant aligne, compare les VALEURS mot par mot, groupe par groupe,
+     entre notre cube et le banc livre. Trois classes montrent des ecarts, dont une
+     decisive : PMeshSegment, a cause de son PIndexDataBlockD3D11 EMBARQUE a +28.
+[!]  Trois champs faux dans ce bloc, verifies sur TROIS modeles livres qui s'accordent
+     (banc 214 sommets, a0005 20, a0003 4) :
+        m_maximumIndex (+0x20) : eux 213/19/3 (= nb de sommets - 1), nous 0
+        m_type         (+0x28) : eux 12 partout, nous 4
+        m_buffers      (+0x30) : eux 1, nous 0
+     m_buffers est LE MEME defaut que PDataBlockD3D11.m_buffers, corrige la-bas et
+     manque ici : un bloc d'indices qui declare zero tampon.
+     m_type=4 venait d'appliquer la regle des flux de sommets (taille scalaire en
+     haut, composantes en bas) a un bloc qui ne l'utilise pas.
+     m_maximumIndex a 0 dit que le segment n'atteint aucun sommet.
+[OK] Corrige. Le cas 32 bits LEVE UNE ERREUR au lieu de deviner : aucun bloc livre
+     observe n'en utilise, et un format d'indice faux se lit de travers sans rien
+     signaler. Verifie : minIndex=0 maxIndex=23 count=36 type=12 buffers=1.
+     82 PASS / 0 fail.
+[?]  Ecarts restants vus dans la meme comparaison, non traites :
+        classe 43 (32 octets, PMeshInstanceBounds) : valeurs de bounds — legitimes,
+          nos boites different des leurs.
+        classe 122 (PWorldMatrix) : eux 1.0 aux offsets 4/12/24, nous 0/16/32. A
+          VERIFIER — soit leur noeud porte une vraie transformation, soit notre
+          identite 4x3 est mal disposee. C'est la prochaine chose a regarder.
+
+--- MATRICE MONDE ET ABI DES MAPS PHYSIQUES (31/07) ---
+[OK] PWorldMatrix mesure sur six assets sans rapport (props et maps). Pour une
+     transformation neutre, TOUS portent les trois composantes unitaires aux offsets
+     +4, +12 et +24. Notre disposition +0/+16/+32 etait fausse. Corrigee et verifiee
+     dans le z9100 regenere.
+[!] Defaut plus profond revele en comparant le cablage de M_R0510 et M_Z9100 :
+     des que la physique etait presente, PhyreModelClusterWriter calculait les ids de
+     membres dans sa fermeture de classes, puis PhyreClusterContents ajoutait les
+     onze classes obligatoires et l'assembleur renumerotait tout. Les pointeurs
+     devenaient +0xB0/+0xD2/etc. au lieu de m_mesh/m_worldMatrix/m_materialSet.
+     Le modele etait donc structurellement lisible par nos lecteurs mais le moteur
+     resolvait ses liens contre d'autres membres.
+[OK] Releve la table ABI complete d'une vraie map physique. M_R0500 et M_R0510
+     partagent exactement les memes 15 types et 147 classes dans le meme ordre.
+     Ajoutee comme CanonicalPhysicsClasses, distincte de la table render-only de
+     125 classes (ce n'est PAS cette derniere avec quelques noms ajoutes a la fin).
+[OK] Writer, Contents et Assembler choisissent desormais ensemble cette table quand
+     le cluster porte la physique. Le writer d'effet minimal calcule egalement ses
+     fixups contre la table canonique que l'assembleur ecrit, et non contre une table
+     minimale ensuite remplacee.
+[OK] Verification sur le package reel M_Z9100 :
+       types   : 15/15, identiques a M_R0510
+       classes : 147/147, identiques et dans le meme ordre
+       cablage : tous les liens indispensables portent de nouveau leur vrai membre;
+                 ecarts restants = hierarchie multinoeud, parametres/textures du
+                 shader natif et chaine de 3 rigid bodies, absents par construction.
+       effet minimal : 1 entree, constant buffer global 528 octets, bytecode valide.
+     M_Z9100.pkg regenere directement dans le jeu. 82 PASS / 0 fail.
+
+--- REAPPLICATION AU BON REPRODUCTEUR : O_T10LIG03 (31/07) ---
+[!] La premiere regeneration apres les corrections ci-dessus avait vise M_Z9100,
+     alors que le test isole convenu est le lampadaire de Trista O_T10LIG03. Son
+     ancien package auteur faisait donc encore planter le jeu avant d'atteindre le
+     teleporteur.
+[OK] Cree un cube de diagnostic explicite de 2 x 2 x 2 metres et relance
+     `replace-prop O_T10LIG03` avec le writer corrige. Le package conserve depuis sa
+     copie originale : 3 shaders compiles, le bloc materiau (55 definitions,
+     130 samplers) et ses textures. Seule la grappe de modele est ecrite de zero.
+[OK] Package reel remplace : 7 entrees, cluster modele 33 336 octets.
+     PWorldMatrix verifie au layout natif +4/+12/+24.
+[NOTE] Le cluster natif du lampadaire contient aussi une petite animation
+     (142 classes / 17 types) que le cube statique n'embarque volontairement pas
+     (125 / 15). C'est bien le test voulu : l'asset et son emplacement restent
+     ceux du lampadaire, mais le modele auteur est statique et autonome.
+
+--- CRASH CONFIRME, DEUX FIXUPS FAUX ISOLES HORS JEU (31/07) ---
+[KO] Le cube auteur dans O_T10LIG03 plante encore au chargement de Trista.
+[OK] O_T10LIG03 restaure IMMEDIATEMENT depuis sa copie originale. SHA-256 du fichier
+     du jeu identique a la sauvegarde. O_T10CHR01, utilise ensuite pour les mesures,
+     est lui aussi restaure et verifie identique. Le jeu ne porte plus aucun prop
+     experimental actuellement.
+[!] Premier ecart non geometrique trouve par --diff-object-values :
+     PMeshInstance +0x30 valait 1 chez nous et 0 dans TOUS les assets natifs testes.
+     L'ancienne interpretation disait que le compte de m_gameMaterialIDs etait a
+     +48. Faux : +48 est m_edgeParameters et reste entierement nul. Le membre
+     m_gameMaterialIDs est declare hors de l'objet (+96, pointeur +100) et son nombre
+     est porte par l'array-fixup nommee. Suppression du mot parasite; fixup et donnees
+     conserves.
+[!] Deuxieme ecart structurel : PMaterialSet est un PSharray, mais les modeles natifs
+     ont 0 octet de pointer-array fixups. Ils ecrivent le compte dans PMesh puis un
+     pointeur ordinaire par element, avec son arrayIndex. Notre PointerArray ajoutait
+     une table de 4 octets inexistante. Remplace par SharedArrayElement; le cluster
+     auteur a maintenant 0 octet, comme O_T10CHR01 et M_A0003.
+[!] Troisieme ecart : une nouvelle PAssetReferenceImport etait creee pour CHAQUE
+     pointeur utilisateur. Les fichiers natifs en creent une par asset importe et la
+     partagent. Imports dedupliques par importId. Le cube a maintenant exactement
+     deux fixups importees (shader + texture), au lieu de quatre.
+[OK] Apres ces corrections, comparaison cube/O_T10CHR01 :
+       - types/classes identiques (15/125);
+       - pointer-array fixups : 0/0;
+       - aucun ecart de valeur hors tailles de tampons, indices et bounds du cube;
+       - aucun ecart de cablage hors la hierarchie de 8 noeuds du modele natif;
+       - les user-fixups restantes correspondent exactement aux 5 flux du cube,
+         ses 4 exports, son shader et sa texture.
+     Les packages experimentaux corriges sont conserves dans my-mod.files/current,
+     MAIS les fichiers du jeu restent natifs en attente du prochain test explicite.
+
+--- Reprise apres codex (31/07) ---
+[!] Le dossier de jeu n'etait PAS propre malgre la note de codex : O_T10CHR01.pkg et
+    O_T10LIG03.pkg differaient encore de leurs originaux (t10chr01 faisait 28530
+    octets au lieu de 47126). Restaures par restore-file, SHA-256 verifies identiques.
+    Lecon : verifier la restauration, ne pas la supposer.
+[OK] Oracle de fidelite sur les fichiers restaures : IDENTIQUE sur O_T10CHR01,
+    O_T10ETC02, M_A0003, M_A0005. La regression n'etait que le fichier de test.
+[OK] Corrections de codex integrees et verifiees. Mon m_gameMaterialIDs a +48 etait
+    FAUX : +48 est m_edgeParameters et reste nul, le compte est porte par le fixup de
+    tableau seul. Codex a aussi remplace notre table pointer-array de PMaterialSet par
+    des elements de tableau partage (les natifs ont 0 octet de pointer-array) et
+    deduplique les imports.
+[OK] Etat du cube auteur, les deux oracles passes :
+      --diff-object-values : plus AUCUN ecart structurel. Restent m_elementCount,
+        m_dataSize, m_min/m_size, m_vertexData, maxIndex et le nombre d'indices —
+        tous du contenu, pas de la structure.
+      --diff-wiring : seul PNode differe.
+[OK] Et cet ecart de PNode est EXPLIQUE, donc legitime : les 8 noeuds du banc sont sa
+    racine, SIX LUMIERES (directionalLight1..5) et un noeud de maillage. La racine
+    elle-meme n'a pas de nom, comme la notre. Notre unique noeud anonyme est conforme;
+    le banc a simplement des objets qu'un cube n'a pas.
+[?] Question ouverte, la plus prometteuse : les modeles livres ont un PNode PAR
+    MAILLAGE (t15chr01_polySurface17 chez le banc, 4 noeuds chez a0003 pour une seule
+    instance). Si le moteur parcourt l'arbre de noeuds pour trouver ce qu'il dessine,
+    une PMeshInstance rattachee a aucun noeud n'est jamais visitee. A EXAMINER.
+[OK] Cube reinstalle sur O_T10LIG03 avec toutes les corrections. 82 PASS / 0 fail.
+
+--- Bissection sur la table de materiau (31/07) ---
+[OK] Verifie que le noeud de maillage et la PMeshInstance PARTAGENT la meme
+    PWorldMatrix chez le banc (PNode[7].m_worldMatrix et
+    PMeshInstance[0].m_localToWorldMatrix pointent tous deux sur PWorldMatrix[0]).
+    Notre racine fait de meme. Et +0x4C est le NOM du noeud : les noeuds nommes en ont
+    un, la racine non — comme la notre. L'ecart PNode est donc bien legitime.
+[!] Signal jamais exploite, releve en relisant l'historique : les MAPS ecrites AVANT
+    le travail sur le materiau (tampon de parametres vide, 0 definition) ne plantaient
+    PAS — elles se chargeaient et n'affichaient rien. Tous les PROPS, ecrits AVEC une
+    table de materiau copiee, plantent.
+    La table de materiau est donc le suspect que la difference de symptome designe.
+[OK] Ajoute replace-prop --no-material : ecrit le prop avec un tampon de parametres
+    vide, tout le reste identique. C'est une bissection, pas un mode.
+      - si ca ne plante plus (meme invisible) => la faute est dans ce qu'on copie du
+        bloc de parametres, et le perimetre tombe a PhyreMaterialTable.
+      - si ca plante quand meme => le materiau est hors de cause et la difference de
+        symptome venait d'ailleurs.
+    Cube reinstalle sans le bloc. 82 PASS / 0 fail.
+
+--- Le materiau est hors de cause ; changement de cible (31/07) ---
+[OK] --no-material plante aussi => la table de materiau N'EST PAS la cause. Elimine.
+[!] Chose annoncee il y a plusieurs tours et jamais faite : O_T10LIG03 est un
+    lampadaire ANIME (8 classes d'animation dans son cluster natif, plus un
+    PAnimationClipBinding qui est une classe d'en-tete). Nous le remplacions par un
+    cluster qui n'en a aucune. Si le jeu, l'ops ou le scena reclame son clip, il
+    dereference du vide.
+    J'ai teste NEUF fois sur cette cible en sachant que c'etait une difference, parce
+    que j'avais choisi O_T10CHR01 comme reference de COMPARAISON sans jamais en faire
+    la CIBLE. Faute de methode : la cible d'un test a une variable doit etre celle qui
+    ressemble le plus a ce qu'on ecrit.
+[OK] O_T10LIG03 restaure (SHA-256 verifie natif). Cube ecrit sur O_T10CHR01 a la
+    place : 16 groupes, AUCUNE animation, 2 materiaux, 8 exemplaires dans t1000
+    (les chaises/bancs de Trista). C'est le seul decor dont la forme corresponde a ce
+    que notre ecrivain produit.
+[OK] Controle contre son PROPRE original : aucun ecart de cablage hors la hierarchie
+    de noeuds (racine + 6 lumieres + noeud de maillage, qu'un cube n'a pas), et aucun
+    ecart de valeur hors le contenu (comptes, tailles, bounds, indices).
+
+--- Le flux Color manquant (31/07) ---
+[OK] --no-material plante aussi : la table de materiau est ELIMINEE.
+[OK] Cible changee pour O_T10CHR01 (aucune animation) : plante aussi. L'animation est
+    ELIMINEE — l'utilisateur en doutait, il avait raison.
+[OK] Verifie que la queue d'entete decrivant la charge GPU est juste : 72 octets
+    d'indices (36 x 2) et 1344 de sommets (24 x 56). La charge n'est pas en cause.
+[!] TROUVE en comparant les fixups utilisateur, la seule zone que ni --diff-wiring ni
+    --diff-object-values ne couvrent : le banc porte un flux « Color » et pas nous.
+      banc natif : 6 blocs, le 6e de stride 16 (Float32x4)
+      notre cube : 5 blocs, aucun Color
+    Or le vertex shader compile declare ses entrees POSITION, NORMAL, TEXCOORD et
+    COLOR — releve des le debut de la session sur la signature ISGN d'un ed8.fx reel,
+    et jamais rapproche de ce que nous ecrivions. Une maille qui n'offre pas COLOR ne
+    peut pas satisfaire la disposition d'entree contre laquelle le shader a ete
+    compile.
+[OK] Ajoute : un flux Color par sommet, blanc (le shader multiplie par lui, donc le
+    blanc ne change rien), en Float32x4, avec sa semantique « Color ».
+    Verifie : 6 blocs, le 6e de stride 16, et la user-fixup PRenderDataType « Color ».
+    82 PASS / 0 fail. Cube reinstalle sur O_T10CHR01.
+
+--- Le journal Windows : ce que le crash est vraiment (31/07) ---
+[OK] Idee qu'il aurait fallu avoir douze essais plus tot : lire le journal
+    d'evenements Windows au lieu de deviner. Trois plantages enregistres, tous
+    identiques :
+        ed8.exe — exception 0xC0000005 (violation d'acces)
+        module defaillant : unknown
+        offset de faute  : 0xFFFFFFFF
+[!] Ce que ca dit : le POINTEUR D'INSTRUCTION lui-meme est invalide. Le jeu a saute
+    dans le vide — il n'a pas lu une mauvaise donnee, il a APPELE une adresse
+    invalide. C'est la signature d'un pointeur de fonction (vtable) ecrase, donc d'un
+    fixup qui a ecrit a un mauvais endroit dans un objet.
+    Ca oriente fortement : ce n'est pas une valeur de champ fausse (ca donnerait un
+    rendu faux, pas ce crash), c'est une ECRITURE DE POINTEUR AU MAUVAIS OFFSET.
+[OK] Verifie et ecarte : l'empaquetage des tables de fixups est de densite comparable
+    (1,9-2,0 octets/fixup pour les tableaux, 3,8 pour les pointeurs des deux cotes),
+    et les comptes par groupe dans les en-tetes d'instances sont coherents.
+[OK] Flux Color ajoute (le shader declare COLOR en entree) : ne suffit pas, mais
+    l'ecart etait reel et la correction est gardee.
+[OK] Jeu remis en etat NATIF (SHA-256 verifies sur les deux props).
+[PLAN] Piste designee par le crash, a suivre : un fixup ecrit son pointeur a un offset
+    que le moteur n'attend pas. Les deux oracles comparent QUI pointe vers QUOI, pas
+    OU le pointeur atterrit dans l'objet. Concretement, comparer pour chaque fixup le
+    couple (classe source, offset resolu par le moteur) — en se souvenant que le
+    moteur resout un identifiant de membre contre SA disposition compilee, pas celle
+    du fichier. PMeshInstance en est l'exemple connu : son descripteur ment de 32
+    octets. Si d'autres classes mentent pareil, chaque fixup nomme par membre sur ces
+    classes-la ecrit dans le decor.
+
+--- Balayage des descripteurs menteurs, et l'ordre des fixups user (31/07) ---
+[OK] Balayage demande : sur les 125 classes canoniques, UNE SEULE place un membre
+    au-dela de sa taille declaree — PMeshInstance (taille 64, membres jusqu'a +108).
+    C'est exactement celle que l'utilisateur avait documentee, et elle est deja
+    traitee. La piste ne donne donc AUCUN nouveau defaut ; dit tel quel plutot que
+    force. Les 20 classes « sans membres » heritent simplement de tout, ce n'est pas
+    une lacune.
+[OK] Ordre des fixups utilisateur : les quatre clusters livres les groupent
+    PClassDescriptor, puis PAssetReferenceImport, puis PRenderDataType. Nous les
+    intercalions dans l'ordre ou ils etaient crees. Comme un pointeur nomme le sien
+    PAR INDEX et que le blob de donnees se lit a l'offset declare, reordonner exige de
+    renumeroter les deux : fait.
+[!] Premiere tentative sortie a l'envers : mon calcul du nom du type ne regardait que
+    la table des TYPES, or PClassDescriptor est une CLASSE. Encore les deux espaces de
+    numerotation — la 13e fois. Corrige en resolvant les deux.
+    Verifie : 6 PClassDescriptor, 2 PAssetReferenceImport, 6 PRenderDataType, dans cet
+    ordre, comme les fichiers livres.
+[OK] Fidelite toujours IDENTIQUE apres le changement (le reordonnancement ne touche que
+    le chemin auteur, pas la reconstruction d'un fichier livre). 82 PASS / 0 fail.
+
+--- UN OCTET QUE NOTRE PROPRE PIPELINE NE RETROUVE PAS (31/07) ---
+[!] Trouve par accident, en relancant --fidelity alors que notre cube etait installe
+    sur O_T10CHR01 : l'oracle a donc compare NOTRE fichier a sa propre reconstruction.
+        notre fichier      : ... 0B68CA05 0D 090A0B0C0D0E08 ...
+        sa reconstruction  : ... 0B68CA05 00 090A0B0C0D0E08 ...
+    Un seul octet, a l'offset 27971, et il tombe DANS LA TABLE DE POINTEURS
+    (27728..27978). Notre ecrivain y pose 0x0D la ou notre lecteur, relisant puis
+    reempaquetant, produit 0x00.
+[!] Pourquoi c'est important : la table de pointeurs est exactement ce que le moteur
+    parcourt pour ECRIRE les pointeurs dans les objets. Un bloc mal decode fait ecrire
+    un pointeur au mauvais offset, ce qui ecrase une vtable — et le journal Windows dit
+    precisement que le pointeur d'instruction est devenu invalide (0xC0000005, offset
+    de faute 0xFFFFFFFF, module inconnu).
+    C'est la premiere fois qu'un defaut trouve hors jeu correspond exactement a la
+    signature du crash observe.
+[?] Piste : la suite 09 0A 0B 0C 0D 0E est une serie d'identifiants consecutifs, donc
+    un bloc empaquete (Exclusive ou Strided). Le desaccord porte sur la valeur qui
+    precede la serie — un compte ou un pas. PhyreFixupPacker a DEUX chemins d'ecriture
+    (vers la ligne 231 et vers la ligne 398) : verifier qu'ils sont d'accord, et que le
+    lecteur decode bien ce que le premier ecrit.
+[OK] Jeu remis en etat natif.
+
+--- Le desaccord capture par un test qui echoue (31/07) ---
+[OK] Ajoute le test « reads back an authored cluster as the bytes it wrote » :
+    assemble un cluster ecrit de zero, le redecompose avec NOS lecteurs, le
+    reassemble, et exige les memes octets.
+    Il ECHOUE, et sur un cas minuscule — un quad de 4 sommets, 1 maille :
+        octet 22383 ecrit 0x0B, relu 0x00.
+    Le cube donnait 0x0D vs 0x00 a l'octet 27971. Meme famille : notre ecrivain pose
+    une valeur non nulle que notre lecteur ramene a zero, dans la TABLE DE POINTEURS.
+[!] Pourquoi ca compte plus que tout le reste : la table de pointeurs est ce que le
+    moteur parcourt pour ECRIRE les pointeurs dans les objets. Un bloc decode
+    autrement que packe fait atterrir des pointeurs ou personne ne les a mis, et une
+    vtable ecrasee donne exactement le crash rapporte par Windows (0xC0000005, pointeur
+    d'instruction invalide, module inconnu).
+    Les deux oracles ne pouvaient pas le voir : ils lisent le fichier de la meme
+    maniere (fausse) des deux cotes.
+[OK] Etat : 82 tests passent, 1 echoue — celui-ci, VOLONTAIREMENT laisse rouge. Il
+    tient le defaut, il est minuscule, et il se chasse sans lancer le jeu.
+[PLAN] 0x0B = packing 3 (Exclusive) | 8 (ExcludeArrayValue) ; 0x0D = packing 5 (Raw)
+    | 8. Le relu vaut 0x00 dans les deux cas. Regarder d'abord si le choix
+    d'empaquetage differe entre la premiere passe et la seconde (donc si l'ordre ou
+    le groupement des fixups n'est pas stable), puis si TryPack et TrySelect — les
+    DEUX chemins d'ecriture de PhyreFixupPacker — s'accordent.
+    Jeu en etat natif.
+
+--- LE DEFAUT : un fixup qui pointait vers DEUX choses (31/07) ---
+[OK] --roundtrip-trace : les 22 blocs sont empaquetes IDENTIQUEMENT sur les deux
+    passes (meme forme, meme masque, meme source, meme compte). La difference n'etait
+    donc pas le CHOIX d'empaquetage mais la CHARGE d'un bloc.
+[OK] Localise : octet +104 de la table de pointeurs, dans le bloc 18
+    (pack=0 mask=104 source=357 count=6). Le masque 104 contient
+    ExcludeDestinationList, donc le bloc ecrit UNE FOIS l'index du groupe de
+    destination partage par ses six fixups. Nous ecrivions 11, la relecture donnait 0.
+[!] LA CAUSE : les six fixups sont les PVertexStream.m_renderDataType, dont la cible
+    est un FIXUP UTILISATEUR (la semantique « Vertex », « Normal », « ST »...). Notre
+    ecrivain leur donnait EN PLUS une destination objet — le groupe PVertexStream et
+    l'indice du flux :
+        new PhyrePointerFixup(Group("PVertexStream"), index, member,
+                              (uint)Group("PVertexStream"), index, 0, 0, Semantic(...))
+    Un fixup qui designe deux cibles a la fois. Notre lecteur jetait la moitie objet
+    (a juste titre, commentaire a l'appui dans PhyreFixupReader), ce qui explique que
+    RIEN chez nous ne l'ait jamais signale — les deux oracles lisaient le fichier de
+    la meme maniere.
+    Le moteur, lui, ne la jette pas : il ecrit un PVertexStream* dans m_renderDataType
+    puis appelle a travers comme si c'etait un PRenderDataType. Pointeur d'instruction
+    invalide — exactement 0xC0000005 avec offset de faute 0xFFFFFFFF, module inconnu,
+    ce que le journal Windows rapporte.
+[OK] Corrige : destination 0,0. Le test « reads back an authored cluster as the bytes
+    it wrote » PASSE. 83 PASS / 0 fail. Fidelite toujours IDENTIQUE sur les trois
+    clusters livres. Cube reinstalle sur O_T10CHR01.
+
+--- Ce que la piste « taille des shader parameters » donne, et ne donne pas (31/07) ---
+[!] CORRECTION D'UNE CONCLUSION FAUSSE de ma part. J'avais ecrit « --no-material
+    plante aussi, donc la table de materiau est ELIMINEE ». C'est faux : sans table,
+    m_parameterBufferSize vaut 0 la ou le shader en attend 624. C'est le PIRE
+    desaccord de taille possible. Ce test CONFIRMAIT la these de l'utilisateur au lieu
+    de l'infirmer. La table de materiau n'a jamais ete eliminee.
+[!] Autre angle mort trouve : --diff-object-values travaille depuis les membres du
+    schema, donc il s'arrete a la taille de CLASSE (16 octets pour PParameterBuffer).
+    Les 596 octets de parametres n'avaient jamais ete compares.
+[OK] Compares maintenant, sur les 612 octets entiers : ZERO octet de difference entre
+    notre tampon et celui du banc. Le bloc copie est fidele, y compris sa taille
+    declaree (624) et son compte de definitions (55).
+[OK] Inventaire complet des groupes compare. Tout correspond sauf, legitimement :
+      classe 1  (PAssetReference)  : 5 chez eux, 4 chez nous (ils nomment 2 materiaux)
+      classe 12 (PMaterial)        : 2 chez eux, 1 chez nous
+      classe 53 (PNode)            : 8 chez eux, 1 chez nous
+      classe 55 (PParameterBuffer) : 2 chez eux, 1 chez nous
+    Les 52 PSamplerState et les 55 PShaderParameterDefinition sont identiques en
+    nombre ET en octets. Le banc a DEUX materiaux qui se partagent ces 55 definitions ;
+    nous en avons un qui les prend toutes.
+[?] Je n'ai pas trouve de taille fausse. Ce qui reste a verifier, dans l'ordre :
+    1. Un materiau qui prend les 55 definitions alors que le banc les repartit sur
+       deux tampons : est-ce que le nombre d'enfants header-class doit correspondre au
+       nombre de parametres de CE shader plutot qu'a la somme ?
+    2. m_parameterBufferSize=624 est copie du donneur, mais le SHADER que notre
+       materiau nomme est celui du premier tampon. Verifier que les deux tampons du
+       banc n'ont pas des tailles differentes, et qu'on prend la bonne paire.
+    3. Le PMesh declare m_defaultMaterials=1 chez nous, 2 chez eux — verifier que
+       m_materialIndex du segment et la taille du PMaterialSet sont coherents.
+
+--- Verification de la piste « taille des parametres » : resultat (31/07) ---
+[OK] Les DEUX tampons du banc sont byte-identiques entre eux. Le maillage n'en utilise
+    qu'un : m_meshSegments=1, m_defaultMaterials=1, m_materialIndex=0. Le second
+    materiau est la variante -VertexColor (noms colladafxShader47 et
+    colladafxShader47-VertexColor), que la doc de l'utilisateur dit NON requise.
+    Copier un seul tampon est donc correct.
+[OK] Taille declaree et compte de definitions, cote a cote :
+        banc  : taille=624  definitions=55
+        nous  : taille=624  definitions=55
+    Et les 612 octets du tampon sont identiques, ainsi que les 52 PSamplerState et les
+    55 PShaderParameterDefinition, en nombre et en octets.
+    Les enfants header-class : 110 chez eux (2 tampons x 55), 55 chez nous (1 x 55) —
+    coherent.
+[?] Conclusion honnete : sur tout ce que je sais mesurer, la taille des shader
+    parameters est JUSTE. Je ne trouve pas le desaccord que l'experience de
+    l'utilisateur designe. Ce qui ne veut pas dire qu'il n'existe pas — seulement que
+    nos outils actuels ne le voient pas.
+[?] Ce qu'il resterait a inspecter, et qu'aucun outil ne couvre encore :
+    - le contenu des 52 PSamplerState (copies verbatim, mais leurs pointeurs internes
+      sont recabler par offset : verifier qu'ils atterrissent au bon endroit) ;
+    - les enregistrements header-class : nos 55 sont-ils identiques OCTET POUR OCTET a
+      ceux du banc apres re-resolution des identifiants de type ? Compare une fois sur
+      a0003, jamais sur le banc.
+
+--- Inspection de tout ce qui restait (31/07) ---
+[OK] Enregistrements header-class du tampon : 55 contre 55, ZERO octet de difference.
+[OK] Les 52 PSamplerState : 1872 octets identiques des deux cotes.
+[OK] Ajoute --diff-targets <livre> <notre> <classe> : pour une classe, TOUS ses
+    pointeurs avec leur source ET leur cible. --diff-wiring disait quels membres
+    pointent ; celui-ci dit OU ils atterrissent. C'etait le dernier angle mort.
+[!] TROUVE du premier coup : PParameterBuffer avait 30 pointeurs chez nous contre 29
+    chez eux, et pourtant AUCUNE difference d'ensemble — donc un pointeur EN DOUBLE.
+    C'etait m_effectVariant, ecrit deux fois : une fois explicitement, une fois par la
+    boucle des imports (la table de materiau porte ses propres references, dont
+    celle-la). Le moteur applique chaque fixup qu'on lui donne ; un doublon reecrit
+    par-dessus ce que le premier a place.
+    Corrige : on ne l'ecrit explicitement que si le bloc ne le nomme pas.
+    Verifie : 29 contre 29, aucune difference.
+[OK] Balayage des 11 autres classes avec --diff-targets. Tous les ecarts restants
+    s'expliquent par la structure du banc et non par un defaut :
+      PAssetReference 10/8, PMaterial 4/2  -> son SECOND materiau (-VertexColor)
+      PMesh : son jeu de materiaux pointe PMaterial[1], le notre PMaterial[0] — nous
+              n'en avons qu'un, donc index 0
+      PNode 15/1 -> ses 8 noeuds (racine + 6 lumieres + noeud de maillage)
+    PDataBlockD3D11, PVertexStream, PMeshInstance, PMeshInstanceBounds, PMeshSegment,
+    PAssetReferenceImport, PShaderParameterDefinition : identiques au pointeur pres.
+
+--- Le graphe de noeuds, la derniere difference structurelle (31/07) ---
+[!] J'avais classe l'ecart PNode « legitime » sans le tester. Faux raisonnement :
+    AUCUN modele livre n'a un seul noeud — a0003 en a 4, le banc 8, le lampadaire 7.
+    Et chez eux la RACINE ne porte pas m_worldMatrix : c'est un noeud ENFANT qui la
+    porte, partagee avec la PMeshInstance. Chez nous la racine la portait et il n'y
+    avait pas de noeud de maillage. Une racine seule et sans enfant est une forme que
+    le moteur ne rencontre jamais.
+[OK] Corrige : deux noeuds. Racine (#VisualSceneNode, sans nom, sans matrice) ->
+    m_firstChild -> noeud de maillage, qui porte m_parent vers la racine et
+    m_worldMatrix vers la PWorldMatrix partagee avec l'instance. Exactement
+    l'agencement des fichiers livres.
+    Le noeud de maillage porte aussi un NOM dans les donnees du groupe, comme tous
+    ceux du jeu (le banc nomme le sien t15chr01_polySurface17, nous t10chr01).
+    Verifie : PNode x2, 9 octets de tableau, nom present ; --diff-targets ne signale
+    plus que les 12 pointeurs des 6 noeuds de lumiere que le banc a en plus.
+    83 PASS / 0 fail.
+
+--- Bilan a la fin de la session (31/07) ---
+[!] Le graphe de noeuds ne suffit pas non plus. PLUS AUCUN ECART MESURABLE ne subsiste
+    entre notre cluster ecrit de zero et un cluster livre, sur tout ce que nos outils
+    savent comparer :
+      - fidelite : un cluster livre se reconstruit OCTET POUR OCTET (4 modeles) ;
+      - round-trip : notre propre fichier se relit comme il s'ecrit (test 83) ;
+      - schema : namespace identique octet pour octet (125 classes, 15 types) ;
+      - cablage : --diff-wiring propre ;
+      - valeurs : --diff-object-values propre hors contenu ;
+      - cibles : --diff-targets propre, au pointeur pres ;
+      - header-class : 55 enregistrements identiques ;
+      - samplers : 1872 octets identiques ;
+      - tampon de parametres : 612 octets identiques, taille 624, 55 definitions.
+    Et ca plante toujours.
+[?] Ce que ca signifie : la difference qui reste n'est pas dans le FICHIER tel que nos
+    lecteurs le voient. Continuer a comparer des fichiers ne peut plus rien donner.
+[PLAN] Les deux seuls angles qui restent, par ordre de cout :
+    1. OBSERVER LE MOTEUR au lieu du fichier. Attacher un debogueur a ed8.exe et
+       prendre la pile au moment du 0xC0000005 : ca nomme la fonction et donc la
+       structure qu'il lisait. Douze essais a l'aveugle valent moins qu'une pile.
+    2. Comparer a un cluster produit par le VRAI exportateur Phyre (celui de la fuite,
+       compile en 32 bits comme l'utilisateur l'a documente), sur la MEME geometrie.
+       Toute difference restante serait alors dans ce que nous ne savons pas encore
+       lire — et non dans ce que nous savons deja comparer.
+[OK] CE QUI MARCHE ET EST LIVRABLE AUJOURD'HUI : le greffon (graft-prop), qui remplace
+    la geometrie d'un decor existant en gardant son cluster. Verifie en jeu.
+    Jeu remis en etat natif pour les deux props.
+
+--- PISTE 2 : l'exportateur Phyre officiel tourne (31/07) ---
+[OK] C:\Users\Administrator\Desktop\WorkFolder\Process.bat lance CSIVAssetImportTool
+    (PhyreEngine 3.22.0.0, Sony). Un Collada minimal ecrit a la main (meme cube) passe
+    et produit D3D11/cube.dae.phyre — 21 378 octets, plateforme « 11XD ».
+    Le materiau echoue faute de Shaders/ColladaDefaultShader.fx (le dossier ne contient
+    que ed8_chr.fx), donc le cluster sort SANS materiau ni tampon de parametres.
+[!] CE QU'IL REVELE, et ca confirme la doc de l'utilisateur mot pour mot :
+    l'exportateur NON PATCHE emet « PDataBlock », pas « PDataBlockD3D11 ».
+    Or sa note de 2022 dit : « PDataBlock doesn't exist in the runtime of CS1... if an
+    object in the phyre file is set of type PDataBlock, it will crash. »
+    Les fichiers LIVRES du jeu utilisent PDataBlockD3D11 (mesure : O_T10CHR01 groupe 2).
+    Nous aussi. Donc nous sommes CORRECTS sur ce point, et ce binaire-la est la version
+    d'avant le correctif que l'utilisateur avait du appliquer.
+[OK] Autre confirmation : l'export officiel a PNode x2 — exactement racine + noeud de
+    maillage, la structure ajoutee au tour precedent. Notre correction va dans le bon
+    sens.
+[?] Ce que cette reference ne peut pas encore trancher : son materiau ayant echoue,
+    elle n'a ni PParameterBuffer, ni PSamplerState, ni PShaderParameterDefinition, et
+    sa table de classes fait 120 au lieu de 125. La comparaison de la partie materiau
+    — celle que l'experience de l'utilisateur designe — est donc impossible en l'etat.
+[PLAN] Etape suivante, la plus rentable de toutes : fournir a l'exportateur un
+    ColladaDefaultShader.fx (ou pointer le materiau du .dae vers shaders/ed8_chr.fx)
+    pour qu'il produise un cluster COMPLET, avec son tampon de parametres. On aurait
+    alors, sur la MEME geometrie, une reference officielle a comparer octet a octet
+    avec ce que nous ecrivons — y compris la partie que nos outils ne savent pas
+    juger.
+
+--- PISTE 2 aboutie : l'exportateur officiel produit un cluster COMPLET (31/07) ---
+[OK] Materiau du .dae pointe vers <include url="shaders/ed8_chr.fx"/> dans un
+    profile_CG, technique ForwardRender. L'outil compile le shader et ecrit DEUX
+    fichiers, sans erreur :
+        D3D11/cube.dae.phyre            21 792 octets
+        D3D11/shaders/ed8_chr.fx.phyre  20 046 octets
+[!] CE QU'IL MONTRE, et ca confirme la doc de 2022 LIGNE PAR LIGNE :
+    la sortie BRUTE de l'outil n'est PAS au format des fichiers livres.
+        exportateur brut : PDataBlock, 121 classes, 14 types,
+                           PParameterBuffer de 32 octets, 0 enfant header-class,
+                           PMeshInstance 90 octets, PMesh 35, PMaterial 4
+        fichiers LIVRES  : PDataBlockD3D11, 125 classes, 15 types,
+                           PParameterBuffer de 612 octets, 55 enfants,
+                           PMeshInstance 64 octets, PMesh 56, PMaterial 16
+        NOUS             : identiques aux fichiers livres sur tous ces points
+    Les trois ecarts correspondent exactement aux correctifs que l'utilisateur decrit :
+      - « PDataBlock ... it will crash » -> il faut PDataBlockD3D11 (nous l'avons) ;
+      - « an optimization function that will change the sizes of almost every class
+        and datamember ... commenting out repackOptimizeClass » -> les tailles de
+        classe de la sortie brute sont optimisees, celles des fichiers livres non ;
+      - le tampon de parametres brut fait 32 octets sans enfants, la ou le jeu en veut
+        612 avec 55.
+[OK] CONSEQUENCE UTILE : notre ecrivain vise le format des FICHIERS LIVRES, et c'est
+    la bonne cible. Cette reference confirme l'approche mais ne peut pas servir de
+    comparaison octet a octet tant que l'outil n'est pas patche (32 bits +
+    repackOptimizeClass desactive + PDataBlockD3D11).
+[?] Ce que la reference APPORTE quand meme, et qui reste a exploiter : elle donne un
+    .dae de depart valide et un shader compile par la chaine officielle. Patcher
+    l'outil (ou son PhyreAssetProcessorDO.dll) redonnerait une reference directement
+    comparable — c'est le chemin le plus court vers une certitude, mais c'est le
+    chantier que l'utilisateur decrit comme « arduous » dans ses notes.
+
+--- LA REFERENCE CS1 : le processeur patche de l'utilisateur (31/07) ---
+[OK] C:\Users\Administrator\Desktop\CS1AssetProcessor\PhyreAssetProcessor.exe traite
+    le meme cube.dae et produit un cluster CS1 : 21 301 octets, plus son shader
+    compile (15 238). Aucune erreur.
+[OK] Il correspond a nous sur presque tout — PDataBlockD3D11 (patche, contre PDataBlock
+    dans l'outil brut), PMaterial 16, PMesh 56, PNode x2 a 84, PVertexStream 12,
+    PWorldMatrix 48, PAssetReference 40, PMeshInstanceBounds 32,
+    PMeshInstanceSegmentContext 36, PMeshSegment 80.
+[!] DEUX tailles d'objet divergent, et pas entre lui et nous seulement :
+        classe                 processeur CS1   fichiers livres   nous
+        PDataBlockD3D11              64               56           56
+        PMeshInstance               112               64           64
+    Le processeur utilise sa propre table (116 classes), les fichiers livres une autre
+    (125). Chacune est coherente en interne. Nous suivons les fichiers livres.
+    PMeshInstance a 112 est exactement la taille qu'exigent ses membres (jusqu'a +108),
+    ce qui recoupe « PMeshInstance in particular is problematic ».
+[?] TEST EN COURS, decisif : la sortie BRUTE du processeur CS1 est installee telle
+    quelle sur O_T10CHR01 (paquet de 3 entrees : manifeste, cube.dae.phyre,
+    ed8_chr.fx.phyre — rien de nous dedans).
+      - si elle CHARGE  => c'est SA table (116 classes, PMeshInstance 112) que le
+        moteur veut, et notre alignement sur les fichiers livres est le defaut.
+        On aurait alors la cible exacte, et une reference comparable octet a octet.
+      - si elle PLANTE  => meme l'outil officiel ne suffit pas tel quel, et le
+        probleme est ailleurs que dans le cluster (paquet, ops, ou une etape de
+        post-traitement que le jeu attend).
+
+--- RESULTAT MAJEUR : la reference CS1 CHARGE (31/07) ---
+[OK] La sortie brute du processeur CS1, installee telle quelle sur O_T10CHR01, NE
+    PLANTE PAS. Ecran noir sans GUI, mais le jeu tient. C'est un symptome DIFFERENT
+    de tous les precedents, et c'est la premiere fois qu'un cluster non livre par le
+    jeu se charge. L'ecran noir vient probablement de ed8_chr.fx (shader de
+    PERSONNAGE) applique a un decor, pas du cluster.
+[OK] On a donc enfin une REFERENCE QUI CHARGE, produite par un outil, sur la meme
+    geometrie que la notre. --diff-wiring entre elle et nous donne TROIS ecarts :
+      1. PMeshInstance.m_gameMaterialIDs : NOUS le lions, la reference NON.
+         (Les fichiers livres le lient ; l'outil officiel non. A tester en l'enlevant.)
+      2. PNode : elle lie +0x4C, nous m_name — meme champ, identifiants de membre
+         differents parce que sa table fait 116 classes et la notre 125.
+      3. PParameterBuffer : NOUS ajoutons 27 pointeurs de sampler (+0x18 a +0x1A8),
+         elle AUCUN. Son materiau est minimal : tampon de 20 octets, 1 definition,
+         1 enfant header-class, aucun PSamplerState.
+[!] Le point 3 est le plus gros, et il recoupe l'experience de l'utilisateur : le
+    materiau minimal CHARGE, notre bloc copie de 612 octets avec ses 27 pointeurs de
+    sampler PLANTE. Et « --no-material » (tampon a 0, aucune definition) plantait
+    aussi — donc ce n'est ni « avec » ni « sans », c'est la FORME du bloc.
+[PLAN] Prochain essai, le plus direct : ecrire notre cluster avec un materiau MINIMAL
+    a la maniere de la reference — tampon de 20 octets, une definition, zero sampler —
+    au lieu de copier le bloc entier du decor. Si ca charge, la faute est dans le
+    portage du bloc (les pointeurs de sampler a offset brut), et non dans le modele.
+[OK] Jeu remis en etat natif.
+
+--- Le materiau minimal du processeur CS1, reproduit (31/07) ---
+[!] PRECISION IMPORTANTE : la reference CS1 ne « charge » pas vraiment — le jeu est
+    FIGE. Ecran noir, aucune GUI, la touche E ne repond pas. C'est un mode d'echec
+    different du crash, pas un succes. Ne pas le survendre. Deux causes possibles :
+    ed8_chr.fx est un shader de PERSONNAGE applique a un decor, ou le chargement boucle.
+[OK] Forme exacte de son materiau, relevee octet a octet :
+      section header-class : 1 instance, 1 enfant = {type 0, offset 16, flags 0, n 1}
+      PParameterBuffer (20 octets) : taille declaree 32, UNE definition,
+                                     charge = 00 EC 07 CD a l'offset 16
+      PShaderParameterDefinition (16 octets), nom « PhyreMaterialSwitches »
+    Un seul parametre, et c'est justement celui que la doc de l'utilisateur dit de ne
+    PAS exclure pour CS1.
+[OK] Reproduit dans PhyreMaterialTableReader.Minimal(shaderAsset), et cable en trois
+    formes selectionnables (Whole / Minimal / None) pour que la bonne se trouve par
+    bissection plutot que par conviction.
+[?] Essai en cours : notre cube avec la forme MINIMALE mais liant le vrai shader de
+    map du banc (ed8.fx#13B9D09F...), et non ed8_chr.fx.
+      - s'il charge  => la faute etait le portage du bloc entier (ses 27 pointeurs de
+        sampler a offset brut), et notre geometrie + graphe sont sains ;
+      - s'il fige comme la reference => le figement vient du shader ou du chargement,
+        pas du materiau ;
+      - s'il plante  => la forme minimale ne suffit pas avec ce shader-la, ce qui
+        pointerait vers le desaccord de taille (32 declares contre 624 attendus).
+    Les trois issues sont distinctes et informatives. 83 PASS / 0 fail.
+
+--- CE QUE LA MATRICE D'ESSAIS ETABLIT (31/07) ---
+      materiau        shader lie                      resultat
+      minimal (32)    ed8_chr.fx compile AVEC lui     fige, PAS de crash
+      minimal (32)    ed8.fx#13B9 qui attend 624      CRASH
+      complet (624)   son propre shader               CRASH
+      aucun (0)       son propre shader               CRASH
+[!] Une paire COHERENTE (bloc et shader produits ensemble) ne plante pas ; toute paire
+    DECALEE plante. C'est exactement la these de l'utilisateur, etablie ici par
+    experience et non par conviction.
+[!] Consequence genante : notre bloc « complet » est cense etre coherent — il est copie
+    OCTET POUR OCTET du modele qui utilise ce shader, taille 624, 55 definitions, memes
+    enregistrements header-class, memes samplers. Et il plante quand meme. Donc la
+    coherence que le moteur exige n'est PAS celle que nous savons mesurer : elle se
+    joue ailleurs que dans les octets du bloc.
+[PLAN] RECOMMANDATION, changement de strategie. Nous possedons un outil OFFICIEL et
+    PATCHE qui produit des clusters CS1 corrects par construction :
+    C:\Users\Administrator\Desktop\CS1AssetProcessor\PhyreAssetProcessor.exe
+    Le chemin le plus court vers un import qui MARCHE est de s'en servir comme moteur
+    d'ecriture plutot que de continuer a reproduire son format a l'aveugle :
+      1. exporter le modele importe en Collada (.dae) ;
+      2. lancer PhyreAssetProcessor.exe -fi=<dae> -platform=D3D11 ;
+      3. empaqueter le cluster et son shader dans le .pkg (notre PkgArchiveWriter est
+         prouve en jeu).
+    Il reste a resoudre le shader : nous n'avons que ed8_chr.fx (personnage). Il faut
+    le .fx des decors/maps, ou verifier si ed8_chr convient avec les bons switches.
+    L'ecriture de cluster maison reste utile — elle nous a donne les oracles et une
+    connaissance fine du format — mais elle ne doit plus etre le chemin critique.
+[OK] Jeu remis en etat natif.
+
+--- Fin de ce que la comparaison de fichiers peut donner (31/07) ---
+[OK] Comptes de fixups par groupe compares : TOUS correspondent, proportionnellement
+    au nombre d'objets. PAssetReference 5->4 objets donne 10->8 pointeurs, PMaterial
+    2->1 donne 4->2, PNode 8->2 donne 15->3, PParameterBuffer 29 pointeurs par tampon
+    des deux cotes. Aucune anomalie.
+[!] BILAN SANS COMPLAISANCE. Notre cluster est desormais indistinguable d'un cluster
+    valide par TOUT ce que nous savons mesurer :
+      octets du namespace, table de classes et de types, ordre des groupes, tailles
+      d'objets, valeurs de champs, cablage, cibles des pointeurs, comptes de fixups,
+      enregistrements header-class, samplers, tampon de parametres, empaquetage des
+      tables, round-trip de notre propre ecriture.
+    Et il plante. La cause est donc dans quelque chose que ni nos lecteurs ni nos
+    comparaisons ne representent.
+[!] La matrice d'essais dit AUSSI que le moteur accepte une paire bloc+shader produite
+    ENSEMBLE (par le processeur) et refuse toute autre combinaison, y compris un bloc
+    copie octet pour octet du modele qui utilise ce meme shader. Cela suggere que la
+    coherence exigee n'est pas une propriete des octets du bloc mais de la maniere dont
+    il a ete produit — quelque chose que le processeur calcule et que nous ne
+    reproduisons pas, et qui ne se voit pas dans le fichier tel que nous le lisons.
+[?] L'utilisateur ne veut PAS brancher le processeur CS1 comme moteur d'ecriture. Le
+    chemin restant, pour une prochaine session :
+    1. DEBOGUEUR. Attacher a ed8.exe, prendre la pile au 0xC0000005. C'est le seul
+       moyen restant de savoir CE QUE le moteur lisait. Toutes les autres pistes sont
+       epuisees ; celle-la ne l'a jamais ete.
+    2. Comparer notre cluster au cluster CS1 non pas structurellement mais en le
+       faisant lire par le processeur lui-meme, s'il sait relire un .phyre.
+
+--- Charge GPU : exoneree aussi (31/07) ---
+[OK] banc  : charge a 30782 (%4=2, %16=14), regions 936 + 15408 = 16344 = reste exact
+    nous  : charge a 28207 (%4=3, %16=15), regions 72 + 1728 = 1800 = reste exact
+    Tous les tampons de sommets sont a %4=0 des deux cotes. Le debut de la charge n'est
+    aligne NI chez eux NI chez nous, donc aucun alignement n'est exige.
+    (Au passage : notre region de sommets fait bien 1728 = 24 x 72 depuis l'ajout du
+    flux Color, contre 1344 avant. Coherent.)
+    => Piste 2 ECARTEE. Les deux pistes tirees de la pile sont epuisees.
+[PLAN] CE QUI RESTE, ET C'EST PEU COUTEUX POUR L'UTILISATEUR : il a manifestement
+    Ghidra ouvert (il a colle du code decompile). La pile donne les appelants :
+        ed8.exe+0x570b08   <- FUN_00970ae0, le lecteur qui plante
+        ed8.exe+0x562980   <- son appelant
+        ed8.exe+0x56f088
+        ed8.exe+0x5607a5
+        ed8.exe+0x311977
+        ed8.exe+0x441325
+    Decompiler +0x562980 et +0x56f088 nommerait CE QUE le moteur lisait — quel type
+    d'asset, quelle structure. C'est la seule question qui reste, et la pile la rend
+    accessible en deux clics au lieu d'un essai en jeu.
+
+--- LA PILE DECODEE : c'est l'ALLOCATEUR, donc un depassement de tas (31/07) ---
+[!] Je m'etais trompe sur la nature de la fonction. Avec les deux appelants fournis
+    par l'utilisateur, la chaine se lit :
+      FUN_0096f060(heap, taille, x) : garde « if (0xffffffdd < taille) abort »,
+                                      puis alloue taille + 0x20
+      FUN_00962960(heap, 7, taille, 0, 0) : alloue, puis CHAINE le bloc dans une liste
+                                      (*puVar4 = *param_4; *param_4 = puVar4)
+      FUN_00970ae0 : appelle l'allocateur VIRTUEL et avance un compteur d'octets
+    Ce n'est donc pas un lecteur de flux : c'est l'ALLOCATEUR, et sa vtable vaut
+    0xFFFFFFFF.
+[!] CE QUE CA VEUT DIRE : le tas etait deja corrompu AVANT cet appel. Une ecriture a
+    depasse un bloc alloue et a pietine la liste de blocs ; le plantage ne survient
+    qu'a l'allocation SUIVANTE. Ca explique enfin pourquoi le fichier parait toujours
+    correct : la faute n'est pas dans ce que le moteur LIT, mais dans une taille qu'il
+    alloue trop petite pour ce qu'il ecrit ensuite.
+[!] HYPOTHESE TESTEE ET ECARTEE : PMeshInstance declare 64 octets avec des membres
+    jusqu'a +108 (le processeur CS1 ecrit 112). J'ai fait grandir les objets a la
+    taille que leurs membres exigent. DEUX raisons de renoncer :
+      - ca casse l'oracle de fidelite (un cluster livre ne se reconstruit plus a
+        l'identique) ;
+      - et surtout ca CONTREDIT LES FAITS : les fichiers livres declarent 64 et se
+        chargent parfaitement. Donc 64 n'est pas fatal en soi.
+    Revert. 83 PASS / 0 fail.
+[PLAN] La piste reste la bonne — un depassement de tas — mais le coupable n'est pas
+    PMeshInstance. Il faut trouver QUELLE allocation le moteur fait trop petite. Deux
+    facons :
+    1. Dans cdb, « !heap -p -a <adresse> » sur le bloc corrompu, ou activer la pile de
+       pages (gflags /p /enable ed8.exe /full) pour que le plantage tombe SUR le
+       depassement au lieu de la victime. C'est le moyen direct.
+    2. Chercher dans notre fichier tout COMPTE dont le moteur se sert pour dimensionner
+       une allocation : comptes d'objets par groupe, m_parameterBufferSize, comptes de
+       tableaux, nombre d'enfants header-class, comptes de fixups par groupe.
+
+--- LE MOTEUR NOMME LE COUPABLE (31/07) ---
+[OK] Le journal du jeu, sous debogueur, imprime AVANT le plantage :
+        Unable to find a data member in class 'PMeshInstance' offset at 100 bytes
+        (of 128 bytes).
+    Puis la violation d'acces tombe dans MSVCR100!memcpy.
+[!] LECTURE : offset 100 = 0x64 = la moitie POINTEUR de m_gameMaterialIDs. Et le
+    PMeshInstance du MOTEUR fait 128 octets — ni 64 (ce que declare le fichier livre
+    et ce que nous ecrivions) ni 112 (ce qu'ecrit le processeur CS1). Le moteur
+    cherche un membre a l'offset 100 dans SA disposition, n'en trouve aucun, et le
+    memcpy qui suit deborde. C'est le depassement de tas que la pile precedente
+    designait sans pouvoir le nommer.
+[!] La faute est A MOI : j'avais ajoute ce fixup m_gameMaterialIDs sur l'indication de
+    l'utilisateur (« gameMaterialID est necessaire pour CS1 »), et --diff-wiring contre
+    la reference CS1 disait deja « only we link: m_gameMaterialIDs ». J'avais vu la
+    difference et l'avais classee sans la tester, parce qu'elle allait dans le sens de
+    ce que je croyais savoir.
+[OK] Fixup retire, et rien d'autre change. 83 PASS / 0 fail.
+    Contre la reference CS1, il ne reste que :
+      - PNode : elle lie +0x4C la ou nous lions m_name (meme champ, numerotation de
+        membre differente puisque sa table fait 116 classes et la notre 125) ;
+      - PParameterBuffer : nos 27 pointeurs de sampler, qu'elle n'a pas — son materiau
+        est minimal.
+[?] Si ca charge, c'etait ca. Si ca plante encore, le journal du debogueur nommera le
+    suivant : c'est desormais la methode, et elle marche.
+
+--- Le depassement est attrape net (31/07) ---
+[OK] gflags/page-heap actif : le plantage tombe DESORMAIS SUR le depassement, plus sur
+    sa victime.
+        edi=5c034ff8, et 0x5c035000 est une frontiere de page
+        MSVCR100!memcpy, ecx=1 (un dernier dword)
+        juste avant : "Allocating 2D texture W/H/m: 512/512/9"
+    Un memcpy ecrit AU-DELA d'un bloc fraichement alloue pour une texture.
+[!] Le message « Unable to find a data member in class 'PMeshInstance' offset at 100
+    bytes (of 128 bytes) » PERSISTE apres le retrait du fixup. Il vient donc du
+    DESCRIPTEUR DE CLASSE dans le namespace, pas d'un fixup — et comme notre namespace
+    est identique octet pour octet a celui des fichiers livres, ceux-ci le produisent
+    aussi. C'est un avertissement benin. Ne pas s'y accrocher : j'ai failli le faire.
+    (Le retrait du fixup reste juste : la reference CS1 n'en a pas.)
+[?] Essai en cours : materiau MINIMAL et AUCUNE texture embarquee (paquet de 3 entrees
+    au lieu de 4). Si le depassement est bien dans le chargement d'une texture que
+    rien ne reclame, il doit disparaitre.
+      - si ca charge  => la faute etait d'embarquer des textures qu'un materiau
+        minimal ne nomme pas ;
+      - si ca plante encore au meme endroit => la texture 512x512/9 n'est pas la notre
+        et le depassement vient d'ailleurs ; il faudra lire quelle allocation precede
+        immediatement le memcpy (breakpoint sur l'allocateur).
+
+--- Le depassement est en LECTURE, pas en ecriture (31/07) ---
+[!] Retirer les textures ne change RIEN : crash identique au bit pres (memes adresses,
+    memes registres). La texture 512x512/9 du journal n'est donc pas la notre.
+[!] ERREUR DE LECTURE DE MA PART, corrigee : je regardais la destination. « rep movs »
+    LIT [esi] et ecrit [edi].
+        esi=6396c000  <- source, alignee sur une page
+        edi=5c034ff8  <- destination, encore largement dans son bloc
+        ecx=1         <- dernier dword
+    La destination a de la place ; c'est la SOURCE qui est epuisee. Le page-heap place
+    la fin d'un bloc contre une page interdite, donc le bloc source finit exactement a
+    0x6396c000 et le moteur lit au-dela.
+    => Nous DECLARONS PLUS DE DONNEES QUE NOUS N'EN FOURNISSONS. C'est un compte ou une
+    taille de notre fichier qui promet plus que le fichier ne contient.
+[PLAN] CrashSource.bat ecrit : il lance le jeu sous cdb et, au plantage, affiche
+    « !heap -p -a @esi » (le bloc source : son adresse de depart, sa taille, et la pile
+    qui l'a alloue), le bloc destination, et les arguments du memcpy sur la pile.
+    Ca donnera EXACTEMENT quel tampon, de quelle taille, et combien d'octets ont ete
+    demandes — donc quel champ de notre fichier ment sur sa taille.
+
+--- LES CHIFFRES EXACTS DU DEPASSEMENT (31/07) ---
+[OK] !heap -p -a et les arguments du memcpy donnent le compte precis :
+        bloc source      : UserAddr 6396bd90, UserSize 0x26C = 620 octets
+        memcpy           : src 6396bd94 (= debut + 4), count 0x270 = 624 octets
+        bloc destination : UserSize 0x278 = 632 — largement suffisant
+    Le moteur alloue 620 et copie 624. Il depasse de QUATRE octets exactement.
+    Les deux blocs sont alloues par la meme fonction : ed8_exe+0x311455 (malloc), via
+    +0x4635a3 / +0x340a68. C'est un chemin d'allocation de parametres de materiau.
+[!] 624 est la taille du constant buffer du shader ed8.fx#13B9D09F. Or le paquet
+    installe pour cet essai etait en materiau MINIMAL, qui declare 32. Donc le moteur
+    prend la taille du SHADER pour la copie, et dimensionne le bloc source d'apres
+    autre chose — qui vaut 620, soit 4 de moins.
+    620 = 612 + 8, et 612 est justement la taille de l'objet PParameterBuffer complet.
+    Piste : le moteur alloue d'apres l'objet et copie d'apres le shader ; tant que les
+    deux ne s'accordent pas a l'octet pres, il deborde. C'est LA « mauvaise taille de
+    shader parameters » que l'utilisateur decrivait depuis le debut, enfin chiffree.
+[?] Essai suivant, avec le bloc COMPLET (624 declares) et le page-heap actif : si le
+    bloc source fait alors 624 ou plus, le depassement disparait et on tient la regle.
+    S'il fait encore 620, l'ecart de 4 est systematique et se corrige dans notre
+    ecriture du tampon.
+
+--- Ce que les mesures etablissent, et ce qu'elles excluent (31/07) ---
+[OK] Essai en materiau COMPLET : chiffres IDENTIQUES a l'essai minimal — memes
+    adresses, meme bloc source de 620 (0x26C), meme copie de 624 (0x270).
+    => L'allocation fautive NE DEPEND PAS de notre materiau. Ma deduction du tour
+    precedent (« le moteur alloue d'apres l'objet et copie d'apres le shader ») etait
+    trop rapide : si c'etait le cas, passer de 32 a 624 declares aurait bouge quelque
+    chose. Rien n'a bouge.
+[OK] Le shader ressort de notre re-empaquetage IDENTIQUE octet pour octet
+    (663 911 octets, meme SHA-256 que l'entree d'origine decompressee).
+    => Notre decompression et notre reecriture des entrees reprises sont exactes.
+    Cette piste est ecartee.
+[?] Ce qui reste comme seule variable : le CLUSTER que nous ecrivons. Le moteur demande
+    620 octets a malloc puis en copie 624. Notre objet PParameterBuffer fait 612, et
+    612 + 8 = 620. L'hypothese la plus economique est donc que le moteur dimensionne ce
+    tampon a partir de la taille de NOTRE objet (+8) mais copie la taille que le SHADER
+    declare (624). Il faudrait 616 d'objet pour que l'allocation atteigne 624.
+    ATTENTION : le banc livre a lui aussi un objet de 612 avec 624 declares, et il se
+    charge. Donc la regle ne peut pas etre aussi simple, et il ne faut pas foncer.
+[PLAN] Essai suivant, court et decisif : porter l'objet PParameterBuffer a 616 octets
+    (charge de 604 au lieu de 600) en gardant m_parameterBufferSize=624, et regarder si
+    le bloc source passe a 624. Si oui, la regle est « allocation = taille de l'objet
+    + 8 » et il faut dimensionner l'objet en consequence. Si le bloc reste a 620,
+    c'est qu'il vient d'ailleurs et il faudra poser un point d'arret sur
+    ed8_exe+0x4635a3 pour voir avec quel argument il est appele.
+
+--- La regle du +8 est FAUSSE (31/07) ---
+[OK] Objet PParameterBuffer porte de 612 a 616, m_parameterBufferSize inchange a 624.
+    Le bloc source reste a 0x26C = 620. L'allocation NE DERIVE PAS de la taille de
+    notre objet. Hypothese refutee, correctif reverte. 83 PASS / 0 fail.
+    (Reserve annoncee avant l'essai : le banc livre declare les memes 612 et 624 et se
+    charge. Elle etait justifiee.)
+[OK] CE QUE LES MESURES ETABLISSENT DE FAÇON SURE, et qui vaut pour la suite :
+      - le moteur alloue 620 octets (0x26C) et en copie 624 (0x270) : il lit QUATRE
+        octets au-dela de la fin du bloc source ;
+      - la copie part de bloc+4 (6376fd94 pour un bloc a 6376fd90) ;
+      - ces nombres sont IDENTIQUES avec un materiau minimal (32 declares) et avec le
+        bloc complet (624 declares), et identiques avec ou sans textures embarquees ;
+      - le bloc source et le bloc destination sont alloues par le meme chemin :
+        ed8_exe+0x311455 (malloc) <- +0x4635a3 <- +0x340a68 <- +0x340af7 ;
+      - notre re-empaquetage du shader est exact au SHA-256 pres ;
+      - 624 est la taille du constant buffer du shader ed8.fx#13B9D09F.
+[PLAN] La question exacte, et la seule qui reste : D'OU VIENT 620 ? Un point d'arret sur
+    ed8_exe+0x4635a3 (« bp ed8_exe+0x4635a3 ; dd esp L4 ; g ») donnerait l'argument de
+    taille a chaque appel, et donc quelle valeur de notre fichier le moteur a utilisee
+    pour dimensionner ce tampon. C'est une mesure directe, pas une hypothese ; c'est
+    ainsi qu'il faut continuer.
+
+--- Le bloc de 624 est la DESTINATION ; la source de 620 est allouee plus tot (31/07) ---
+[!] Deux erreurs de mise en place corrigees avant d'obtenir la mesure :
+      - passer les commandes cdb en ligne de commande : cmd avalait les guillemets et
+        le point d'arret n'etait jamais pose ;
+      - garder -g : cdb ne s'arretait qu'au plantage, donc le script arrivait apres la
+        bataille. Sans -g, il pose le point d'arret au demarrage.
+    Le journal montrait les deux symptomes clairement ; il fallait les lire.
+[OK] MESURE : la derniere allocation avant le plantage vaut 0x270 = 624. C'est la
+    DESTINATION (que !heap donnait a 632 = 624 + 8 d'entete). Elle est donc bien
+    dimensionnee. Les allocations qui la precedent : 0x54 dix fois, puis 0x80, 0x30,
+    0x20, 0x08, 0x10.
+    => Le bloc SOURCE de 620 (0x26C) est alloue PLUS TOT, hors de cette fenetre. C'est
+    lui qui manque de quatre octets : nos donnees de parametres font 620 la ou le
+    shader en reclame 624.
+[?] Prochaine passe, ciblee : n'imprimer QUE les allocations de 620 octets, avec la
+    pile de l'appelant. CrashAlloc.cdb reecrit dans ce sens. La pile dira quelle
+    fonction dimensionne ce tampon, donc quelle valeur de notre fichier vaut 620 au
+    lieu de 624.
+
+--- Etat a la fin de la session (31/07) ---
+[!] La passe ciblee sur les allocations de 620 n'a RIEN imprime : ce bloc ne passe pas
+    par ed8_exe+0x4635a3 pendant ce chargement, ou la condition .if n'a pas pris. Trois
+    lancements de jeu consommes sur ma mise en place du debogueur plutot que sur la
+    question elle-meme ; il faut arreter les frais.
+[OK] CE QUI EST ETABLI ET MESURE, et qui doit servir de point de depart :
+      - le plantage est un memcpy qui LIT quatre octets au-dela d'un bloc source ;
+        source 620 octets (0x26C), copie 624 (0x270), depart a source+4 ;
+      - la destination (624 demandes, 632 avec entete) est correctement dimensionnee :
+        c'est la SOURCE qui manque de quatre octets ;
+      - 624 est la taille du constant buffer du shader ed8.fx#13B9D09F ;
+      - ces nombres ne bougent NI avec le materiau minimal (32 declares), NI avec le
+        bloc complet (624), NI en retirant les textures, NI en portant l'objet
+        PParameterBuffer de 612 a 616. Rien de ce que nous declarons ne les touche ;
+      - notre re-empaquetage du shader est exact au SHA-256 pres ;
+      - le message « PMeshInstance offset at 100 (of 128) » est BENIN : il vient du
+        descripteur de classe, identique octet pour octet a celui des fichiers livres,
+        qui le produisent donc aussi.
+[?] LA QUESTION, intacte et bien posee : d'ou sortent ces 620 octets ? La reponse est
+    dans le moteur, pas dans le fichier — c'est pourquoi vingt-quatre heures de
+    comparaison d'octets ne l'ont pas trouvee.
+    Prochaine mesure a tenter : « ba r4 61c70000 » (point d'arret materiel en LECTURE
+    sur la fin du bloc source) apres avoir localise ce bloc, ou remonter d'un cran sur
+    ed8_exe+0x340a68 pour attraper l'appelant qui calcule la taille.
+[OK] Jeu remis en etat NATIF.
+
+--- CRASH DU PROP AUTEUR CORRIGE (01/08) ---
+[OK] Le `+4` ajoute a m_totalDataSize etait une corruption, pas un correctif :
+     il annoncait quatre octets absents et decalait les fixups. Retire.
+[OK] Comparaison du meme cube avec PhyreAssetProcessor : les PString utilisent des
+     array-fixups a offsets bruts dans le bloc alloue. PNode applique son
+     OffsetFromParent : m_name +0x50 devient source +0x4C.
+[OK] Le PParameterBuffer minimal officiel pointe de +0x0C vers
+     PShaderParameterDefinition[0]. Ce lien manquait.
+[OK] Apres correction, --diff-wiring ne rapporte PLUS AUCUNE difference entre le
+     cube Falcom et le cube ED8Editor.
+[OK] Test reel O_T10LIG03 sous cdb : plus de 20 secondes de chargement/rendu sans
+     l'ancienne violation 0xC0000005. Arret ulterieur sur un int3 interne, sans
+     rapport avec le depassement.
+[OK] Package natif restaure et SHA-256 identique a la sauvegarde.
+[OK] 84 tests passent ; la solution compile sans avertissement.
+
+## 2026-07-31 — deux tampons de paramètres (et cinq chez le donneur)
+
+`--model-shape` sur le banc O_T10CHR01 :
+
+    group 10 PParameterBuffer x1 (612 octets)
+    group 11 PParameterBuffer x1 (612 octets)
+    group  3 PMaterial x2
+
+Deux GROUPES distincts de la même classe, un objet chacun — pas un groupe de deux
+objets. Et le lampadaire natif O_T10LIG03 en a **cinq**, un par PMaterial :
+
+    group 11 PMaterial x5
+    group 18..22 PParameterBuffer x1 chacun
+
+Nous n'en écrivions qu'un : `layout` est une liste de classes DISTINCTES triées,
+donc structurellement incapable de produire deux groupes du même nom. Un groupe
+là où le moteur en cherche deux est une forme qu'il ne rencontre dans aucun de
+ses propres fichiers — même nature de défaut que le PNode unique.
+
+Corrigé : `layout` porte une seconde entrée "PParameterBuffer" (elles se
+retrouvent adjacentes après le tri, comme chez le banc), `PMaterial` passe à deux
+objets, une cinquième PAssetReference nomme le second matériau, et chaque fixup
+du premier tampon est restitué tel quel sur le second plutôt que réécrit à la
+main. Notre forme est maintenant celle du banc :
+
+    PAssetReference x5, PMaterial x2, PParameterBuffer x1 + x1 (612 chacun)
+
+Restent hors sujet ici : PNode x2 contre x8, et PSamplerState/PShaderParameterDefinition
+à 130/165 parce que le donneur LIG03 porte trois shaders. Le tampon déclare bien
+55 définitions (0x37), comme le banc.
+
+NON RÉSOLU — l'écart 620/624. `m_parameterBufferSize` vaut 624 alors que l'objet
+fait 612 : les 624 octets de paramètres ne sont donc PAS dans l'objet, le moteur
+les alloue au chargement. D'où sort le bloc source de 620, on ne le sait toujours
+pas ; il faudra un point d'arrêt matériel en lecture sur sa fin.
+
+PISTE d'Antoine à creuser : un paramètre `gamematerial` présent en CS2 et absent
+en CS1. Le shader expose GameMaterialID à +540 et GameMaterialTexcoord à +576 ;
+le trou fait justement 8 octets, soit deux paramètres de quatre.
+
+--- Capture propre du crash et sampler de texture manquant (01/08) ---
+[OK] Sans les watchpoints intrusifs, le crash réel est un
+    STATUS_INVALID_CRUNTIME_PARAMETER dans MSVCR100!_stricmp : le second argument
+    est nul. Le contexte du package O_T10LIG03 avait été construit avec 6 entrées,
+    puis détruit normalement à ed8_exe+0x502da avant qu'une résolution différée de
+    `t10lig03.dae.phyre` tente encore de parcourir sa table. C'est le symptôme de
+    durée de vie ; il faut encore relier sa cause au cluster.
+[OK] Recherche sur tout le corpus : six modèles Falcom utilisent exactement
+    `ed8.fx#D506953A7385090896B925A6E8DE8286`. Les cinq modèles natifs comparables
+    ont tous la même topologie de PParameterBuffer : 55 définitions, 26 sampler
+    states et 29 pointeurs.
+[FIX] `FromEffect` créait seulement les 25 samplers des paramètres de type 71.
+    Il oubliait que le paramètre texture type 66, `DiffuseMapSampler`, porte LUI
+    AUSSI un sampler à capture+8, en plus de l'import texture à capture+12. Notre
+    buffer avait donc un pointeur nul là où chacun des cinq modèles Falcom D506
+    pointe un PSamplerState. Il crée désormais le 26e sampler et le lien +0x18.
+[OK] Le package de test installé contient maintenant 26 PSamplerState et exactement
+    29 liens sortant du PParameterBuffer, comme les modèles Falcom D506. 85 tests
+    passent. Le mode minimal/effect-compatible devient le défaut de replace-prop ;
+    le vieux transport Whole n'est plus utilisé sans `--whole-material`.
+[TEST] O_T10LIG03.pkg corrigé installé dans le jeu. Ne pas déclarer le crash réglé
+    avant un vrai chargement de Trista par l'utilisateur.
+
+--- Deux espaces de fixups confondus, puis game material CS1 (01/08) ---
+[ECHEC] Le package à 26 samplers plante encore exactement au même endroit
+    (`_stricmp` avec le second argument nul). Le sampler manquant était réel mais
+    n'était pas la cause suffisante.
+[FIX] Les pointeurs internes des PArray/PSharray de `PDataBlockD3D11.m_streams`,
+    `PMesh.m_meshSegments`, `PMeshInstance.m_segmentContext` et
+    `PMeshSegment.m_vertexData` étaient écrits comme IDs de membres. Falcom
+    AssetProcessor ET tous les modèles CS1 les écrivent comme offsets bruts vers
+    le deuxième mot du tableau (`0x80000000 | memberOffset+4`). Corrigé ensemble.
+[FIX] Tous les modèles CS1 utilisant D506 portent un `m_gameMaterialIDs` par segment,
+    via un array fixup brut à `0x80000064`. Le générique AssetProcessor ne le met
+    pas, mais ce champ est spécifique au runtime ed8.fx. L'array de valeurs zéro est
+    maintenant écrit.
+[OK] Comparé à O_T15KMO01 (modèle Falcom D506 à un matériau), tous les liens de
+    PMesh, PMeshSegment, PDataBlock, PMeshInstance et PParameterBuffer ont maintenant
+    la même topologie sémantique. Les seules différences de wiring restantes sont
+    légitimes : le donneur a cinq PLight et sept PNode, le cube deux PNode.
+[OK] 85 tests passent. Nouveau O_T10LIG03.pkg installé ; test jeu requis.
+
+--- Matériau réellement lié au mesh, pas premier buffer du fichier (01/08) ---
+[CAUSE TROUVÉE] `PhyreMaterialTableReader.Read` choisissait arbitrairement le
+    premier groupe `PParameterBuffer`. O_T10LIG03 contient cinq matériaux/buffers :
+    le premier mesh pointe vers PMaterial[1], puis son buffer pointe vers
+    `shaders/ed8.fx#9B711195BF52FBD50A1BCB3DAD336CEB`. Le writer utilisait jusque-là
+    le premier buffer, associé à `#D506...`, sans aucun lien avec ce mesh.
+[FIX] La sélection suit désormais strictement les fixups :
+      PMesh[0].m_defaultMaterials
+        -> PMaterial exact
+        -> PMaterial.m_parameterBuffer
+        -> PParameterBuffer exact.
+    Les deux encodages Phyre observés sont pris en charge explicitement : ID de
+    membre de classe, ou offset brut du mot pointeur d'un tableau embarqué.
+    Il n'existe aucun fallback vers le premier objet.
+[FIX] La fermeture du matériau ne fusionne plus les cinq groupes de samplers et de
+    définitions. Seuls les objets atteints par le buffer sélectionné sont transportés,
+    avec renumérotation locale et array data de son groupe exact.
+[CAUSE PROBABLE DU CRASH RESTANT] `FromEffect` reconstruisait correctement les 55
+    emplacements du buffer mais initialisait tous les paramètres numériques à zéro,
+    y compris PhyreContextSwitches et PhyreMaterialSwitches. L'effet décrit l'ABI,
+    pas les valeurs qui choisissent une permutation de rendu. Cela concorde avec le
+    crash final dans `_stricmp` sur un nom de contexte nul.
+[FIX] Le mode minimal conserve maintenant le buffer et la topologie de samplers du
+    matériau réellement lié dans le package remplacé, et ne remplace que son import
+    de texture par `ed8editor_neutral.dds`. Ce n'est ni un donneur externe ni un
+    gabarit : c'est le matériau du prop source lui-même.
+[PREUVE HORS JEU] Natif et auteur demandent tous deux `#9B7111...`, ont 55
+    définitions, 624 octets, 25 sampler states avec le même partage
+    (+0x18 et +0x198 -> sampler 0), et le buffer sérialisé a exactement le même
+    SHA-256 :
+      A00350B72FDB2FC9D7F548BFF8CAA0FC396B42DEBA0A02694E91CD15CB0145D6
+[OK] 85 tests passent. Package installé :
+    SHA-256 913CF22274B279D4B483C0B302E03D7118988F98668F12524AB746827A6DE951.
+[TEST] Chargement réel de Trista encore requis ; ne pas annoncer la correction
+    comme validée avant le retour utilisateur.
+
+--- Oracle positif corrigé : sortie Falcom O_T10CHR01 (01/08) ---
+[RECTIFICATION] `cube_official_backup.dae.phyre` n'est PAS établi comme chargeant
+    dans le jeu. Le seul oracle utilisateur confirmé est le dossier produit puis
+    packagé avec succès :
+      C:\Users\Administrator\Desktop\CS1AssetProcessor\O_T10CHR01
+[CAUSE ARCHITECTURALE] Cet oracle n'utilise pas l'ABI native compacte à 125
+    classes. Il porte un profil AssetProcessor cohérent à 126 classes :
+      PClassDescriptor=148, PDataBlockD3D11=64,
+      PDataBlockBufferD3D11=20, PSharray correspondant=24,
+      PDynamicMesh=28, PDynamicMeshInstance=12, PMeshInstance=112,
+    ainsi que la classe supplémentaire PIndexDataBlock, des flags de tableaux
+    0x80000000, et des tailles de programmes shader distinctes.
+    Les essais antérieurs qui forçaient seulement quelques tailles génériques
+    conservaient la table native 125 classes : c'étaient bien des hybrides.
+[FIX] Deux profils de schéma sont désormais explicitement séparés :
+      Cs1Native
+      FalcomAssetProcessor
+    Le profil est transporté par PhyreClusterContents et utilisé simultanément
+    par le model writer, l'assembleur, les IDs de membres, les tailles d'objets et
+    le namespace. Le profil AssetProcessor est une base de connaissances générée
+    à partir des 126 descripteurs exacts de l'oracle confirmé, pas une liste de
+    corrections ponctuelles.
+[PREUVE] `--diff-schema` entre l'oracle fonctionnel et le nouveau cluster auteur
+    ne produit aucune différence : classes, types, tailles, offsets, flags,
+    superclasses et membres correspondent. `--diff-wiring` ne produit également
+    aucune différence. Les six vertex streams ont les mêmes types/strides et les
+    groupes structuraux ont le même nombre de liens.
+[FIX] `m_gameMaterialIDs`, propre au profil natif compact observé, n'est plus
+    ajouté au profil AssetProcessor puisque l'oracle fonctionnel ne le porte pas.
+[OK] 86 tests passent, dont une régression dédiée qui impose 126 classes,
+    PIndexDataBlock, PClassDescriptor=148, PDataBlockD3D11=64,
+    PMeshInstance=112 sans array data.
+[TEST] Nouveau O_T10LIG03 installé, SHA-256 :
+    D85E1E0C3824B91FAE9430EACCE176B71BDE162C0E1BACEC679F8A03CEACDBC2.
+    Validation Trista utilisateur requise.
+
+--- ABI AssetProcessor mélangée à l'ABI CS1 : correction (01/08) ---
+[ECHEC] Le package précédent plante encore au même `_stricmp`.
+[CAUSE STRUCTURELLE] L'oracle `--fidelity` ne pouvait plus reconstruire AUCUN des
+    fichiers livrés : `PDataBlockD3D11.m_buffers holds 24 bytes, was given 16`.
+    Des changements destinés à imiter le PhyreAssetProcessor générique avaient
+    remplacé dans le schéma CS1 :
+      PDataBlockD3D11 56 -> 64,
+      PDataBlockBufferD3D11 12 -> 20,
+      PSharray<PDataBlockBufferD3D11> 16 -> 24,
+      PDynamicMesh 24 -> 28,
+      PDynamicMeshInstance 8 -> 12,
+      PClassDescriptor 144 -> 148,
+    et l'assembleur forçait tous les PMeshInstance 64 -> 112.
+    Le résultat était un hybride : table de classes CS1, tailles et offsets d'une
+    autre ABI. Notre reader suivait le schéma hybride et ne pouvait pas le détecter ;
+    le runtime CS1, lui, ne peut pas l'interpréter.
+[FIX] L'authoring CS1 utilise de nouveau intégralement les tailles/offsets CS1 et
+    l'assembleur ne réécrit plus PMeshInstance.
+[PREUVE] Fidélité byte-à-byte rétablie :
+      O_T10CHR01  47126/47126 IDENTICAL
+      O_T10ETC02  34421/34421 IDENTICAL
+      M_A0005     28339/28339 IDENTICAL
+      M_A0003     34329/34329 IDENTICAL
+    Les namespaces reconstruits ont exactement 15 types, 125 classes, 363 membres,
+    6996 octets de chaînes et 20300 octets au total.
+[OK] Nouveau prop : PDataBlockD3D11=56, PMeshInstance=64 avec les 4 octets
+    m_gameMaterialIDs, comme les modèles CS1. 85 tests passent. Package installé,
+    test réel nécessaire.
+[2026-08-02 — authored prop: runtime class promotion and sampler closure]
+[CAUSE CONFIRMEE DANS L'ANCIEN ASSETTOOL] Falcom's serializer promotes a platform
+    class to an authoring-derived class through
+    PInstanceListConvert::getDerivedClassFromClassOut(). The old CS1 fork already
+    disabled that promotion for PDataBlockD3D11 because PDataBlock is not compiled
+    into the CS1 runtime. The same rule applies to PIndexDataBlockD3D11:
+    PIndexDataBlock may remain mentioned by a generic AssetProcessor namespace, but
+    must not be selected as a compiled runtime class.
+[FIX] replace-prop now writes with Cs1RuntimeAuthoring: AssetProcessor object
+    layouts, but CS1's exact 125-class registry. PIndexDataBlock is absent while
+    PMeshSegment.m_indexData remains PIndexDataBlockD3D11 (52 bytes).
+[FIX INDEPENDANT] ReachableObjects previously copied every PSamplerState sibling
+    from a group as soon as one sampler in it was referenced. O_T10LIG03 keeps five
+    materials' 130 samplers in one group, so one selected material incorrectly
+    inherited all 130. The closure now copies only the exact destination object IDs
+    reached by the selected PParameterBuffer, deduplicated and renumbered.
+[PREUVES HORS JEU] Regenerated O_T10LIG03:
+    125 classes / 15 types; no PIndexDataBlock;
+    PMeshSegment.m_indexData = PIndexDataBlockD3D11;
+    25 sampler states (source selected material: 25), not 130;
+    55 definitions, parameter buffer 624 bytes;
+    parameter-buffer SHA-256 remains byte-identical to the selected native material:
+      A00350B72FDB2FC9D7F548BFF8CAA0FC396B42DEBA0A02694E91CD15CB0145D6
+    87 tests pass.
+[TEST] Package installed in the game:
+    data/asset/D3D11/O_T10LIG03.pkg
+    SHA-256 114EC7CF1A0DB368ABF57790E1038E2B2EF7231533F6A50DAB4DD49EF26FACAA
+    One real Trista launch required; do not claim runtime success before it.
+
+[2026-08-02 — authored instance-list alignment]
+[ECHEC] Le profil runtime 125 classes supprime bien l'avertissement
+    PIndexDataBlock, mais le package 114EC7C plante encore : la recherche de
+    classe reçoit finalement le nom d'asset `t10lig03.dae.phyre` et une table
+    déjà corrompue (count=1, records=0x400). PIndexDataBlock était donc une
+    incompatibilité réelle mais pas la corruption primaire.
+[CAUSE STRUCTURELLE] Les données variables de plusieurs groupes auteur n'étaient
+    pas complétées à la frontière 32 bits :
+      PAssetReference        160 + 174 = 334
+      PAssetReferenceImport   24 +  81 = 105
+      PNode                  252 +  23 = 275
+      totalDataSize = 4966
+    Les clusters CS1 livrés et l'oracle AssetProcessor fonctionnel ont tous des
+    m_size, m_arraysSize et m_totalDataSize multiples de 4. Le reader Phyre lit
+    chaque groupe selon ces tailles, puis construit les zones de pointeurs sur
+    des adresses alignées.
+[FIX] PhyreClusterAssembler complète désormais chaque ArrayData à 4 octets et
+    inclut explicitement ce padding dans m_arraysSize/m_size. Des régressions
+    imposent l'alignement de chaque groupe et du total.
+[PREUVES HORS JEU] 87 tests passent. Nouveau package contrôlé :
+    - 125 classes runtime CS1, sans PIndexDataBlock générique ;
+    - ABI objet AssetProcessor ;
+    - shader, texture et graphe matériau exacts de l'oracle fonctionnel ;
+    - tous les groupes et totalDataSize alignés (total=4952).
+[TEST] Package installé dans le jeu, SHA-256 :
+    B435264A34CBD05CAD99FEA187F1307611C872CE48A8981870B38405595ECE1C
+    L'itération précédente est conservée dans
+    tmp-inspect/O_T10LIG03.pre-alignment-crash.114EC7CF.pkg.
+    Validation Trista utilisateur requise.
+
+[2026-08-02 — namespace PIndexDataBlock : correction de l'interprétation]
+[ECHEC] Le package aligné B435264A plante exactement comme le précédent.
+    L'alignement est une conformité nécessaire aux sorties Falcom, mais ce
+    n'était pas la cause primaire de cette panne.
+[PREUVE] Le package AssetProcessor confirmé fonctionnel et notre package ont :
+    mêmes 15 types, mêmes groupes, mêmes liens de graphe, mêmes 55 paramètres,
+    mêmes imports et mêmes objets structurels. Leur seule divergence de
+    namespace est PIndexDataBlock : 126 classes dans l'oracle, 125 chez nous.
+[CORRECTION D'ANALYSE] Le fork C++ de l'ancien AssetTool ne neutralise la
+    promotion de classe que pour PDataBlockD3D11. Il ne contient aucune exception
+    équivalente pour PIndexDataBlockD3D11. Le message du runtime indiquant que
+    l'interface PIndexDataBlock est inconnue est un avertissement attendu :
+    la classe n'a aucune instance et le mappeur la saute, tandis que les instances
+    concrètes restent PIndexDataBlockD3D11. Supprimer l'entrée modifiait l'ABI
+    ordonnée avant cette conversion.
+[FIX] replace-prop écrit de nouveau le profil FalcomAssetProcessor complet.
+    L'alignement de chaque liste reste appliqué.
+[PREUVES HORS JEU] Le nouveau cluster et l'oracle ont des tables de 15 types /
+    126 classes identiques et `--diff-wiring` ne rapporte aucune divergence.
+    87 tests passent.
+[TEST] Package installé, SHA-256 :
+    3E5E6130B67B32C729D63F4C38DD7CB329E3831533EC511656605073A58F3162
+    Le package 125 classes précédent est conservé dans
+    tmp-inspect/O_T10LIG03.aligned-125-crash.B435264A.pkg.
+
+[ECHEC] Le profil complet 126 classes produit bien l'avertissement attendu pour
+    PIndexDataBlock, puis le même lookup secondaire nul. La présence ou l'absence
+    de l'interface générique n'est donc pas la cause primaire.
+[DEBUG] Le package reste inchangé. CrashTrista intercepte maintenant la fonction
+    centrale de diagnostic Phyre (sévérité non nulle), imprime le format, les
+    arguments et la pile, puis continue jusqu'au lookup secondaire. Le prochain
+    lancement doit capturer l'erreur de chargement avant la destruction de la
+    ressource plutôt que seulement le déréférencement final.
+
+## 2026-08-02 — le matériau pointe un shader que le paquet ne livre pas
+
+O_T10LIG03.pkg ne contient que QUATRE entrées, dont un seul shader :
+
+    5t10ef00.dds.phyre
+    asset_D3D11.xml
+    ed8.fx#9B711195BF52FBD50A1BCB3DAD336CEB.phyre
+    t10lig03.dae.phyre
+
+Or son PParameterBuffer[0] — celui que PhyreMaterialTableReader.Read choisit,
+puisqu'il prend `buffers[0]` — est lié a ed8.fx#D506953A7385090896B925A6E8DE8286.
+Balayage des 4341 paquets : D506953A existe dans neuf d'entre eux (O_T10LIG04,
+O_T10TIG03, M_T3720, M_C0120...) mais PAS dans O_T10LIG03.pkg. C'est une
+dependance externe, resolue parce que les autres paquets de Trista sont charges
+en meme temps.
+
+Consequence : nos paquets autorises embarquent un materiau qui designe un shader
+qu'ils ne livrent pas. Le shader propre a LIG03, celui qui rend le paquet
+autonome, est 9B711195 — porte par son PParameterBuffer lie localement, pas par
+le premier de la liste.
+
+Meme piege sur le cube noir : la texture a ete basculee vers 5t10ef00.dds, qui
+vit dans O_T10LIG03.pkg, alors que le paquet greffe est O_T10CHR01.pkg, lequel ne
+livre que 5t10ob04.dds. Une importation qui ne se resout pas ne donne aucune
+texture — donc du noir.
+
+A FAIRE : choisir le tampon dont le shader est present dans le paquet du donneur,
+au lieu de `buffers[0]`.
+
+ETAT : le dossier de jeu est NATIF (les deux paquets ont 4 entrees, drapeau 1 et
+leur magic d'origine) — rien de ce qui a ete construit n'est installe.
+
+
+## 2026-08-02 (suite) — garde sur le shader livre
+
+RequireShippedShader() refuse d'ecrire un paquet dont le materiau nomme un shader
+que le paquet ne porte pas. Il attrape immediatement le lampadaire :
+
+  Le materiau demande 'shaders/ed8.fx#D506953A...', que 'O_T10LIG03.pkg' ne porte
+  pas. Il livre ed8.fx#9B711195... .
+
+Donc TOUS les replace-prop O_T10LIG03 produits jusqu'ici nommaient un shader
+absent du paquet. Le banc, lui, passe :
+
+  O_T10CHR01 : 1 shader, 55 parametres, 26 samplers, 624 octets, 4 entrees
+  (contre 3 shaders / 165 definitions / 130 samplers avec le lampadaire)
+
+A tester en jeu : replace-prop O_T10CHR01, projet guard.json.
+
+Note : la resolution par PMesh[0] -> PMaterial -> PParameterBuffer (codex) est
+conservee ; le garde ne fait que verifier son resultat.
+
+
+## 2026-08-02 (fin) — la bonne reference n'etait pas le fichier livre
+
+CS1AssetProcessor/O_T10CHR01/ : dossier dont Antoine garantit qu'il MARCHE en
+jeu. Provenance inconnue et sans importance : ni l'outil ni cube.dae ne sont
+officiels (correction d'Antoine, je les avais pris pour tels a tort). Ce qui
+compte est qu'il s'agit du premier cluster NON LIVRE dont on sache qu'il se
+charge — la verite terrain qui manquait depuis le debut.
+
+                    officiel   livre    nous
+  classes             126       125     125
+  PMaterial             1         2       2
+  PParameterBuffer      1         2       2
+  PMeshInstance       112        64      64
+  PDataBlockD3D11      64        56      56
+  PAssetReference       4         5       5
+  PSamplerState        26        52      26
+  PNode                 3         8       2
+
+126e classe = PIndexDataBlock (base, listee dans le namespace sans etre instanciee
+-- meme famille que le PDataBlock de la note CS1 d'Antoine).
+
+DEUX ERREURS A MOI, corrigees par cette comparaison :
+ 1. Les deux PParameterBuffer / deux PMaterial / cinq PAssetReference ajoutes ce
+    matin. L'officiel n'en met qu'un. J'avais generalise depuis O_T10CHR01 livre,
+    qui a deux materiaux pour ses propres raisons.
+ 2. PMeshInstance 112 -> annule plus tot au motif que ca "contredisait les
+    fichiers livres". L'annulation etait l'erreur : le fichier livre n'est pas la
+    reference, un cluster non livre qui se charge l'est.
+
+ORDRE DE TRAVAIL, une seule variable a la fois, en repartant du greffage qui rend :
+  1. revenir a 1 PMaterial / 1 PParameterBuffer / 4 PAssetReference
+  2. PMeshInstance 64 -> 112
+  3. PDataBlockD3D11 56 -> 64
+  4. ajouter PIndexDataBlock au tableau de classes (125 -> 126)
+  5. PNode 2 -> 3
+
+METHODE (rappel d'Antoine) : ce moteur plante au moindre ecart ; on ne suppose
+rien, on ne change qu'une chose, et on part d'une base qui marche.
+
+SUR LE DEBOGAGE — A JETER. Antoine signale que le jeu plantait AVANT qu'il ait la
+main pour charger une sauvegarde. Le memcpy 620/628 ne peut donc pas venir du
+chargement de notre asset a Trista : c'est un plantage au demarrage, probablement
+provoque par le page heap lui-meme. Toute l'analyse batie dessus (bloc de 620,
+prefixe de 12, ecart de 8) porte sur un symptome sans rapport et ne doit pas
+etre reutilisee.
+
+
+## 2026-08-02 — la forme est alignee, reste les noms
+
+Codex avait deja applique les cinq points (126 classes, PMaterial x1,
+PParameterBuffer x1, PMeshInstance 112, PDataBlockD3D11 64, PNode x3,
+PAssetReference x4). Verifie par --shape-of : notre cluster a EXACTEMENT la meme
+liste de groupes, les memes comptes et les memes tailles d'objet que celui qui se
+charge. Il ne restait que les donnees de tableaux, c'est-a-dire les noms.
+
+CHANGEMENT DU TOUR (un seul) : l'id d'asset de la texture passe de
+"map/images/ed8editor_neutral.dds" a "ed8editor_neutral.dds". Le cluster qui se
+charge nomme la sienne "5t10ob04.dds" — nom nu — face a une entree
+"5t10ob04.dds.phyre". Un id prefixe designe quelque chose que le paquet ne
+contient pas alors meme que le fichier y est.
+
+RESTE, dans l'ordre, une variable a la fois :
+  a) l'ORDRE des PAssetReference. Qui marche : VisualSceneNode, materiau,
+     instance, mesh. Nous : materiau, VisualSceneNode, MapShape, Map.
+  b) les NOMS et leur coherence. Qui marche : le noeud s'appelle
+     "t15chr01_polySurface17", l'asset de l'instance porte le MEME nom et celui du
+     mesh y ajoute "Shape". Chez nous les noeuds disent "t10chr01"/"t10chr01Shape"
+     pendant que les assets disent "Map"/"MapShape" — ils ne se correspondent pas.
+  c) le materiau s'appelle "colladadx11Shader1" et non "material".
+
+
+## 2026-08-02 — l'en-tete et les fixups, compares au cluster qui se charge
+
+Le nom nu de la texture n'a rien change : ca plante toujours. Donc ce n'etait pas
+la cause, et il ne faut pas le retenir comme un acquis (le changement est garde
+parce qu'il aligne la convention, pas parce qu'il corrige quoi que ce soit).
+
+Comparaison complete hors ligne (--shape-of etendu a l'en-tete et aux fixups) :
+
+  IDENTIQUES : 15 groupes, memes classes, memes comptes, memes tailles d'objet,
+  68 pointeurs, 63 tableaux, 0 tableaux de pointeurs, 14 user fixups — memes
+  types et memes textes dans le meme ordre (PMaterial, PNode, PMesh,
+  PMeshInstance, PTexture2D, PEffectVariant, deux imports, puis Vertex, Normal,
+  ST, Tangent, Binormal, Color).
+
+  EXPLIQUES : mots 18/19 (936/29808 contre 72/576) = leur cube est plus lourd ;
+  mot 14 (4972 contre 4912) = les noms.
+
+  INEXPLIQUE, UN SEUL : mot 7 = pointerSize, la taille en octets de la table de
+  pointeurs EMPAQUETEE. 263 chez eux, 262 chez nous, pour 68 pointeurs des deux
+  cotes. Un octet. C'est un choix d'empaquetage different sur un fixup — donc
+  probablement valide et benin, mais c'est la seule chose qui reste.
+
+PROCHAINE ETAPE (hors ligne, aucun lancement) : comparer les 68 pointeurs un par
+un — source, membre, destination — entre notre cluster et celui qui se charge.
+Le mode --diff-targets existe deja. C'est le contenu des fixups qui n'a jamais
+ete verifie contre une reference qui marche ; seuls leurs comptes l'ont ete.
+
+
+## 2026-08-02 — le pointeur de tableau ne portait pas son compte
+
+Comparaison des 68 pointeurs, un par un, contre le cluster qui se charge. Un seul
+vrai defaut :
+
+  marche : m_tweakableShaderParameterDefinitions -> PShaderParameterDefinition[0] x55
+  nous   : m_tweakableShaderParameterDefinitions -> PShaderParameterDefinition[0]
+
+PhyreMaterialPointer ne portait pas de compte : le lecteur jetait fixup.ArrayIndex
+et le writer ecrivait zero. Le tampon annoncait donc un tableau de definitions VIDE
+tout en declarant 55 definitions a cote.
+
+Corrige : PhyreMaterialPointer prend un Count, le lecteur le lit, le writer l'ecrit.
+
+CONFIRMATION INDEPENDANTE : le mot 7 de l'en-tete (taille de la table de pointeurs
+empaquetee) passe de 262 a 263 et rejoint exactement celui du cluster qui marche.
+L'octet manquant etait le compte — ce n'etait donc pas un empaquetage different,
+c'etait le meme defaut vu d'ailleurs.
+
+ETAT : 15 groupes identiques, 68/63/0/14 fixups identiques, tous les pointeurs
+identiques SAUF le miroir des samplers (leur [25] = notre [0], sur les 26 —
+coherent des deux cotes, l'ordre dans un groupe est libre). Restent les noms.
+
+NON TESTE EN JEU.
+
+
+## 2026-08-02 — les noms alignes sur le cluster qui se charge
+
+Le compte de tableau n'a pas suffi : ca plante toujours. Variable suivante, les noms.
+
+  Reference : #VisualSceneNode, #colladadx11Shader1, #<mesh>, #<mesh>Shape
+              noeuds : "VisualSceneNode1" et "<mesh>"
+  Avant     : #material, #VisualSceneNode, #MapShape, #Map
+              noeuds : "<asset>" et "<asset>Shape"
+
+Trois defauts d'un coup : l'ORDRE (le noeud de scene vient en premier, pas le
+materiau), les NOMS, et surtout la COHERENCE — chez la reference le noeud, l'asset
+de l'instance et celui du mesh portent le meme nom (le dernier avec "Shape") ;
+chez nous les noeuds disaient "<asset>"/"<asset>Shape" pendant que les assets
+disaient "Map"/"MapShape", donc rien ne se correspondait.
+
+Aligne. Il ne reste comme difference que l'identifiant du mesh lui-meme
+(t10chr01 chez nous, t15chr01_polySurface17 chez eux) et le nom de la texture.
+
+NON TESTE EN JEU.
+
+
+## 2026-08-02 — le "magic" du .pkg est un horodatage, un par paquet
+
+Trouve par Antoine (via codex/deepseek) : le jeu refuse de charger un paquet dont
+le premier mot a ete remplace par PkgArchiveWriter.DefaultMagic.
+
+Mesure : 399 valeurs DISTINCTES sur 400 paquets livres, croissantes avec l'ordre
+alphabetique, toutes autour de 0x5968xxxx — soit des timestamps Unix de juillet
+2017. Ce n'est pas un magic, c'est l'estampille de build du paquet.
+
+  O_T10CHR01.pkg : 0x59B85914
+  O_T10LIG03.pkg : 0x59679451  == DefaultMagic
+
+D'ou l'erreur de raisonnement de ma part : le test "repack" qui devait prouver que
+le conteneur etait accepte par le jeu a ete fait sur O_T10LIG03 — LE SEUL paquet
+ou l'ecrasement etait invisible, parce que sa propre valeur egale la constante.
+J'en avais conclu que le conteneur etait prouve. Il ne l'etait pas, et tous les
+essais faits sur O_T10CHR01 depuis plantaient pour cette seule raison, quel que
+soit le contenu du cluster.
+
+Corrige : repack et graft-prop dans MapImport preservent la valeur du paquet
+source ; MapPackageAuthoring la preserve quand il ecrase un paquet existant.
+WriteProp la preservait deja (correction anterieure de codex).
+
+Verifie : 0x59B85914 avant et apres greffage.
+
+RESTE, signale par Antoine : pour le rendu, viser le shader D506953A et non
+9B711195 (celui-ci rend le cube invisible).
+

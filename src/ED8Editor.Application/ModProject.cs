@@ -206,6 +206,14 @@ public sealed class ModProject
     public bool Contains(string gameFilePath)
         => TryGetRelative(gameFilePath, out var relative) && files.ContainsKey(relative);
 
+    /// <summary>
+    /// How the project names a file of the game folder, or null when the path is
+    /// outside it. The file need not be tracked: a file being edited for the first
+    /// time has no entry yet, and is still one this project would own.
+    /// </summary>
+    public string? RelativePathOf(string gameFilePath)
+        => TryGetRelative(gameFilePath, out var relative) ? relative : null;
+
     public string? OriginalCopyPath(string relativePath)
     {
         var path = StorePath(OriginalFolder, Normalize(relativePath));

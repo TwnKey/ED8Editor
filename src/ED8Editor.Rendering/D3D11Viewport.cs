@@ -13,6 +13,7 @@ public sealed record ViewportCamera(Matrix4x4 View, Matrix4x4 Projection);
 
 public sealed class D3D11Viewport : IDisposable
 {
+    private int disposeState;
     private const int MaximumSkinBones = 256;
     private const string ShaderSource = """
         cbuffer PerDraw : register(b0)
@@ -329,6 +330,7 @@ public sealed class D3D11Viewport : IDisposable
     private readonly ID3D11BlendState effectAdditiveBlendState;
     private readonly ID3D11BlendState effectSubtractiveBlendState;
     private readonly ID3D11DepthStencilState effectDepthState;
+    private readonly ID3D11DepthStencilState overlayDepthState;
     private ID3D11Buffer? effectQuadBuffer;
     private int effectQuadVertexCapacity;
     private IReadOnlyList<D3D11EffectQuad> effectQuads = Array.Empty<D3D11EffectQuad>();
@@ -431,6 +433,15 @@ public sealed class D3D11Viewport : IDisposable
             DepthEnable = true,
             DepthWriteMask = DepthWriteMask.Zero,
             DepthFunc = ComparisonFunction.LessEqual,
+        });
+        // Overlay lines ignore the depth buffer entirely: a gizmo axis that dips
+        // into the ground was being hidden by it, and an axis nobody can see is an
+        // axis nobody can drag. They do not write depth either, so nothing behind
+        // them is disturbed.
+        overlayDepthState = graphics.Device.CreateDepthStencilState(new DepthStencilDescription
+        {
+            DepthEnable = false,
+            DepthWriteMask = DepthWriteMask.Zero,
         });
         perDrawBuffer = graphics.Device.CreateBuffer(new BufferDescription(
             Marshal.SizeOf<PerDrawConstants>(),
@@ -703,10 +714,13 @@ public sealed class D3D11Viewport : IDisposable
 
     public void Dispose()
     {
-        graphics.Context.ClearState();
+        if (Interlocked.Exchange(ref disposeState, 1) != 0) return;
+        if (graphics.Context.NativePointer != IntPtr.Zero)
+            graphics.Context.ClearState();
         ReleaseTargets();
         bloomPipeline.Dispose();
         foreach (var layout in inputLayouts.Values) layout.Dispose();
+        overlayDepthState.Dispose();
         debugLineBuffer?.Dispose();
         debugTriangleBuffer?.Dispose();
         effectQuadBuffer?.Dispose();
@@ -759,6 +773,7 @@ public sealed class D3D11Viewport : IDisposable
         graphics.Context.Unmap(debugLineBuffer!, 0);
         var context = graphics.Context;
         context.RSSetState(rasterizer);
+        context.OMSetDepthStencilState(overlayDepthState);
         context.IASetInputLayout(coloredInputLayout);
         context.IASetVertexBuffer(0, debugLineBuffer!, Marshal.SizeOf<DebugLineVertex>(), 0);
         context.IASetPrimitiveTopology(Vortice.Direct3D.PrimitiveTopology.TriangleList);
@@ -766,6 +781,7 @@ public sealed class D3D11Viewport : IDisposable
         context.PSSetShader(coloredPixelShader);
         context.PSSetShaderResource(0, null!);
         context.Draw(debugLineVertexCount, 0);
+        context.OMSetDepthStencilState(null);
     }
 
     /// <summary>

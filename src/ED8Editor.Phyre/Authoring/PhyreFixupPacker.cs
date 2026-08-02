@@ -16,7 +16,7 @@ namespace ED8Editor.Phyre.Authoring;
 /// are not written: a census over twenty character packages found 0 blocks of
 /// either, against 10 549 of "all objects" and 1 582 of grouped targets.
 /// </summary>
-internal static class PhyreFixupPacker
+public static class PhyreFixupPacker
 {
     /// <summary>
     /// Where each block was written, how it was packed and what it covered. Set

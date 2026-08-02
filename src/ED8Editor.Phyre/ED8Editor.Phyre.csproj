@@ -2,5 +2,6 @@
   <ItemGroup>
     <ProjectReference Include="..\ED8Editor.Core\ED8Editor.Core.csproj" />
     <ProjectReference Include="..\ED8Editor.Models\ED8Editor.Models.csproj" />
+    <PackageReference Include="Vortice.D3DCompiler" Version="2.4.2" />
   </ItemGroup>
 </Project>

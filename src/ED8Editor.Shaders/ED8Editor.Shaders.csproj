@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>ED8Editor.Shaders</RootNamespace>
+    <AssemblyName>ED8Editor.Shaders</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ED8Editor.Phyre\ED8Editor.Phyre.csproj" />
+    <ProjectReference Include="..\ED8Editor.Core\ED8Editor.Core.csproj" />
+    <ProjectReference Include="..\ED8Editor.Rendering\ED8Editor.Rendering.csproj" />
+    <PackageReference Include="Vortice.D3DCompiler" Version="2.4.2" />
+  </ItemGroup>
+
+</Project>

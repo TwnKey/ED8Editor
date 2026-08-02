@@ -4,9 +4,15 @@ namespace ED8Editor.Viewer;
 /// The table editor in a window of its own, so the main window keeps its panels
 /// for the scene and its script.
 /// </summary>
-internal sealed class TblEditorWindow : Form
+internal sealed class TblEditorWindow : Form, IProjectDocumentEditor
 {
     private readonly TblEditorControl editor;
+
+    public bool HasUnsavedChanges => editor.HasUnsavedChanges;
+
+    public string? DocumentPath => editor.DocumentPath;
+
+    public bool SaveWithoutAsking() => editor.SaveCurrent();
 
     public TblEditorWindow(string gameDataPath, string? scriptPath, EventHandler onCatalogChanged)
     {
@@ -19,12 +25,20 @@ internal sealed class TblEditorWindow : Form
         Controls.Add(editor);
     }
 
-    /// <summary>Saves whatever table is open, for the window's own shortcut.</summary>
+    /// <summary>
+    /// Ctrl+S saves the whole project, not just this table: which window has the
+    /// focus should not decide how much of the author's work reaches the disk.
+    /// </summary>
     protected override bool ProcessCmdKey(ref Message message, Keys key)
     {
         if (key == (Keys.Control | Keys.S))
         {
-            editor.SaveCurrent();
+            if (!ProjectSave.Everything()) editor.SaveCurrent();
+            return true;
+        }
+        if (key == (Keys.Control | Keys.Shift | Keys.S))
+        {
+            editor.SaveCurrent(saveAs: true);
             return true;
         }
         return base.ProcessCmdKey(ref message, key);

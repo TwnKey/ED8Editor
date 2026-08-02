@@ -114,7 +114,13 @@ public sealed class EffEditorControl : UserControl
     /// <summary>The seconds of playback the preview slider is asking for.</summary>
     public float PreviewSeconds => time.Value / 20f;
 
-    public void SaveCurrent(bool saveAs = false) => Save(saveAs);
+    public bool SaveCurrent(bool saveAs = false) => Save(saveAs);
+
+    /// <summary>Whether the open effect has edits that are not on disk.</summary>
+    public bool HasUnsavedChanges => dirty && effect is not null;
+
+    /// <summary>Where the open effect would be written.</summary>
+    public string? DocumentPath => string.IsNullOrEmpty(effectPath) ? null : effectPath;
 
     /// <summary>Stops the preview, for when the window is closed.</summary>
     public void StopPreview() => PreviewChanged?.Invoke(this, new EffPreviewRequest(null, 0f));
@@ -911,9 +917,9 @@ public sealed class EffEditorControl : UserControl
             : null;
     }
 
-    private void Save(bool saveAs)
+    private bool Save(bool saveAs)
     {
-        if (effect is null) return;
+        if (effect is null) return false;
         var path = effectPath;
         if (saveAs || string.IsNullOrEmpty(path))
         {
@@ -926,7 +932,7 @@ public sealed class EffEditorControl : UserControl
                 DefaultExt = "eff",
                 OverwritePrompt = true,
             };
-            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            if (dialog.ShowDialog(this) != DialogResult.OK) return false;
             path = dialog.FileName;
         }
         try
@@ -937,11 +943,13 @@ public sealed class EffEditorControl : UserControl
             effectPath = path;
             dirty = false;
             status.Text = $"Saved {path}";
+            return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             MessageBox.Show(
                 exception.Message, "Cannot save the effect", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return false;
         }
     }
 }

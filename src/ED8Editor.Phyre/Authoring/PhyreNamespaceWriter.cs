@@ -83,7 +83,10 @@ public static class PhyreNamespaceWriter
         var cursor = 0;
 
         Write(output, ref cursor, carried.First);
-        Write(output, ref cursor, carried.Second);
+        // The namespace states its own size, and the cluster header repeats it —
+        // equal in every shipped cluster checked. Carrying this word over from
+        // somewhere else, as an unnamed value, wrote one file's size into another's.
+        Write(output, ref cursor, (uint)size);
         Write(output, ref cursor, (uint)types.Count);
         Write(output, ref cursor, (uint)classes.Count);
         Write(output, ref cursor, (uint)memberCount);

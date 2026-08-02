@@ -107,6 +107,7 @@ internal sealed class CharacterStudioForm : Form
     private int loadGeneration;
     private int rigComparisonGeneration;
     private int animationLoadGeneration;
+    private bool disposed;
 
     public CharacterStudioForm(
         string gameDataPath,
@@ -1095,12 +1096,16 @@ internal sealed class CharacterStudioForm : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing)
+        if (disposing && !disposed)
         {
+            disposed = true;
             renderTimer.Stop();
             renderTimer.Dispose();
-            preview?.Dispose();
+            var viewport = preview;
+            preview = null;
+            viewport?.Dispose();
             foreach (var resource in resources.Values) resource.Dispose();
+            resources.Clear();
         }
         base.Dispose(disposing);
     }

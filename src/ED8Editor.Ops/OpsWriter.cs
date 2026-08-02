@@ -87,7 +87,15 @@ public sealed class OpsWriter
             }
             var element = elements[original.SourceIndex];
             UpdateAttributes(element, original.SourceAttributes, changed.SourceAttributes);
-            if (SameTransform(original.Transform, changed.Transform)) continue;
+            // The asset and the name are rewritten too, not only the transform. A map's
+            // own model is changed by pointing its object at another asset without moving
+            // it an inch, and gating this on the transform dropped that edit in silence.
+            if (SameTransform(original.Transform, changed.Transform)
+                && original.AssetId == changed.AssetId
+                && original.Name == changed.Name)
+            {
+                continue;
+            }
             SetPropAttributes(element, changed);
         }
 
@@ -123,7 +131,16 @@ public sealed class OpsWriter
             (element, original, changed) =>
             {
                 UpdateAttributes(element, original.SourceAttributes, changed.SourceAttributes);
-                if (!SameTransform(original.Transform, changed.Transform)) SetVolumeAttributes(element, changed);
+                // The destination counts as much as the position: retargeting a
+                // teleporter without moving it is a real edit, and gating this on the
+                // transform dropped it in silence — the same fault the props had.
+                if (!SameTransform(original.Transform, changed.Transform)
+                    || original.Name != changed.Name
+                    || original.DestinationMap != changed.DestinationMap
+                    || original.DestinationEntry != changed.DestinationEntry)
+                {
+                    SetVolumeAttributes(element, changed);
+                }
             },
             (element, added) =>
             {
@@ -140,7 +157,11 @@ public sealed class OpsWriter
             (element, original, changed) =>
             {
                 UpdateAttributes(element, original.SourceAttributes, changed.SourceAttributes);
-                if (original.Eye != changed.Eye || original.LookAt != changed.LookAt) SetCameraAttributes(element, changed);
+                if (original.Eye != changed.Eye || original.LookAt != changed.LookAt
+                    || original.Name != changed.Name)
+                {
+                    SetCameraAttributes(element, changed);
+                }
             },
             (element, added) =>
             {

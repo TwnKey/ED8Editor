@@ -89,6 +89,16 @@ public static class PhyreModelGeometryPacker
                 vertex => vertex.TexCoords[which].Bitangent));
         }
 
+        // A colour per vertex, white. The shader declares COLOR among its vertex
+        // inputs — read off the compiled program's input signature, which lists
+        // POSITION, NORMAL, TEXCOORD and COLOR — and every shipped map mesh carries a
+        // sixteen-byte stream for it. A mesh that leaves it out cannot satisfy the
+        // layout the shader was compiled against.
+        //
+        // White because an imported file rarely carries vertex colours and white is
+        // the value that changes nothing: the shader multiplies by it.
+        streams.Add(White(source));
+
         if (skinned)
         {
             streams.Add(JointIndices(source));
@@ -118,6 +128,20 @@ public static class PhyreModelGeometryPacker
         }
 
         return new PhyrePackedGeometry(streams, buffers, count, sixteen);
+    }
+
+    private static PhyrePackedStream White(PhyreMeshSource source)
+    {
+        var bytes = new byte[source.Vertices.Count * 16];
+        for (var index = 0; index < source.Vertices.Count; index++)
+        {
+            var at = bytes.AsSpan(index * 16);
+            for (var channel = 0; channel < 4; channel++)
+            {
+                BinaryPrimitives.WriteSingleLittleEndian(at[(channel * 4)..], 1f);
+            }
+        }
+        return new PhyrePackedStream(VertexSemantic.Color, 0, "Float32x4", 16, bytes);
     }
 
     private static PhyrePackedStream Float3(

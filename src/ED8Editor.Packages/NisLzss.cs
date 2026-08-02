@@ -2,7 +2,7 @@ using System.Buffers.Binary;
 
 namespace ED8Editor.Packages;
 
-internal static class NisLzss
+public static class NisLzss
 {
     private const int HeaderSize = 12;
 
@@ -126,4 +126,73 @@ internal static class NisLzss
 
     private static InvalidPackageException Error(string entryName, string message) =>
         new($"PKG entry '{entryName}' {message}.");
+
+    /// <summary>
+    /// Compresses data with NISLZSS, returning it with the 12-byte header.
+    /// Minimum match length is 4 bytes. Uses least-frequent-byte as escape key.
+    /// </summary>
+    public static byte[] Compress(ReadOnlySpan<byte> source)
+    {
+        var escape = LeastFrequentByte(source);
+        var output = new MemoryStream();
+        output.Write(BitConverter.GetBytes((uint)source.Length));
+        output.Write(new byte[4]); // placeholder
+        output.Write(BitConverter.GetBytes((uint)escape));
+
+        var pos = 0;
+        while (pos < source.Length)
+        {
+            var (bestOff, bestLen) = LongestMatch(source, pos);
+
+            if (bestLen >= 4 && bestOff > 0)
+            {
+                var offsetByte = bestOff >= escape ? bestOff + 1 : bestOff;
+                output.WriteByte(escape);
+                output.WriteByte((byte)offsetByte);
+                output.WriteByte((byte)bestLen);
+                pos += bestLen;
+            }
+            else
+            {
+                var b = source[pos++];
+                output.WriteByte(b);
+                if (b == escape) output.WriteByte(escape);
+            }
+        }
+
+        var result = output.ToArray();
+        BitConverter.GetBytes((uint)result.Length).CopyTo(result, 4);
+        return result;
+    }
+
+    private static (int offset, int length) LongestMatch(ReadOnlySpan<byte> src, int pos)
+    {
+        var bestOff = 0;
+        var bestLen = 0;
+        var maxOff = Math.Min(pos, 254);
+        var minPos = Math.Max(0, pos - maxOff);
+        var remaining = src.Length - pos;
+
+        for (var cur = pos - 1; cur >= minPos; cur--)
+        {
+            if (src[cur] != src[pos]) continue;
+            var len = 1;
+            while (cur + len < pos && pos + len < src.Length
+                && src[cur + len] == src[pos + len])
+                len++;
+            if (len > bestLen) { bestLen = len; bestOff = pos - cur; }
+        }
+        return (bestOff, Math.Min(bestLen, remaining));
+    }
+
+    private static byte LeastFrequentByte(ReadOnlySpan<byte> data)
+    {
+        var counts = new uint[256];
+        foreach (var b in data) counts[b]++;
+        byte best = 0xFC;
+        var lowest = uint.MaxValue;
+        for (var i = 0; i < 256; i++)
+            if (counts[i] < lowest) { lowest = counts[i]; best = (byte)i; }
+        return best;
+    }
 }

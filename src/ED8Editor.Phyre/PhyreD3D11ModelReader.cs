@@ -21,7 +21,11 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
         var skinBoneGroup = FindOptionalGroup(cluster, "PSkinBoneRemap");
         var materialGroup = FindRequiredGroup(cluster, "PMaterial");
         var materialGroupIndex = materialGroup.Index;
-        var indexBufferSize = ReadUInt32(cluster.Data.Span, 0x48, cluster.Metadata.IsBigEndian);
+        var indexBufferSize = ReadUInt32(
+            cluster.Data.Span,
+            checked((int)FindRequiredMember(
+                cluster, "PClusterHeaderD3D11", "m_indexBufferSize").ValueOffset),
+            cluster.Metadata.IsBigEndian);
         var sceneGraph = new PhyreMeshSceneGraphReader().Read(cluster);
 
         var meshes = new List<CpuMesh>(checked((int)meshGroup.Group.Count));
@@ -150,6 +154,21 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
 
         var buffer = cluster.GetGroupObjectsData(bufferGroupIndex).Span;
         var definitionCount = ReadUInt32(buffer, 0x08, cluster.Metadata.IsBigEndian);
+        var parameters = new Dictionary<string, float[]>(StringComparer.Ordinal);
+        var textures = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (definitionCount == 0)
+        {
+            return new CpuMaterial(
+                $"material:{materialId}",
+                Vector4.One,
+                null,
+                parameters,
+                textures,
+                new Dictionary<string, int>(StringComparer.Ordinal),
+                renderPassType,
+                effectAssetName);
+        }
+
         var definitionsPointer = RequirePointer(cluster, bufferGroupIndex, 0, 0x0c);
         var definitionGroupIndex = checked((int)definitionsPointer.DestinationListIndex);
         var definitionGroup = cluster.Metadata.InstanceGroups[definitionGroupIndex];
@@ -159,8 +178,6 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
             throw new InvalidPhyreException($"Material {materialId} has invalid shader parameter definitions.");
         }
 
-        var parameters = new Dictionary<string, float[]>(StringComparer.Ordinal);
-        var textures = new Dictionary<string, string>(StringComparer.Ordinal);
         for (uint localDefinition = 0; localDefinition < definitionCount; localDefinition++)
         {
             var definitionId = checked(definitionsPointer.DestinationObjectId + localDefinition);
@@ -394,8 +411,21 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
         var stride = ReadUInt32(dataBlock, 0x00, cluster.Metadata.IsBigEndian);
         var vertexCount = ReadUInt32(dataBlock, 0x04, cluster.Metadata.IsBigEndian);
         var streamCount = ReadUInt32(dataBlock, 0x08, cluster.Metadata.IsBigEndian);
-        var vertexOffset = ReadUInt32(dataBlock, 0x28, cluster.Metadata.IsBigEndian);
-        var dataSize = ReadUInt32(dataBlock, 0x30, cluster.Metadata.IsBigEndian);
+        // These two fields moved between the CS1 runtime namespace and Falcom's
+        // AssetProcessor namespace (0x28/0x30 versus 0x30/0x38).  The cluster
+        // carries the authoritative offsets, so reading fixed constants makes a
+        // valid AssetProcessor model look corrupt and prevents byte-preserving
+        // offline comparisons with the files the official tool emits.
+        var vertexOffset = ReadUInt32(
+            dataBlock,
+            checked((int)FindRequiredMember(
+                cluster, "PDataBlockD3D11", "m_offsetInVertexBuffer").ValueOffset),
+            cluster.Metadata.IsBigEndian);
+        var dataSize = ReadUInt32(
+            dataBlock,
+            checked((int)FindRequiredMember(
+                cluster, "PDataBlockD3D11", "m_dataSize").ValueOffset),
+            cluster.Metadata.IsBigEndian);
         if (stride == 0 || (long)stride * vertexCount > dataSize)
         {
             throw new InvalidPhyreException($"Vertex data block {dataBlockId} has an invalid stride or element count.");

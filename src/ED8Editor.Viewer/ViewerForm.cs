@@ -23,6 +23,18 @@ public sealed class ViewerForm : Form
     private EditorSceneDocument document;
     private readonly bool smokeTest;
     private string baseTitle;
+
+    /// <summary>The title without the unsaved-changes note appended to it.</summary>
+    private string pristineTitle = string.Empty;
+
+    /// <summary>
+    /// One font for the whole tree rather than one per node per rebuild: the tree is
+    /// rebuilt on every edit, and a font per node would leak a GDI handle each time.
+    /// </summary>
+    private Font? modFileBoldFont;
+
+    /// <summary>The unsaved set the project tree was last drawn for.</summary>
+    private string unsavedSignature = string.Empty;
     private readonly SceneElementPicker elementPicker = new();
     private readonly SceneRaycaster surfaceRaycaster = new();
     private readonly SceneRaycaster surfacePreviewRaycaster = new();
@@ -149,6 +161,7 @@ public sealed class ViewerForm : Form
         Text = "No mod project open.",
     };
     private ModProject? modProject;
+    private MapStudioForm? mapStudioWindow;
     private readonly GroupBox sceneOutlinerGroup = new()
     {
         Dock = DockStyle.Fill,
@@ -266,6 +279,9 @@ public sealed class ViewerForm : Form
     private MapScene? currentMap;
     private float sceneRadius = 10f;
     private float overlayMarkerSize = 0.3f;
+
+    /// <summary>Where the camera was when the overlay was last built.</summary>
+    private Vector3 overlayCameraPosition = new(float.NaN, float.NaN, float.NaN);
     private Point previousMouse;
     private Point leftMouseDown;
     private bool pendingLeftClick;
@@ -340,6 +356,7 @@ public sealed class ViewerForm : Form
         document.PreviewChanged += (_, _) => RefreshScenePreviewFromDocument();
         this.smokeTest = smokeTest;
         baseTitle = $"ED8Editor — {session.Script.Header.Identifier} — 1: move, 2: rotate, 3: scale, Ctrl+click: select through, Ctrl+Z/Y: undo/redo";
+        pristineTitle = baseTitle;
         Text = baseTitle;
         ClientSize = new Size(1280, 720);
         MinimumSize = new Size(640, 360);
@@ -541,6 +558,7 @@ public sealed class ViewerForm : Form
             {
                 return;
             }
+            RefreshPropertyNameKind();
             await RefreshPropertyDestinationEntriesAsync();
         };
         propertyGrid.DataError += (_, eventArgs) =>
@@ -559,15 +577,26 @@ public sealed class ViewerForm : Form
         addOpsElementButton.Click += (_, _) => BeginOpsPlacement();
         RefreshOpsCreationInputs();
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.Opaque, true);
+        // Coming back from the table, effect or quest window is when their edits
+        // become visible here, so it is when the stars are worth recounting.
+        Activated += (_, _) => RefreshUnsavedMarkers();
         renderTimer.Tick += (_, _) => RenderFrame();
         KeyDown += (_, eventArgs) =>
         {
+            // Ctrl+S means "save my work", wherever the focus happens to be: the map
+            // and the script are one project to whoever is editing them.
+            if (eventArgs.Control && eventArgs.KeyCode == Keys.S && !eventArgs.Shift)
+            {
+                SaveProject();
+                eventArgs.SuppressKeyPress = true;
+                return;
+            }
             if (assetPanel.Visible && rightPanelTabs.SelectedTab == scriptsTab
                 && scriptEditor is { ContainsFocus: true })
             {
                 if (eventArgs.Control && eventArgs.KeyCode == Keys.S)
                 {
-                    scriptEditor.SaveCurrent(eventArgs.Shift);
+                    scriptEditor.SaveCurrent(saveAs: true);
                     eventArgs.SuppressKeyPress = true;
                     return;
                 }
@@ -603,7 +632,9 @@ public sealed class ViewerForm : Form
             }
             if (eventArgs.Control && eventArgs.KeyCode == Keys.S)
             {
-                SaveOps(eventArgs.Shift || savedOpsPath is null);
+                // Plain Ctrl+S was handled above and saves everything. Reaching here
+                // means Shift is held, which is the only way to be asked where.
+                SaveOps(saveAs: true);
                 eventArgs.SuppressKeyPress = true;
                 return;
             }
@@ -830,14 +861,15 @@ public sealed class ViewerForm : Form
             eventArgs.Cancel = true;
             return;
         }
-        if (!smokeTest && document.IsDirty)
+        if (!smokeTest && UnsavedFiles() is { Count: > 0 } unsaved)
         {
             var result = MessageBox.Show(
-                "Save the OPS changes before closing?",
-                "Unsaved OPS changes",
+                "Save before closing?\r\n\r\n"
+                    + string.Join("\r\n", unsaved.Select(Path.GetFileName)),
+                "Unsaved changes",
                 MessageBoxButtons.YesNoCancel,
                 MessageBoxIcon.Warning);
-            if (result == DialogResult.Cancel || result == DialogResult.Yes && !SaveOps(saveAs: false))
+            if (result == DialogResult.Cancel || result == DialogResult.Yes && !SaveProject())
             {
                 eventArgs.Cancel = true;
                 return;
@@ -852,6 +884,11 @@ public sealed class ViewerForm : Form
         {
             renderTimer.Stop();
             renderTimer.Dispose();
+            // These modeless tools borrow this form's D3D device. Dispose them
+            // while that device and its immediate context are still alive.
+            characterStudioWindow?.Dispose();
+            enemyStudioWindow?.Dispose();
+            effectEditorWindow?.Dispose();
             viewport?.Dispose();
             effectMetadataCancellation.Cancel();
             effectMetadataCancellation.Dispose();
@@ -969,6 +1006,20 @@ public sealed class ViewerForm : Form
         UpdateScriptTimeline(elapsed);
         UpdateCameraAnimation(elapsed);
         UpdateCameraTextFields();
+        // The gizmo is the one thing in the overlay whose size comes from the camera,
+        // and the overlay is otherwise only rebuilt when the scene changes. So it was
+        // drawn at whatever distance the camera happened to be at when something last
+        // rebuilt it, while a click is tested against the distance now: select an
+        // element from the tree and the camera flies to it, leaving arrows drawn at
+        // the old, far length over a hit test using the new, near one. They looked
+        // long and accepted a click only near their middle — and the first click that
+        // did land rebuilt the overlay, which is why they then snapped to the right
+        // size and stayed correct.
+        if (selection is not null
+            && Vector3.DistanceSquared(cameraNavigation.Position, overlayCameraPosition) > 1e-8f)
+        {
+            RefreshOverlay();
+        }
         RefreshAnimationPoses();
         // Effects move on their own clock and their billboards face the camera,
         // so they are rebuilt every frame rather than with the static overlay.
@@ -1329,6 +1380,19 @@ public sealed class ViewerForm : Form
             ShortcutKeys = Keys.Control | Keys.O,
         });
         file.DropDownItems.Add(new ToolStripSeparator());
+        // Saving the map used to be Ctrl+S and nothing else — no menu entry, no
+        // button. An author who moved something and never guessed the shortcut lost
+        // the edit with nothing said.
+        file.DropDownItems.Add(new ToolStripMenuItem(
+            "Save everything unsaved", null, (_, _) => SaveProject())
+        {
+            // Shown, not bound: a menu shortcut is handled before the form's own key
+            // handling, which the scene and the script editor both rely on.
+            ShortcutKeyDisplayString = "Ctrl+S",
+        });
+        file.DropDownItems.Add(new ToolStripMenuItem(
+            "Save the map as…", null, (_, _) => SaveOps(saveAs: true)));
+        file.DropDownItems.Add(new ToolStripSeparator());
         file.DropDownItems.Add(new ToolStripMenuItem(
             "Add script to the project…", null, (_, _) => AddScriptToProject()));
         file.DropDownItems.Add(new ToolStripMenuItem(
@@ -1351,6 +1415,8 @@ public sealed class ViewerForm : Form
             "Enemy studio…", null, (_, _) => ShowCharacterStudio(CharacterAuthoringKind.Enemy)));
         windows.DropDownItems.Add(new ToolStripMenuItem(
             "Quest editor…", null, (_, _) => ShowQuestEditor()));
+        windows.DropDownItems.Add(new ToolStripMenuItem(
+            "Create a map…", null, (_, _) => ShowMapStudio()));
         mainMenu.Items.Add(windows);
 
         var options = new ToolStripMenuItem("Options");
@@ -1513,6 +1579,7 @@ public sealed class ViewerForm : Form
                 BattleScenarioCatalog.Load(session.Script.GameDataPath!),
                 OpenBattleScriptEditor);
             scriptEditor = editor;
+            editor.ProjectGameDirectory = modProject?.GameDirectory;
             editor.TopLevel = false;
             editor.FormBorderStyle = FormBorderStyle.None;
             editor.Dock = DockStyle.Fill;
@@ -3609,11 +3676,41 @@ public sealed class ViewerForm : Form
             monsterChoices: monsterTableChoices,
             battleScenarios: BattleScenarioCatalog.Load(gameDataPath),
             openBattleScript: OpenBattleScriptEditor);
+        editor.ProjectGameDirectory = modProject?.GameDirectory;
         editor.FileSaving += path => TrackModSave(path, beforeWrite: true);
         editor.FileSaved += path => TrackModSave(path, beforeWrite: false);
         editor.FormClosed += (_, _) => editor.Dispose();
         editor.LoadDat(entry.Path);
         editor.Show(this);
+    }
+
+    /// <summary>
+    /// Opens the window that creates a map. It writes through the mod project, so a
+    /// project has to be open first: without one there would be nothing to undo a
+    /// test with.
+    /// </summary>
+    private void ShowMapStudio()
+    {
+        if (mapStudioWindow is { IsDisposed: false } opened)
+        {
+            opened.BringToFront();
+            opened.Focus();
+            return;
+        }
+        if (modProject is null)
+        {
+            MessageBox.Show(
+                this,
+                "Open or create a mod project first. Everything this writes goes through"
+                + " it, which is what lets a test be undone.",
+                "Create a map",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+        mapStudioWindow = new MapStudioForm(modProject);
+        mapStudioWindow.FormClosed += (_, _) => RefreshModProjectTab();
+        mapStudioWindow.Show(this);
     }
 
     private void ShowQuestEditor()
@@ -3992,6 +4089,7 @@ public sealed class ViewerForm : Form
     private void RefreshOverlay()
     {
         if (viewport is null) return;
+        overlayCameraPosition = cameraNavigation.Position;
         var overlay = showIndicatorsCheckBox.Checked
             ? new SceneOverlayBuilder().BuildGeometry(
                 currentMap,
@@ -4367,10 +4465,17 @@ public sealed class ViewerForm : Form
         }
         var ray = CreatePointerRay(location);
         var length = GetGizmoLength(dragTransform.Position);
+
+        // How close a click has to be to an axis to count as grabbing it. Eight per
+        // cent of a gizmo drawn about 115 pixels long left roughly nine pixels to
+        // hit, which is a fair bit less than a hand manages; missing it orbits the
+        // camera instead, so the cost of being narrow is high and the cost of being
+        // generous is only that a click near an axis moves the element.
+        var grab = length * 0.18f;
         if (gizmoMode == GizmoMode.Rotate)
         {
             if (!rotationGizmo.TryPickAxis(
-                ray, dragTransform.Position, length, length * 0.08f, out var rotationAxis, out var ringVector))
+                ray, dragTransform.Position, length, grab, out var rotationAxis, out var ringVector))
             {
                 return false;
             }
@@ -4379,7 +4484,7 @@ public sealed class ViewerForm : Form
         else
         {
             if (!translationGizmo.TryPickAxis(
-                ray, dragTransform.Position, length, length * 0.08f, out var linearAxis)
+                ray, dragTransform.Position, length, grab, out var linearAxis)
                 || !translationGizmo.TryGetAxisParameter(
                     ray, dragTransform.Position, linearAxis, out var parameter))
             {
@@ -4466,13 +4571,29 @@ public sealed class ViewerForm : Form
             camera.Projection);
     }
 
+    /// <summary>
+    /// How long the gizmo is, in world units, so that it always covers the same
+    /// number of pixels on screen — near or far, it stays the same thing to aim at.
+    ///
+    /// It used to take the larger of that and a fixed size in world units. The two
+    /// do not live in the same unit, so the larger one won in one regime and lost
+    /// in the other: screen-sized from a distance, world-sized up close. That is
+    /// why the gizmo looked and behaved like two different objects depending on the
+    /// zoom, and why an element far away could not be grabbed.
+    /// </summary>
     private float GetGizmoLength(Vector3 position)
     {
         var distance = Vector3.Distance(cameraNavigation.Position, position);
         var worldUnitsPerPixel = 2f * distance * MathF.Tan(CameraVerticalFieldOfView * 0.5f)
             / Math.Max(1, viewportHost.ClientSize.Height);
-        return Math.Max(worldUnitsPerPixel * 115f, overlayMarkerSize * 2.5f);
+        return Math.Max(worldUnitsPerPixel * GizmoPixelLength, 1e-4f);
     }
+
+    /// <summary>
+    /// How many pixels long the gizmo is drawn. Big enough to aim at with a mouse:
+    /// its grab radius is a fraction of this, so a short gizmo is a hard target.
+    /// </summary>
+    private const float GizmoPixelLength = 150f;
 
     private static bool SupportsMode(EditableSceneElement element, GizmoMode mode)
         => mode switch
@@ -4483,8 +4604,23 @@ public sealed class ViewerForm : Form
             _ => false,
         };
 
+    /// <summary>
+    /// Rebuilds the project tree when, and only when, the set of unsaved files has
+    /// changed. The edits being tracked are in other windows too, so the answer can
+    /// change without this one doing anything.
+    /// </summary>
+    private void RefreshUnsavedMarkers()
+    {
+        var signature = string.Join("|", UnsavedFiles());
+        if (string.Equals(signature, unsavedSignature, StringComparison.Ordinal)) return;
+        unsavedSignature = signature;
+        RefreshModProjectTab();
+    }
+
     private void RefreshSceneFromDocument()
     {
+        ShowUnsavedMapChanges();
+        RefreshUnsavedMarkers();
         sceneInstances = document.CreateModelInstances();
         currentMap = document.CreateMapSnapshot();
         viewport?.SetEnvironmentVariant(environmentVariant);
@@ -4672,6 +4808,12 @@ public sealed class ViewerForm : Form
         RefreshOverlay();
         RefreshElementProperties();
         SyncOutlinerSelection();
+
+        // Picking an element in the list takes the camera to it. Double-clicking
+        // already did, but it opens the properties over the viewport at once, so
+        // the move was never seen — and an element nobody can find is an element
+        // nobody can move.
+        FocusSelection();
         Text = $"{baseTitle} — selected: {DescribeSelection(selected)}";
     }
 
@@ -5240,6 +5382,8 @@ public sealed class ViewerForm : Form
             null,
             (_, _) => IncludeModFile());
         fileMenu.Items.Add("Remove from the mod", null, (_, _) => RemoveModFile());
+        fileMenu.Items.Add(new ToolStripSeparator());
+        fileMenu.Items.Add("Reveal in file explorer", null, (_, _) => RevealModFile());
         modFileTree.ContextMenuStrip = fileMenu;
         modFileTree.NodeMouseClick += (_, eventArgs) =>
         {
@@ -5465,6 +5609,50 @@ public sealed class ViewerForm : Form
         });
     }
 
+    /// <summary>
+    /// Shows the selected file where it actually lives, in the game folder rather
+    /// than in the project's own store: that is the copy the game reads.
+    /// </summary>
+    private void RevealModFile()
+    {
+        if (modProject is null) return;
+        var selected = SelectedModFiles();
+        if (selected.Count == 0) return;
+        var path = Path.Combine(
+            modProject.GameDirectory,
+            selected[0].Replace('/', Path.DirectorySeparatorChar));
+
+        // A file the mod removed, or one not applied yet, has nowhere to be shown;
+        // its folder is the next best thing.
+        var target = File.Exists(path) ? path : Path.GetDirectoryName(path);
+        if (target is null || (!File.Exists(target) && !Directory.Exists(target)))
+        {
+            MessageBox.Show(
+                this,
+                $"'{selected[0]}' is not in the game folder right now."
+                + " Re-apply the mod to put it back there.",
+                "Reveal in file explorer", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = File.Exists(target) ? $"/select,\"{target}\"" : $"\"{target}\"",
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception
+            or InvalidOperationException or IOException)
+        {
+            MessageBox.Show(
+                this, exception.Message, "Reveal in file explorer",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
     private IReadOnlyList<string> SelectedModFiles()
     {
         if (modFileTree.SelectedNode is null) return Array.Empty<string>();
@@ -5504,9 +5692,29 @@ public sealed class ViewerForm : Form
                 modProjectLabel.Text = "No mod project open. Create one to track and ship your edits.";
                 return;
             }
+            var unsaved = UnsavedFiles()
+                .Select(path => modProject.RelativePathOf(path))
+                .OfType<string>()
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
             modProjectLabel.Text = $"{modProject.Name} — {modProject.Files.Count} file(s)"
+                + (unsaved.Count == 0 ? string.Empty : $", {unsaved.Count} unsaved (Ctrl+S)")
                 + $"\n{modProject.ProjectPath}";
-            foreach (var file in modProject.Files)
+
+            // A file being edited for the first time is not tracked yet — it has
+            // never been written — so it would not show here at all. That is exactly
+            // the file whose edits are most at risk of being lost.
+            var listed = modProject.Files
+                .Select(file => (file.RelativePath, file.Segments, file.HasOriginal, Tracked: true))
+                .Concat(unsaved
+                    .Where(path => !modProject.Files.Any(file =>
+                        file.RelativePath.Equals(path, StringComparison.OrdinalIgnoreCase)))
+                    .Select(path => (
+                        RelativePath: path,
+                        Segments: (IReadOnlyList<string>)path.Split('/', '\\'),
+                        HasOriginal: true,
+                        Tracked: false)));
+
+            foreach (var file in listed)
             {
                 var nodes = modFileTree.Nodes;
                 TreeNode? current = null;
@@ -5520,7 +5728,14 @@ public sealed class ViewerForm : Form
                 }
                 if (current is null) continue;
                 current.Tag = file.RelativePath;
-                if (!file.HasOriginal) current.Text += "  (new file)";
+                if (unsaved.Contains(file.RelativePath))
+                {
+                    // The convention every editor uses for "edited, not written".
+                    current.Text += " *";
+                    current.NodeFont = modFileBoldFont ??= new Font(modFileTree.Font, FontStyle.Bold);
+                }
+                if (!file.Tracked) current.Text += "  (never saved)";
+                else if (!file.HasOriginal) current.Text += "  (new file)";
             }
             modFileTree.ExpandAll();
         }
@@ -5528,6 +5743,126 @@ public sealed class ViewerForm : Form
         {
             modFileTree.EndUpdate();
         }
+    }
+
+    /// <summary>
+    /// The files this window is holding edits for that are not on disk, by full path.
+    ///
+    /// A map and its script are edited in two different places and saved in two
+    /// different ways, which is not the author's problem: what they have is a project
+    /// with unsaved work in it.
+    /// </summary>
+    private IReadOnlyList<string> UnsavedFiles()
+    {
+        var paths = new List<string>();
+        if (document.IsDirty && (savedOpsPath ?? session.Map?.SourcePath) is { } mapPath)
+        {
+            paths.Add(mapPath);
+        }
+        foreach (var editor in OpenDocumentEditors())
+        {
+            if (editor is { HasUnsavedChanges: true, DocumentPath: { } path }) paths.Add(path);
+        }
+        return paths;
+    }
+
+    /// <summary>
+    /// Every open window holding edits to a file of the project.
+    ///
+    /// Found by asking the windows rather than by keeping a list of them: the table,
+    /// effect and quest editors each stand on their own, a script can be opened in a
+    /// window of its own as well as in the panel, and a list here would go stale the
+    /// next time one is added.
+    /// </summary>
+    private IEnumerable<IProjectDocumentEditor> OpenDocumentEditors()
+    {
+        if (scriptEditor is { } embedded) yield return embedded;
+        foreach (var form in System.Windows.Forms.Application.OpenForms)
+        {
+            if (form is IProjectDocumentEditor editor && !ReferenceEquals(editor, scriptEditor))
+            {
+                yield return editor;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Saves everything the project has open and unsaved, under the names the game
+    /// reads, without asking anything.
+    ///
+    /// Being asked where to put each file — and offered <c>z9100.edited.ops</c>, which
+    /// the game will never load, since it looks up a map by name — is not a question
+    /// an author has any use for. The project already knows where its files came from
+    /// and keeps the originals, so it can put them back and undo it later.
+    /// </summary>
+    internal bool SaveProject()
+    {
+        var saved = new List<string>();
+        var failed = false;
+
+        if (document.IsDirty)
+        {
+            if (SaveOps(saveAs: false)) saved.Add(Path.GetFileName(savedOpsPath!));
+            else failed = true;
+        }
+        // ToList first: saving can open or close a window, and the collection of open
+        // forms would be modified while it is being walked.
+        foreach (var editor in OpenDocumentEditors().ToList())
+        {
+            if (!editor.HasUnsavedChanges) continue;
+            var name = editor.DocumentPath is { } path ? Path.GetFileName(path) : "file";
+            if (editor.SaveWithoutAsking()) saved.Add(name);
+            else failed = true;
+        }
+
+        RefreshModProjectTab();
+        ShowUnsavedMapChanges();
+        if (saved.Count == 0 && !failed)
+        {
+            Text = $"{baseTitle} — nothing to save";
+            return true;
+        }
+        if (saved.Count != 0)
+        {
+            Text = $"{baseTitle} — saved {string.Join(", ", saved)}";
+        }
+        return !failed;
+    }
+
+    /// <summary>
+    /// Says in the title bar that the map has edits that are not on disk.
+    ///
+    /// Moving something and closing the window used to lose it in silence — the map
+    /// is only written when asked, and nothing on screen distinguished a saved map
+    /// from an edited one.
+    /// </summary>
+    private void ShowUnsavedMapChanges()
+    {
+        // The scene can refresh while the window is still being built, before there
+        // is a title to append to. Clearing it then would leave the window nameless.
+        if (pristineTitle.Length == 0) return;
+        var suffix = document.IsDirty ? " — unsaved map changes (Ctrl+S)" : string.Empty;
+        var wanted = pristineTitle + suffix;
+        if (string.Equals(baseTitle, wanted, StringComparison.Ordinal)) return;
+        var trailing = Text.Length > baseTitle.Length && Text.StartsWith(baseTitle, StringComparison.Ordinal)
+            ? Text[baseTitle.Length..]
+            : string.Empty;
+        baseTitle = wanted;
+        Text = baseTitle + trailing;
+    }
+
+    /// <summary>
+    /// Whether a path sits inside the open project's game folder, so writing it is
+    /// something the project can capture and undo.
+    /// </summary>
+    private bool InProjectGameDirectory(string path)
+    {
+        if (modProject is null) return false;
+        var root = Path.GetFullPath(modProject.GameDirectory);
+        var full = Path.GetFullPath(path);
+        return full.StartsWith(
+            root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar,
+            StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -5555,18 +5890,33 @@ public sealed class ViewerForm : Form
         }
     }
 
+    /// <summary>
+    /// Writes the map's <c>.ops</c> back.
+    ///
+    /// The game loads a map by name, so a copy called <c>z9100.edited.ops</c> is a
+    /// file nothing will ever read — which is what this offered, every time, because
+    /// the first save was always treated as a "save as". With a project open the map
+    /// is written where the game looks for it and the project keeps the original, so
+    /// the edit can be undone; that is what a project is for. Without one, replacing
+    /// a file in the game's own folder is a decision, so it still asks.
+    /// </summary>
     private bool SaveOps(bool saveAs)
     {
         if (session.Map is null || currentMap is null) return false;
         var targetPath = savedOpsPath;
+        if (string.IsNullOrEmpty(targetPath) && !saveAs && InProjectGameDirectory(session.Map.SourcePath))
+        {
+            targetPath = session.Map.SourcePath;
+        }
         if (saveAs || string.IsNullOrEmpty(targetPath))
         {
             using var dialog = new SaveFileDialog
             {
-                Title = "Save edited OPS",
+                Title = "Save the map's OPS",
                 Filter = "Cold Steel map settings (*.ops)|*.ops|All files (*.*)|*.*",
                 InitialDirectory = Path.GetDirectoryName(session.Map.SourcePath),
-                FileName = $"{Path.GetFileNameWithoutExtension(session.Map.SourcePath)}.edited.ops",
+                // Its own name: the game reads z9100.ops and nothing else.
+                FileName = Path.GetFileName(session.Map.SourcePath),
                 AddExtension = true,
                 DefaultExt = "ops",
                 OverwritePrompt = true,
@@ -5638,6 +5988,7 @@ public sealed class ViewerForm : Form
         baseTitle = $"ED8Editor — {session.Script.Header.Identifier}"
             + (scriptSubject is null ? string.Empty : $" — {scriptSubject.ModelAssetId}")
             + " — 1: move, 2: rotate, 3: scale, Ctrl+click: select through, Ctrl+Z/Y: undo/redo";
+        pristineTitle = baseTitle;
         Text = baseTitle;
         LoadSceneForSession();
         InitializeAssetCatalog();
@@ -6033,6 +6384,17 @@ public sealed class ViewerForm : Form
             });
             return;
         }
+        // Wide enough for the longest label this profile actually has. A fixed 110
+        // pixels clipped "Destination map" and "Destination entry" to the same
+        // "Destination", so the two fields read as duplicates of each other.
+        var labelWidth = 110;
+        foreach (var input in profile.Inputs)
+        {
+            labelWidth = Math.Max(
+                labelWidth,
+                TextRenderer.MeasureText(input.DisplayName, opsInputPanel.Font).Width + 12);
+        }
+
         foreach (var input in profile.Inputs)
         {
             var row = new TableLayoutPanel
@@ -6043,7 +6405,7 @@ public sealed class ViewerForm : Form
                 RowCount = 1,
                 Margin = Padding.Empty,
             };
-            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 110));
+            row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, labelWidth));
             row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             row.Controls.Add(new Label
             {
@@ -6493,6 +6855,7 @@ public sealed class ViewerForm : Form
             if (kind != OpsValueKind.Text)
                 row.Cells[1] = CreateOpsPropertyValueCell(kind, attribute.Value);
         }
+        RefreshPropertyNameKind();
         _ = RefreshPropertyDestinationEntriesAsync();
     }
 
@@ -6566,6 +6929,56 @@ public sealed class ViewerForm : Form
         cell.Items.AddRange(allChoices.Cast<object>().ToArray());
         cell.Value = currentValue;
         return cell;
+    }
+
+    /// <summary>
+    /// Puts the right editor on an entry box's <c>name</c> after its destination
+    /// changed.
+    ///
+    /// The two kinds of entry box are told apart by their destination map alone: a
+    /// box with one is a way out and its name is a label, a box without one is the
+    /// walk-in event trigger whose name has to be a scenario function. So the name
+    /// changes meaning when the destination does, and the grid resolved it once when
+    /// it was built — a box that had no destination kept offering the function list
+    /// after being given one, which is a list of values it must not be set to.
+    /// </summary>
+    private void RefreshPropertyNameKind()
+    {
+        var selected = selection;
+        if (selected is null || selected.Kind != SceneElementKind.EntryVolume) return;
+        var nameRow = FindPropertyRow("name");
+        if (nameRow is null || nameRow.ReadOnly) return;
+
+        // What the grid says now, not what the document says: the destination has
+        // been typed but not applied yet, and it is the typed value the author is
+        // asking about.
+        var values = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (DataGridViewRow row in propertyGrid.Rows)
+        {
+            var key = row.Cells[0].Value?.ToString();
+            if (!string.IsNullOrEmpty(key))
+                values[key] = row.Cells[1].Value?.ToString() ?? string.Empty;
+        }
+
+        var current = nameRow.Cells[1].Value?.ToString() ?? string.Empty;
+        var kind = OpsAttributeValueKinds.Resolve(selected, "name", values);
+        var offersChoices = nameRow.Cells[1] is DataGridViewComboBoxCell;
+        if (kind == OpsValueKind.Text && offersChoices)
+        {
+            nameRow.Cells[1] = new DataGridViewTextBoxCell { Value = current };
+        }
+        else if (kind != OpsValueKind.Text && !offersChoices)
+        {
+            nameRow.Cells[1] = CreateOpsPropertyValueCell(kind, current);
+        }
+
+        nameRow.Cells[1].ToolTipText = kind == OpsValueKind.Text
+            ? "A label. This box has a destination, so it teleports and runs nothing:"
+                + " no script function is needed, and none of the game's 37 type-2 boxes"
+                + " names one. The convention is go_<destination map>."
+            : "The scenario function this box runs when the player walks into it. It has"
+                + " no destination map, which is what makes it an event trigger rather"
+                + " than a way out.";
     }
 
     private async Task RefreshPropertyDestinationEntriesAsync()

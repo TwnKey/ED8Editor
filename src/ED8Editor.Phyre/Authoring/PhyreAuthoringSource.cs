@@ -73,10 +73,19 @@ public sealed record PhyreJointSource(
 /// or anything else — fills this in; nothing here knows about any of them, and
 /// nothing here knows about the editor.
 /// </summary>
+/// <param name="AssetFolder">
+/// Where the cluster sits, as the manifest states it — <c>map/a0003</c> for a map,
+/// <c>map/objects/t10lig03</c> for a prop. The objects inside a cluster are named
+/// after that path, and the engine looks them up by the whole name: a cluster
+/// declared in one folder whose objects claim another is a cluster whose visual
+/// scene cannot be found. Null means <c>map/&lt;AssetName&gt;</c>, which is where a
+/// map lives.
+/// </param>
 public sealed record PhyreModelSource(
     string AssetName,
     IReadOnlyList<PhyreMeshSource> Meshes,
-    IReadOnlyList<PhyreJointSource> Joints)
+    IReadOnlyList<PhyreJointSource> Joints,
+    string? AssetFolder = null)
 {
     /// <summary>Whether the model follows a skeleton.</summary>
     public bool IsSkinned => Joints.Count > 0;

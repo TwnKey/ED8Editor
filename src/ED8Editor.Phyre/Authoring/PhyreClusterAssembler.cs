@@ -18,15 +18,48 @@ namespace ED8Editor.Phyre.Authoring;
 public static class PhyreClusterAssembler
 {
     private const int InstanceHeaderSize = 36;
+    private const int InstanceDataAlignment = 4;
 
     public static byte[] Assemble(PhyreClusterContents contents)
     {
         ArgumentNullException.ThrowIfNull(contents);
 
         var classNames = contents.ClassNames();
-        var descriptors = PhyreSchemaLibrary.Descriptors(contents.TypeNames, classNames);
+        // The canonical class table and its primitive-type table are one ABI.
+        // ClassNames() deliberately promotes authored model/effect clusters to
+        // that fixed game table; retaining a smaller caller-derived type list
+        // would leave canonical descriptors referring to enum types that have no
+        // id in the destination namespace.
+        IReadOnlyList<string> typeNames;
+        if (contents.SchemaProfile == PhyreSchemaProfile.FalcomAssetProcessor)
+        {
+            typeNames = PhyreSchemaLibrary.AssetProcessorCanonicalTypes;
+        }
+        else if (contents.SchemaProfile == PhyreSchemaProfile.Cs1RuntimeAuthoring)
+        {
+            typeNames = PhyreSchemaLibrary.CanonicalTypes;
+        }
+        else if (classNames.SequenceEqual(PhyreSchemaLibrary.CanonicalClasses)
+            || classNames.SequenceEqual(PhyreSchemaLibrary.CanonicalPhysicsClasses))
+        {
+            typeNames = PhyreSchemaLibrary.CanonicalTypes;
+        }
+        else
+        {
+            // ClassNames() may add mandatory, non-instantiated runtime classes
+            // after a writer has prepared its initial type list. Preserve the
+            // caller's established numbering and append only types newly required
+            // by that final class table.
+            var listed = contents.TypeNames.ToHashSet(StringComparer.Ordinal);
+            typeNames = contents.TypeNames.Concat(
+                    PhyreSchemaLibrary.PrimitiveTypesFor(classNames)
+                        .Where(listed.Add))
+                .ToArray();
+        }
+        var descriptors = PhyreSchemaLibrary.Descriptors(
+            typeNames, classNames, contents.SchemaProfile);
         var packedNamespace = PhyreNamespaceWriter.Write(
-            contents.TypeNames, descriptors, contents.NamespaceHeader);
+            typeNames, descriptors, contents.NamespaceHeader);
 
         // A group's objects are laid one after another, then whatever its arrays
         // hold. The class says how big one object is — except for a header
@@ -52,14 +85,26 @@ public static class PhyreClusterAssembler
             }
             var objectsSize = (uint)(objectData.Length - before);
             objectData.Write(group.ArrayData.Span);
+            // Phyre advances from one instance list to the next using m_size,
+            // then treats the next address as storage for 32-bit objects and
+            // pointers. The shipped DX11 clusters therefore include the
+            // trailing alignment bytes in both m_arraysSize and m_size. String
+            // arrays are the case that exposes this: their logical byte count
+            // is arbitrary, but the following instance list still starts on a
+            // four-byte boundary.
+            while ((objectData.Length - before) % InstanceDataAlignment != 0)
+            {
+                objectData.WriteByte(0);
+            }
             var groupSize = (uint)(objectData.Length - before);
+            var arraysSize = groupSize - objectsSize;
 
             var header = headers.AsSpan(index * InstanceHeaderSize);
             Write(header, 0, (uint)(classId + 1));
             Write(header, 4, (uint)group.Objects.Count);
             Write(header, 8, groupSize);
             Write(header, 12, objectsSize);
-            Write(header, 16, (uint)group.ArrayData.Length);
+            Write(header, 16, arraysSize);
             Write(header, 20, Count(contents.Fixups.PointerArrays, index, value => value.Count));
             Write(header, 24, Count(contents.Fixups.Arrays, index, _ => 1));
             Write(header, 28, Count(contents.Fixups.Pointers, index, _ => 1));
@@ -107,7 +152,7 @@ public static class PhyreClusterAssembler
             false,
             PlatformId,
             0,
-            contents.TypeNames,
+            typeNames,
             descriptors,
             groups,
             header0);
@@ -132,7 +177,18 @@ public static class PhyreClusterAssembler
 
     private const uint HeaderSize = 84;
     private const uint Marker = 0x50485952;
-    private const uint PlatformId = 6;
+    /// <summary>
+    /// Which platform's cluster this is: the four characters "DX11", which is what
+    /// every cluster the game ships carries at that word and what this project's own
+    /// texture writer already used.
+    ///
+    /// It had been 6 here. A cluster is otherwise well-formed with the wrong value —
+    /// our reader takes it, the structure checks pass — but the engine reads the
+    /// platform before it interprets anything the GPU will touch, so an authored
+    /// model never had a chance to be looked at. It is the only word the grafting
+    /// path preserved that this path did not.
+    /// </summary>
+    private const uint PlatformId = 0x44583131;
 
     private static uint Read(ReadOnlySpan<byte> header, int at)
         => BinaryPrimitives.ReadUInt32LittleEndian(header[at..]);

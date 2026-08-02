@@ -31,10 +31,6 @@ public static class PhyreModelGeometry
     private const int SegmentIndexSizeField = 0x48;
     private const int SegmentVertexPointerField = 0x18;
 
-    /// <summary>PDataBlockD3D11: where the vertices start and how long they run.</summary>
-    private const int BlockVertexOffsetField = 0x28;
-    private const int BlockVertexSizeField = 0x30;
-
     public static IReadOnlyList<PhyreGeometryRange> Ranges(PhyreClusterData cluster)
     {
         ArgumentNullException.ThrowIfNull(cluster);
@@ -45,9 +41,14 @@ public static class PhyreModelGeometry
 
         // The index buffers come first in the payload, so a vertex offset is
         // counted from the end of them.
+        var indexBufferSizeField = MemberOffset(
+            cluster, "PClusterHeaderD3D11", "m_indexBufferSize");
+        var blockVertexOffsetField = MemberOffset(
+            cluster, "PDataBlockD3D11", "m_offsetInVertexBuffer");
+        var blockVertexSizeField = MemberOffset(
+            cluster, "PDataBlockD3D11", "m_dataSize");
         var indexBufferSize = BinaryPrimitives.ReadUInt32LittleEndian(
-            cluster.Data.Span[(int)PhyreTextureSchema.MemberOffset(
-                "PClusterHeaderD3D11", "m_indexBufferSize")..]);
+            cluster.Data.Span[indexBufferSizeField..]);
 
         var group = cluster.Metadata.InstanceGroups[segments];
         for (uint id = 0; id < group.Count; id++)
@@ -69,7 +70,7 @@ public static class PhyreModelGeometry
         for (uint id = 0; id < blockGroup.Count; id++)
         {
             var block = cluster.GetObject(blocks, id).Span;
-            var size = BinaryPrimitives.ReadUInt32LittleEndian(block[BlockVertexSizeField..]);
+            var size = BinaryPrimitives.ReadUInt32LittleEndian(block[blockVertexSizeField..]);
             if (size == 0) continue;
             var offset = ObjectOffset(cluster, blocks, id);
             ranges.Add(new PhyreGeometryRange(
@@ -77,10 +78,10 @@ public static class PhyreModelGeometry
                 blocks,
                 id,
                 indexBufferSize
-                    + BinaryPrimitives.ReadUInt32LittleEndian(block[BlockVertexOffsetField..]),
+                    + BinaryPrimitives.ReadUInt32LittleEndian(block[blockVertexOffsetField..]),
                 size,
-                offset + BlockVertexOffsetField,
-                offset + BlockVertexSizeField));
+                offset + blockVertexOffsetField,
+                offset + blockVertexSizeField));
         }
         return ranges;
     }
@@ -113,6 +114,22 @@ public static class PhyreModelGeometry
             if (cluster.Metadata.InstanceGroups[index].ClassName == className) return index;
         }
         return -1;
+    }
+
+    private static int MemberOffset(
+        PhyreClusterData cluster,
+        string className,
+        string memberName)
+    {
+        var descriptor = cluster.Metadata.Classes.SingleOrDefault(value =>
+            value.Name == className)
+            ?? throw new InvalidPhyreException(
+                $"Phyre metadata has no {className} descriptor.");
+        var member = descriptor.Members.SingleOrDefault(value =>
+            value.Name == memberName)
+            ?? throw new InvalidPhyreException(
+                $"Phyre metadata has no {className}.{memberName} member.");
+        return checked((int)member.ValueOffset);
     }
 
     private static long ObjectOffset(PhyreClusterData cluster, int groupIndex, uint objectId)

@@ -11,7 +11,7 @@ namespace ED8Editor.Viewer;
 /// Visual editor for CS1 scripts. Every editable widget writes to the persistent native
 /// document; saving delegates relocation and encoding to the decompiler engine.
 /// </summary>
-public sealed class ScriptEditorForm : Form
+public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
 {
     private static readonly Encoding ScriptEncoding = CreateScriptEncoding();
     private static readonly Font DialogFont = new("Consolas", 9.5f);
@@ -728,6 +728,35 @@ public sealed class ScriptEditorForm : Form
 
     public bool SaveCurrent(bool saveAs = false) => Save(saveAs);
 
+    /// <summary>Whether the open script has edits that are not on disk.</summary>
+    public bool HasUnsavedChanges => document is { IsDirty: true };
+
+    /// <summary>Where the open script would be written, saved before or not.</summary>
+    public string? CurrentSavePath => document is null ? null : document.SavedPath ?? document.SourcePath;
+
+    public string? CurrentFileName =>
+        CurrentSavePath is { } path ? Path.GetFileName(path) : null;
+
+    string? IProjectDocumentEditor.DocumentPath => CurrentSavePath;
+
+    bool IProjectDocumentEditor.SaveWithoutAsking() => Save(saveAs: false);
+
+    /// <summary>
+    /// The game folder of the project this editor belongs to, when it has one. A
+    /// script opened from inside it is saved back over itself: the project holds the
+    /// pristine copy, so the edit can be undone, and a name the game does not read
+    /// would make the edit pointless.
+    /// </summary>
+    public string? ProjectGameDirectory { get; set; }
+
+    private bool InProjectGameDirectory(string path)
+    {
+        if (string.IsNullOrEmpty(ProjectGameDirectory)) return false;
+        var root = Path.GetFullPath(ProjectGameDirectory);
+        if (!root.EndsWith(Path.DirectorySeparatorChar)) root += Path.DirectorySeparatorChar;
+        return Path.GetFullPath(path).StartsWith(root, StringComparison.OrdinalIgnoreCase);
+    }
+
     public IReadOnlyList<FishingSpotScriptBinding> FindFishingSpotBindings(string functionName) =>
         script is null
             ? Array.Empty<FishingSpotScriptBinding>()
@@ -985,14 +1014,19 @@ public sealed class ScriptEditorForm : Form
     {
         if (document is null) return false;
         var target = saveAs ? null : document.SavedPath;
+        if (string.IsNullOrEmpty(target) && !saveAs && InProjectGameDirectory(document.SourcePath))
+        {
+            target = document.SourcePath;
+        }
         if (string.IsNullOrEmpty(target))
         {
             using var dialog = new SaveFileDialog
             {
-                Title = "Save edited script",
+                Title = "Save the script",
                 Filter = "CS1 scripts (*.dat)|*.dat|All files|*.*",
                 InitialDirectory = Path.GetDirectoryName(document.SourcePath),
-                FileName = $"{Path.GetFileNameWithoutExtension(document.SourcePath)}.edited.dat",
+                // Its own name: the game loads t1000.dat, not t1000.edited.dat.
+                FileName = Path.GetFileName(document.SourcePath),
                 DefaultExt = "dat",
                 AddExtension = true,
                 OverwritePrompt = true,
@@ -1332,6 +1366,19 @@ public sealed class ScriptEditorForm : Form
         if (!IsTextEntryFocused() && keyData == (Keys.Control | Keys.V))
         {
             PasteInstructionsAfterSelection();
+            return true;
+        }
+        // A script opened in a window of its own: Ctrl+S still means the whole
+        // project. Only reached when this is a top-level window — inside the main
+        // window's panel the form handles the key first.
+        if (TopLevel && keyData == (Keys.Control | Keys.S))
+        {
+            if (!ProjectSave.Everything()) Save(saveAs: false);
+            return true;
+        }
+        if (TopLevel && keyData == (Keys.Control | Keys.Shift | Keys.S))
+        {
+            Save(saveAs: true);
             return true;
         }
         return base.ProcessCmdKey(ref message, keyData);

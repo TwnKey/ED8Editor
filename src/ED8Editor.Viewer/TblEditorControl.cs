@@ -65,7 +65,13 @@ public sealed class TblEditorControl : UserControl
         ? Path.Combine(textRoot, locale)
         : null;
 
-    public void SaveCurrent(bool saveAs = false) => Save(saveAs);
+    public bool SaveCurrent(bool saveAs = false) => Save(saveAs);
+
+    /// <summary>Whether the open table has edits that are not on disk.</summary>
+    public bool HasUnsavedChanges => dirty && document is not null;
+
+    /// <summary>Where the open table would be written.</summary>
+    public string? DocumentPath => document?.SourcePath;
 
     private void BuildUi()
     {
@@ -284,9 +290,9 @@ public sealed class TblEditorControl : UserControl
         RefreshCategories();
     }
 
-    private void Save(bool saveAs)
+    private bool Save(bool saveAs)
     {
-        if (document is null) return;
+        if (document is null) return false;
         var path = document.SourcePath;
         if (saveAs || string.IsNullOrEmpty(path))
         {
@@ -299,7 +305,7 @@ public sealed class TblEditorControl : UserControl
                 DefaultExt = "tbl",
                 OverwritePrompt = true,
             };
-            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            if (dialog.ShowDialog(this) != DialogResult.OK) return false;
             path = dialog.FileName;
         }
         try
@@ -308,10 +314,12 @@ public sealed class TblEditorControl : UserControl
             dirty = false;
             status.Text = $"Saved {path}";
             CatalogChanged?.Invoke(this, EventArgs.Empty);
+            return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException)
         {
             MessageBox.Show(exception.Message, "Cannot save TBL", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return false;
         }
     }
 

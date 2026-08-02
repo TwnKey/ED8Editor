@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net7.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ED8Editor.Application\ED8Editor.Application.csproj" />
+    <ProjectReference Include="..\..\src\ED8Editor.Models\ED8Editor.Models.csproj" />
+  </ItemGroup>
+</Project>

@@ -11,9 +11,15 @@ namespace ED8Editor.Viewer;
 /// the scene viewport — an effect is judged on its own, against a plain
 /// background, not buried in a map.
 /// </summary>
-internal sealed class EffEditorWindow : Form
+internal sealed class EffEditorWindow : Form, IProjectDocumentEditor
 {
     private readonly EffEditorControl editor;
+
+    public bool HasUnsavedChanges => editor.HasUnsavedChanges;
+
+    public string? DocumentPath => editor.DocumentPath;
+
+    public bool SaveWithoutAsking() => editor.SaveCurrent();
     private readonly Panel previewHost = new() { Dock = DockStyle.Fill, BackColor = Color.Black };
     private readonly TrackBar orbitYaw = new()
     {
@@ -122,6 +128,25 @@ internal sealed class EffEditorWindow : Form
             // a flipped rectangle, which mirrors the texture.
             editor.SetCrop(drag.Start.X, drag.Start.Y, drag.End.X, drag.End.Y);
         };
+    }
+
+    /// <summary>
+    /// Ctrl+S saves the whole project, not just this effect. Ctrl+Shift+S is the one
+    /// that asks where to put this file.
+    /// </summary>
+    protected override bool ProcessCmdKey(ref Message message, Keys key)
+    {
+        if (key == (Keys.Control | Keys.S))
+        {
+            if (!ProjectSave.Everything()) editor.SaveCurrent();
+            return true;
+        }
+        if (key == (Keys.Control | Keys.Shift | Keys.S))
+        {
+            editor.SaveCurrent(saveAs: true);
+            return true;
+        }
+        return base.ProcessCmdKey(ref message, key);
     }
 
     /// <summary>Where a point of the preview panel falls on the texture, in 0..1.</summary>

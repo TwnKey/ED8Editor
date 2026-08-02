@@ -897,6 +897,9 @@ var tests = new (string Name, Action Run)[]
     ("writes transformed OPS props without losing unknown data", WritesTransformedOpsProps),
     ("writes duplicated and deleted OPS spatial elements", WritesStructuralOpsEdits),
     ("creates observed OPS spatial profiles in empty sections", CreatesObservedOpsProfiles),
+    ("offers script functions only for an entry box that runs one", ResolvesEntryBoxNameKind),
+    ("writes an entry box dragged in the viewport back to its own file", WritesDraggedEntryBox),
+    ("saves a moved entry box over the map the game reads, and reverts it", SavesMapInPlaceAndReverts),
     ("indexes PKG names without reading archives", IndexesPkgNamesWithoutReadingArchives),
     ("round-trips CS1 TBL entries byte-exactly", RoundTripsCs1Table),
     ("preserves localized QSText stale lengths", PreservesQuestTextStaleLength),
@@ -924,6 +927,11 @@ var tests = new (string Name, Action Run)[]
     ("evaluates effect keyframe tracks like the engine", EvaluatesEffectTracks),
     ("adds, removes and moves effect segments", EditsEffectSegments),
     ("writes a new effect from the format alone", CreatesEffectFromScratch),
+    ("reads back an authored cluster as the bytes it wrote", AuthoredClusterRoundTrips),
+    ("writes the coherent Falcom AssetProcessor model ABI", WritesAssetProcessorModelAbi),
+    ("writes AssetProcessor objects against the CS1 runtime class registry", WritesCs1RuntimeAuthoringAbi),
+    ("authors a material from an effect's declared ABI", AuthorsMaterialFromEffectAbi),
+    ("writes engine-compatible authored string and material fixups", WritesAuthoredModelFixups),
 };
 
 var failures = 0;
@@ -1586,6 +1594,330 @@ static byte[] BuildColdSteelEffect()
 // game ships. It has to read back as what was written — above all the blocks the
 // PC layout always expects after the spawn list, which have no flag word to
 // announce them.
+/// <summary>
+/// A cluster this project writes has to read back as the bytes it wrote.
+///
+/// Not a style point. The fixup tables are what the engine walks to write pointers
+/// INTO objects, so a block our own reader decodes differently from the way our
+/// writer packed it is a block whose pointers land somewhere nobody chose — and an
+/// overwritten vtable is exactly the crash the game reports (0xC0000005 with an
+/// invalid instruction pointer).
+///
+/// This caught a real disagreement: one byte of the pointer table, in the last
+/// block. The two oracles that compare an authored cluster with a shipped one could
+/// not see it, because both read the file the same wrong way.
+/// </summary>
+static void AuthoredClusterRoundTrips()
+{
+    var vertices = new List<PhyreVertexSource>();
+    foreach (var corner in new[]
+             {
+                 new Vector3(-0.5f, 0f, -0.5f), new Vector3(0.5f, 0f, -0.5f),
+                 new Vector3(0.5f, 1f, -0.5f), new Vector3(-0.5f, 1f, -0.5f),
+             })
+    {
+        vertices.Add(new PhyreVertexSource(
+            corner,
+            new Vector3(0f, 0f, -1f),
+            new[] { new PhyreTexCoordSet(new Vector2(0f, 0f), Vector3.UnitX, Vector3.UnitY) },
+            Array.Empty<int>(),
+            Array.Empty<float>()));
+    }
+    var model = new PhyreModelSource(
+        "roundtrip",
+        new[] { new PhyreMeshSource("mesh", vertices, new[] { 0, 1, 2, 0, 2, 3 }) },
+        Array.Empty<PhyreJointSource>());
+
+    var written = PhyreClusterAssembler.Assemble(PhyreModelClusterWriter.Contents(
+        model, new PhyreShaderBinding("shaders/ed8.fx#TEST"),
+        PhyreModelGeometryPacker.Pack(model)));
+
+    // Taken apart with our own readers and put back together with our own writer.
+    var cut = PhyreClusterSectionReader.Read(written);
+    var data = new PhyreClusterReader().Read(written);
+    var fixups = new PhyreFixupReader().Read(written, cut.Metadata);
+    var classes = cut.Metadata.Classes.ToList();
+    var groups = new List<PhyreGroupContents>();
+    foreach (var group in cut.Metadata.InstanceGroups)
+    {
+        var className = group.ClassName ?? string.Empty;
+        var objects = new List<PhyreObjectContents>();
+        var each = group.Count == 0 ? 0 : (int)(group.ObjectsSize / group.Count);
+        var stored = data.GetGroupObjectsData(group.Index).Span;
+        for (uint id = 0; id < group.Count; id++)
+        {
+            objects.Add(PhyreObjectWriter.ReadObject(
+                stored.Slice((int)(id * each), each), className, classes));
+        }
+        groups.Add(new PhyreGroupContents(
+            className,
+            objects,
+            group.ArraysSize == 0
+                ? ReadOnlyMemory<byte>.Empty
+                : data.GetArrayData(group.Index, 0, group.ArraysSize)));
+    }
+
+    var again = PhyreClusterAssembler.Assemble(new PhyreClusterContents(
+        cut.Metadata.Types,
+        groups,
+        fixups,
+        fixups.UserFixups,
+        cut.HeaderClasses,
+        cut.Payload,
+        PhyreNamespaceWriter.ReadUnmodelledHeader(cut.PackedNamespace),
+        cut.Header[(17 * sizeof(uint))..]));
+
+    Equal(written.Length, again.Length);
+    for (var at = 0; at < written.Length; at++)
+    {
+        if (written[at] == again[at]) continue;
+        throw new InvalidOperationException(
+            $"An authored cluster does not read back as itself: byte {at} was written"
+            + $" 0x{written[at]:X2} and comes back 0x{again[at]:X2}."
+            + " The fixup tables are what the engine walks to place pointers, so a"
+            + " block it decodes differently writes them somewhere nobody chose.");
+    }
+}
+
+static void WritesAssetProcessorModelAbi()
+{
+    var vertices = new[]
+    {
+        new PhyreVertexSource(
+            Vector3.Zero, Vector3.UnitZ,
+            Array.Empty<PhyreTexCoordSet>(), Array.Empty<int>(), Array.Empty<float>()),
+        new PhyreVertexSource(
+            Vector3.UnitX, Vector3.UnitZ,
+            Array.Empty<PhyreTexCoordSet>(), Array.Empty<int>(), Array.Empty<float>()),
+        new PhyreVertexSource(
+            Vector3.UnitY, Vector3.UnitZ,
+            Array.Empty<PhyreTexCoordSet>(), Array.Empty<int>(), Array.Empty<float>()),
+    };
+    var model = new PhyreModelSource(
+        "asset_processor_abi",
+        new[] { new PhyreMeshSource("triangle", vertices, new[] { 0, 1, 2 }) },
+        Array.Empty<PhyreJointSource>());
+    var cluster = PhyreClusterAssembler.Assemble(
+        PhyreModelClusterWriter.Contents(
+            model,
+            new PhyreShaderBinding("shaders/ed8.fx#TEST"),
+            PhyreModelGeometryPacker.Pack(model),
+            schemaProfile: PhyreSchemaProfile.FalcomAssetProcessor));
+    var read = new PhyreClusterReader().Read(cluster);
+
+    Equal(126, read.Metadata.Classes.Count);
+    Equal(15, read.Metadata.Types.Count);
+    Equal(148u, read.Metadata.Classes.Single(value =>
+        value.Name == "PClassDescriptor").Size);
+    Equal(64u, read.Metadata.Classes.Single(value =>
+        value.Name == "PDataBlockD3D11").Size);
+    Equal(112u, read.Metadata.Classes.Single(value =>
+        value.Name == "PMeshInstance").Size);
+    if (read.Metadata.Classes.All(value => value.Name != "PIndexDataBlock"))
+        throw new InvalidOperationException("The AssetProcessor PIndexDataBlock class is absent.");
+    var meshInstance = read.Metadata.InstanceGroups.Single(value =>
+        value.ClassName == "PMeshInstance");
+    Equal(112u, meshInstance.ObjectsSize);
+    Equal(0u, meshInstance.ArraysSize);
+}
+
+static void WritesCs1RuntimeAuthoringAbi()
+{
+    var vertices = new[]
+    {
+        new PhyreVertexSource(
+            Vector3.Zero, Vector3.UnitZ,
+            Array.Empty<PhyreTexCoordSet>(), Array.Empty<int>(), Array.Empty<float>()),
+        new PhyreVertexSource(
+            Vector3.UnitX, Vector3.UnitZ,
+            Array.Empty<PhyreTexCoordSet>(), Array.Empty<int>(), Array.Empty<float>()),
+        new PhyreVertexSource(
+            Vector3.UnitY, Vector3.UnitZ,
+            Array.Empty<PhyreTexCoordSet>(), Array.Empty<int>(), Array.Empty<float>()),
+    };
+    var model = new PhyreModelSource(
+        "runtime_authoring_abi",
+        new[] { new PhyreMeshSource("triangle", vertices, new[] { 0, 1, 2 }) },
+        Array.Empty<PhyreJointSource>());
+    var cluster = PhyreClusterAssembler.Assemble(
+        PhyreModelClusterWriter.Contents(
+            model,
+            new PhyreShaderBinding("shaders/ed8.fx#TEST"),
+            PhyreModelGeometryPacker.Pack(model),
+            schemaProfile: PhyreSchemaProfile.Cs1RuntimeAuthoring));
+    var read = new PhyreClusterReader().Read(cluster);
+
+    Equal(125, read.Metadata.Classes.Count);
+    Equal(15, read.Metadata.Types.Count);
+    if (read.Metadata.Classes.Any(value => value.Name == "PIndexDataBlock"))
+        throw new InvalidOperationException(
+            "The CS1 runtime profile declares unsupported PIndexDataBlock.");
+    Equal(64u, read.Metadata.Classes.Single(value =>
+        value.Name == "PDataBlockD3D11").Size);
+    Equal(112u, read.Metadata.Classes.Single(value =>
+        value.Name == "PMeshInstance").Size);
+    Equal(112u, read.Metadata.InstanceGroups.Single(value =>
+        value.ClassName == "PMeshInstance").ObjectsSize);
+}
+
+static void WritesAuthoredModelFixups()
+{
+    var vertices = new[]
+    {
+        new PhyreVertexSource(
+            new Vector3(-0.5f, 0f, 0f), Vector3.UnitZ,
+            new[] { new PhyreTexCoordSet(Vector2.Zero, Vector3.UnitX, Vector3.UnitY) },
+            Array.Empty<int>(), Array.Empty<float>()),
+        new PhyreVertexSource(
+            new Vector3(0.5f, 0f, 0f), Vector3.UnitZ,
+            new[] { new PhyreTexCoordSet(Vector2.UnitX, Vector3.UnitX, Vector3.UnitY) },
+            Array.Empty<int>(), Array.Empty<float>()),
+        new PhyreVertexSource(
+            new Vector3(0f, 1f, 0f), Vector3.UnitZ,
+            new[] { new PhyreTexCoordSet(Vector2.UnitY, Vector3.UnitX, Vector3.UnitY) },
+            Array.Empty<int>(), Array.Empty<float>()),
+    };
+    var model = new PhyreModelSource(
+        "fixups",
+        new[] { new PhyreMeshSource("mesh", vertices, new[] { 0, 1, 2 }) },
+        Array.Empty<PhyreJointSource>());
+    var material = PhyreMaterialTableReader.Minimal("shaders/ed8.fx#TEST");
+    var cluster = PhyreClusterAssembler.Assemble(PhyreModelClusterWriter.Contents(
+        model, new PhyreShaderBinding(material.ShaderAsset, material),
+        PhyreModelGeometryPacker.Pack(model)));
+
+    var sections = PhyreClusterSectionReader.Read(cluster);
+    var metadata = sections.Metadata;
+    Equal(
+        metadata.InstanceGroups.Sum(group => group.Size),
+        metadata.TotalDataSize);
+    foreach (var group in metadata.InstanceGroups)
+    {
+        Equal(0u, group.Size % sizeof(uint));
+        Equal(0u, group.ArraysSize % sizeof(uint));
+    }
+    Equal(0u, metadata.TotalDataSize % sizeof(uint));
+    var fixups = new PhyreFixupReader().Read(cluster, metadata);
+
+    int Group(string name) => metadata.InstanceGroups
+        .Single(group => group.ClassName == name).Index;
+
+    var nodeName = fixups.Arrays.Single(value =>
+        value.SourceListIndex == Group("PNode"));
+    Equal(1u, nodeName.SourceObjectId);
+    Equal(0x8000004Cu, nodeName.SourceOffsetOrMember);
+
+    foreach (var value in fixups.Arrays.Where(value =>
+                 value.SourceListIndex == Group("PAssetReference")))
+    {
+        Equal(0x80000018u, value.SourceOffsetOrMember);
+    }
+    Equal(
+        0x80000004u,
+        fixups.Arrays.Single(value =>
+            value.SourceListIndex == Group("PAssetReferenceImport"))
+            .SourceOffsetOrMember);
+    Equal(
+        0x80000004u,
+        fixups.Arrays.Single(value =>
+            value.SourceListIndex == Group("PShaderParameterDefinition"))
+            .SourceOffsetOrMember);
+
+    var definitions = metadata.InstanceGroups.Single(value =>
+        value.ClassName == "PShaderParameterDefinition");
+    var definitionPointer = fixups.Pointers.Single(value =>
+        value.SourceListIndex == Group("PParameterBuffer")
+        && value.SourceOffsetOrMember == 0x8000000Cu);
+    Equal((uint)definitions.Index, definitionPointer.DestinationListIndex);
+    Equal(0u, definitionPointer.DestinationObjectId);
+
+    foreach (var (className, expectedSource) in new[]
+             {
+                 ("PDataBlockD3D11", 0x8000000Cu),
+                 ("PMesh", 0x80000004u),
+                 ("PMeshInstance", 0x80000028u),
+                 ("PMeshSegment", 0x80000018u),
+             })
+    {
+        var group = Group(className);
+        Equal(
+            expectedSource,
+            fixups.Pointers.First(value =>
+                value.SourceListIndex == group
+                && value.UserFixupId is null
+                && (value.SourceOffsetOrMember & 0x80000000u) != 0)
+                .SourceOffsetOrMember);
+    }
+
+    var gameMaterials = fixups.Arrays.Single(value =>
+        value.SourceListIndex == Group("PMeshInstance"));
+    Equal(0x80000064u, gameMaterials.SourceOffsetOrMember);
+    Equal(1u, gameMaterials.Count);
+    Equal(4u, metadata.InstanceGroups[Group("PMeshInstance")].ArraysSize);
+}
+
+static void AuthorsMaterialFromEffectAbi()
+{
+    var packagePath =
+        @"C:\Users\Administrator\Desktop\my-mod.files\original\data\asset\D3D11\O_T10LIG03.pkg";
+    if (!File.Exists(packagePath)) return;
+    var archive = new PkgArchiveReader().Read(packagePath);
+    var effectEntry = archive.Entries.Single(value =>
+        value.Name.Equals(
+            "ed8.fx#D506953A7385090896B925A6E8DE8286.phyre",
+            StringComparison.OrdinalIgnoreCase));
+    var effect = archive.ReadEntry(effectEntry);
+    var material = PhyreMaterialTableReader.FromEffect(
+        "shaders/ed8.fx#D506953A7385090896B925A6E8DE8286",
+        effect,
+        "map/images/test-neutral.dds");
+
+    Equal(624u, material.ParameterBufferSize);
+    Equal(55u, material.DefinitionCount);
+    Equal(55, material.Children.Count);
+    // A texture capture owns both a sampler pointer at +8 and the texture
+    // import at +12. Together with the 25 standalone sampler captures this
+    // gives the exact 26 sampler objects used by shipped D506 materials.
+    Equal(26, material.SamplerStates.Count);
+    Equal(55, material.ParameterDefinitions.Count);
+    Equal(55, material.DefinitionArrays.Count);
+    Equal(1, material.Imports.Count);
+    Equal(0x8000001Cu, material.Imports[0].Source);
+    Equal(1, material.Pointers.Count(value =>
+        value.SourceOffset == 0x80000018u
+        && value.TargetClass == "PSamplerState"));
+
+    var model = new PhyreModelSource(
+        "effect_abi",
+        new[]
+        {
+            new PhyreMeshSource(
+                "triangle",
+                new[]
+                {
+                    new PhyreVertexSource(
+                        Vector3.Zero, Vector3.UnitZ,
+                        Array.Empty<PhyreTexCoordSet>(), Array.Empty<int>(), Array.Empty<float>()),
+                    new PhyreVertexSource(
+                        Vector3.UnitX, Vector3.UnitZ,
+                        Array.Empty<PhyreTexCoordSet>(), Array.Empty<int>(), Array.Empty<float>()),
+                    new PhyreVertexSource(
+                        Vector3.UnitY, Vector3.UnitZ,
+                        Array.Empty<PhyreTexCoordSet>(), Array.Empty<int>(), Array.Empty<float>()),
+                },
+                new[] { 0, 1, 2 }),
+        },
+        Array.Empty<PhyreJointSource>());
+    var cluster = PhyreClusterAssembler.Assemble(
+        PhyreModelClusterWriter.Contents(
+            model,
+            new PhyreShaderBinding(material.ShaderAsset, material),
+            PhyreModelGeometryPacker.Pack(model)));
+    var readBack = PhyreMaterialTableReader.Read(cluster);
+    Equal(material.ParameterBufferSize, readBack.ParameterBufferSize);
+    Equal(material.DefinitionCount, readBack.DefinitionCount);
+}
+
 static void CreatesEffectFromScratch()
 {
     var effect = EffAuthoring.CreateEffect("brand_new");
@@ -3413,6 +3745,203 @@ static void WritesStructuralOpsEdits()
         if (File.Exists(outputPath)) File.Delete(outputPath);
     }
 
+}
+
+/// <summary>
+/// Which entry boxes get offered the map's script functions for their name.
+///
+/// An entry box means two different things in this game, and only its destination
+/// map tells them apart. With one, it is a way out and the name is a label: of the
+/// 37 boxes the game ships with entry type 2, not one carries the name of a
+/// function. With none, it is a walk-in event trigger and the name *is* the
+/// function the game calls — 462 of the 513 such boxes name one.
+///
+/// So the list belongs to the second kind alone. Offering it on a teleporter tells
+/// an author to choose something they must not choose.
+/// </summary>
+/// <summary>
+/// An entry box moved the way the viewport moves it reaches the file.
+///
+/// The existing coverage edits attributes; dragging goes through ApplyTransform
+/// instead, and that is the path an author actually uses. It is written back under
+/// the map's own name — a copy called <c>z9100.edited.ops</c> is a file the game
+/// will never read, since it loads a map by name.
+/// </summary>
+/// <summary>
+/// The whole path an author walks: a map in the game folder, a box moved, the edit
+/// saved over the file the game reads, and the project putting it back.
+///
+/// This is what silently did nothing before. The map was only ever written when
+/// asked, the only way to ask was a shortcut with no menu entry, and asking put up
+/// a dialog offering <c>z9100.edited.ops</c> — a name the game never loads. Every
+/// piece worked; nothing joined them.
+/// </summary>
+static void SavesMapInPlaceAndReverts()
+{
+    var root = Path.Combine(Path.GetTempPath(), $"ed8-savemap-{Guid.NewGuid():N}");
+    var game = Path.Combine(root, "game");
+    var opsFolder = Path.Combine(game, "data", "ops");
+    Directory.CreateDirectory(opsFolder);
+    var mapPath = Path.Combine(opsFolder, "z9100.ops");
+    File.WriteAllText(
+        mapPath,
+        "<Ops><MapObjects/><Entrys>"
+            + "<EntryBox name=\"default\" next=\"z9100\" entry=\"default\" placeid=\"0\" flag=\"0x0\""
+            + " pos=\"0, 0, 0,  0, 0, 0,  2, 3, 2\" distance=\"1\" cameraDir=\"-1\""
+            + " entryType=\"0\" markPos=\"0, 0, 0\" />"
+            + "</Entrys></Ops>",
+        new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+    try
+    {
+        var project = ED8Editor.Application.ModProject.Create(
+            Path.Combine(root, "my-mod.ed8mod"), game);
+
+        // The map is inside the project's game folder, so this is where the editor
+        // now saves without asking — the file the game reads, under its own name.
+        Equal("data/ops/z9100.ops", project.RelativePathOf(mapPath) ?? "outside");
+        Equal(
+            "outside",
+            project.RelativePathOf(Path.Combine(root, "elsewhere", "z9100.ops")) ?? "outside");
+
+        var source = new OpsReader().Read(mapPath);
+        var header = new ScriptHeader(
+            "z9100.dat", "z9100", ScriptKind.Scenario, ScriptTargetKind.Map, 0, 0, Array.Empty<byte>());
+        var document = new EditorSceneDocument(new EditorSession(
+            new ScriptOpenResult(header, null, mapPath),
+            source,
+            new Dictionary<string, AssetResolution>(),
+            new Dictionary<string, AssetManifestLoad>(),
+            new Dictionary<string, AssetModelLoad>()));
+        var box = document.Elements.Single(
+            element => element.Selection.Kind == SceneElementKind.EntryVolume);
+        Equal(true, document.ApplyTransform(
+            box.Selection, box.Transform with { Position = new Vector3(-37f, 4f, -215f) }));
+
+        // Exactly what saving does: pristine copy, write over the map, track it.
+        project.CaptureOriginal(mapPath);
+        new OpsWriter().Write(
+            mapPath,
+            source,
+            document.CreateMapSnapshot() ?? throw new InvalidOperationException("No map."));
+        project.TrackSave(mapPath);
+        document.MarkSaved();
+        Equal(false, document.IsDirty);
+
+        var savedBox = new OpsReader().Read(mapPath).Volumes
+            .Single(volume => volume.Kind == MapVolumeKind.Entry);
+        Near(-37f, savedBox.Transform.Position.X);
+        Near(-215f, savedBox.Transform.Position.Z);
+
+        // And the point of doing it through a project: the game folder goes back.
+        Equal(1, project.RestoreOriginals());
+        var restored = new OpsReader().Read(mapPath).Volumes
+            .Single(volume => volume.Kind == MapVolumeKind.Entry);
+        Near(0f, restored.Transform.Position.X);
+        Near(0f, restored.Transform.Position.Z);
+    }
+    finally
+    {
+        if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+    }
+}
+
+static void WritesDraggedEntryBox()
+{
+    const string xml = "<Ops><MapObjects/><Entrys>"
+        + "<EntryBox name=\"default\" next=\"z9100\" entry=\"default\" placeid=\"0\" flag=\"0x0\""
+        + " pos=\"0, 0, 0,  0, 0, 0,  2, 3, 2\" distance=\"1\" cameraDir=\"-1\""
+        + " entryType=\"0\" markPos=\"0, 0, 0\" />"
+        + "</Entrys></Ops>";
+    var sourcePath = WriteTemporaryOps(xml);
+    var outputPath = Path.Combine(Path.GetTempPath(), $"ed8-dragged-{Guid.NewGuid():N}.ops");
+    try
+    {
+        var source = new OpsReader().Read(sourcePath);
+        var header = new ScriptHeader(
+            "test.dat", "test", ScriptKind.Scenario, ScriptTargetKind.Map, 0, 0, Array.Empty<byte>());
+        var document = new EditorSceneDocument(new EditorSession(
+            new ScriptOpenResult(header, null, sourcePath),
+            source,
+            new Dictionary<string, AssetResolution>(),
+            new Dictionary<string, AssetManifestLoad>(),
+            new Dictionary<string, AssetModelLoad>()));
+
+        var box = document.Elements.Single(
+            element => element.Selection.Kind == SceneElementKind.EntryVolume);
+        Equal(false, document.IsDirty);
+        Equal(true, document.ApplyTransform(
+            box.Selection,
+            box.Transform with { Position = new Vector3(-37f, 4f, -215f) }));
+        Equal(true, document.IsDirty);
+
+        var snapshot = document.CreateMapSnapshot()
+            ?? throw new InvalidOperationException("The document has no map.");
+        new OpsWriter().Write(outputPath, source, snapshot);
+        var reloaded = new OpsReader().Read(outputPath);
+        var written = reloaded.Volumes.Single(volume => volume.Kind == MapVolumeKind.Entry);
+        Near(-37f, written.Transform.Position.X);
+        Near(4f, written.Transform.Position.Y);
+        Near(-215f, written.Transform.Position.Z);
+
+        // What the box is stays what it was: only its position moved.
+        Equal("z9100", written.DestinationMap ?? string.Empty);
+        Equal("default", written.Name);
+        Near(2f, written.Transform.Scale.X);
+        Near(3f, written.Transform.Scale.Y);
+    }
+    finally
+    {
+        File.Delete(sourcePath);
+        if (File.Exists(outputPath)) File.Delete(outputPath);
+    }
+}
+
+static void ResolvesEntryBoxNameKind()
+{
+    const string xml = "<Ops><MapObjects/><Entrys>"
+        + "<EntryBox name=\"go_z9100\" next=\"z9100\" entry=\"default\" placeid=\"0\" flag=\"0x1\""
+        + " pos=\"1, 2, 3,  0, 0, 0,  10, 2.5, 2\" distance=\"2\" cameraDir=\"-1\""
+        + " entryType=\"2\" markPos=\"0, 0, 0\" />"
+        + "<EntryBox name=\"EV_C08E30S00\" next=\"\" entry=\"\" placeid=\"0\" flag=\"0x3\""
+        + " pos=\"4, 5, 6,  0, 0, 0,  3, 2.5, 3\" distance=\"2\" cameraDir=\"-1\""
+        + " entryType=\"0\" markPos=\"0, 0, 0\" />"
+        + "</Entrys></Ops>";
+    var sourcePath = WriteTemporaryOps(xml);
+    try
+    {
+        var header = new ScriptHeader(
+            "test.dat", "test", ScriptKind.Scenario, ScriptTargetKind.Map, 0, 0, Array.Empty<byte>());
+        var document = new EditorSceneDocument(new EditorSession(
+            new ScriptOpenResult(header, null, sourcePath),
+            new OpsReader().Read(sourcePath),
+            new Dictionary<string, AssetResolution>(),
+            new Dictionary<string, AssetManifestLoad>(),
+            new Dictionary<string, AssetModelLoad>()));
+
+        var boxes = document.Elements
+            .Where(element => element.Selection.Kind == SceneElementKind.EntryVolume)
+            .ToArray();
+        Equal(2, boxes.Length);
+
+        // Resolved from what the editor itself hands the dialog, not from a
+        // dictionary written here: the attributes go out through the codec, and a
+        // key lost on the way is exactly the sort of thing that would put the
+        // function list on a teleporter.
+        foreach (var box in boxes)
+        {
+            var attributes = document.FindElementAttributes(box.Selection)
+                ?? throw new InvalidOperationException($"'{box.Selection.Name}' has no attributes.");
+            Equal(true, attributes.Values.ContainsKey("next"));
+            var kind = OpsAttributeValueKinds.Resolve(box.Selection, "name", attributes.Values);
+            Equal(
+                box.Selection.Name == "go_z9100" ? OpsValueKind.Text : OpsValueKind.ScriptFunction,
+                kind);
+        }
+    }
+    finally
+    {
+        File.Delete(sourcePath);
+    }
 }
 
 static void CreatesObservedOpsProfiles()
