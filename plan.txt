@@ -3875,3 +3875,24 @@ AVANT chaque essai, pas apres.
 SUITE : reprendre v8 contre ours7 en remplacant non plus un flux mais le bloc
 d'objets et le tableau de noms, pour trouver ce qui reste. Et corriger
 PkgArchiveWriter (premier mot a 0, ordre des entrees) — le bug identifie du jour.
+
+## 2026-08-02 — RENDU COMPLET VALIDE
+
+cube-prop 1.0 --split --uv, empaquete par NOTRE PkgArchiveWriter, dans le slot
+O_T10CHR01 : des cubes textures, un motif different par face, eclairage variant
+selon l'orientation. UV et normales confirmees.
+
+Rien n'est emprunte : notre importateur, notre ecrivain de cluster, notre
+empaqueteur. PkgArchiveWriter n'avait aucun defaut — le premier mot du .pkg est
+documente "probably some kind of hash; ignored" dans Sen-no-Kiseki-PKG-Sharp, et
+l'ordre des entrees n'est que celui de l'enumeration du dossier. Les paquets qui
+plantaient le faisaient a cause de l'alignement des noms dans le CLUSTER.
+
+Observation a verifier : les cubes paraissent aplatis (environ 2:1) alors que la
+geometrie ecrite est 1x1x1 et que PWorldMatrix comme PNode.m_localMatrix sont
+l'identite. La mise a l'echelle vient donc d'ailleurs — probablement du placement
+dans le .ops de la map.
+
+SUITE : la map z9200 (collisions). Verifier d'abord que data/ops/t1000.ops et
+data/scripts/scena/dat_us/t1000.dat, modifies depuis le travail sur le
+teleporteur, sont sains — personne ne l'a confirme.
