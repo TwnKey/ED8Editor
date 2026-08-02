@@ -3896,3 +3896,20 @@ dans le .ops de la map.
 SUITE : la map z9200 (collisions). Verifier d'abord que data/ops/t1000.ops et
 data/scripts/scena/dat_us/t1000.dat, modifies depuis le travail sur le
 teleporteur, sont sains — personne ne l'a confirme.
+
+## 2026-08-02 — Trista est saine
+
+t1000.dat : identique octet pour octet a l'original.
+t1000.ops : 35 octets de moins, mais rien de perdu —
+
+  props    101 -> 101
+  volumes   28 ->  29   (l'EntryBox du teleporteur, ajoutee ce matin)
+  points    14 ->  14
+  sounds    11 ->  11
+  cameras    0 ->   0
+  lights     0 ->   0
+
+L'ecart de taille vient de l'encodage : notre writer reecrit plus compactement
+que le jeu. Aucun placement supprime.
+
+Mode ajoute : --ops-diff <a.ops> <b.ops>.

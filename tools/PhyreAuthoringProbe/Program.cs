@@ -1241,6 +1241,41 @@ if (args.Length > 2 && args[1] == "--buffer-shaders")
     return 0;
 }
 
+// Dit ce qui differe entre deux .ops, categorie par categorie.
+//
+// Le t1000.ops de Trista a ete edite ce matin et fait 35 octets de moins que
+// celui du jeu. La map se charge — on l'a vu une dizaine de fois aujourd'hui —
+// mais "ca se charge" n'est pas "rien n'a ete perdu", et un placement supprime
+// en silence par un writer est le genre de degat qui se decouvre bien plus tard.
+//
+//   PhyreAuthoringProbe x --ops-diff <original.ops> <actuel.ops>
+if (args.Length > 3 && args[1] == "--ops-diff")
+{
+    var opsReader = new ED8Editor.Ops.OpsReader();
+    var before = opsReader.Read(args[2]);
+    var after = opsReader.Read(args[3]);
+    void Count(string what, int a, int b)
+        => Console.WriteLine($"  {what,-10} {a,4} -> {b,4}{(a == b ? "" : "   <-- CHANGE")}");
+    Count("props", before.Props.Count, after.Props.Count);
+    Count("volumes", before.Volumes.Count, after.Volumes.Count);
+    Count("points", before.Points.Count, after.Points.Count);
+    Count("cameras", before.Cameras.Count, after.Cameras.Count);
+    Count("sounds", before.Sounds.Count, after.Sounds.Count);
+    Count("lights", before.Lights.Count, after.Lights.Count);
+    for (var at = 0; at < Math.Min(before.Props.Count, after.Props.Count); at++)
+    {
+        var a = before.Props[at];
+        var b = after.Props[at];
+        if (a.ToString() != b.ToString())
+        {
+            Console.WriteLine($"  prop [{at}]");
+            Console.WriteLine($"    avant : {a}");
+            Console.WriteLine($"    apres : {b}");
+        }
+    }
+    return 0;
+}
+
 var assets = Path.Combine(args[0], "asset", "D3D11");
 var pattern = args.Length > 1 ? args[1] : "I_EFTEX*.pkg";
 var take = args.Length > 2 ? int.Parse(args[2]) : int.MaxValue;
