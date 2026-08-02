@@ -84,20 +84,11 @@ public static class MapModelPackage
         var surfaces = authoredModel.Meshes.Where(mesh => mesh.IsCollision).ToArray();
         if (surfaces.Length != 0)
         {
-            say?.Invoke($"collision meshes: {surfaces.Length} left undrawn");
+            say?.Invoke($"collision meshes: {surfaces.Length} kept, each on its own node");
         }
-        // The surfaces are NOT drawn. A shipped map does draw them, on a material
-        // named S_atari whose own shader paints nothing; we ship one shader for the
-        // whole map, so S_atari came out painted by the general one. The ground
-        // surface then sat on the real ground, all but coplanar, and the two fought
-        // over every pixel — which reads as a texture that will not hold still —
-        // while the bridge disappeared under its own.
-        //
-        // Nothing in the physics reads them: a body reaches its triangles through
-        // m_shapes and PShape, never through the mesh the scene draws.
         var drawn = surfaces.Length == 0 || scenery.Length == 0
             ? authoredModel
-            : authoredModel with { Meshes = scenery };
+            : authoredModel with { Meshes = scenery.Concat(surfaces).ToArray() };
         var packed = PhyreModelGeometryPacker.Pack(drawn);
         // Collision is the render mesh itself, which for a map is far heavier than
         // what the game ships: r0510 carries three simplified shapes totalling 75 KB
