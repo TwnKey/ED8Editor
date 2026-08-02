@@ -84,6 +84,8 @@ switch (command)
         }
         return 0;
 
+    case "cube-prop":
+    case "swap-cluster":
     case "import":
     case "replace-model":
     case "replace-prop":
@@ -145,6 +147,153 @@ if (command == "repack")
     project.TrackSave(target);
     Console.WriteLine();
     Console.WriteLine("written. If this crashes, the fault is the container, not the model.");
+    return 0;
+}
+
+// Writes a cube built here, vertex by vertex, instead of one an importer read.
+//
+// The importer decides the vertex count on its own: given a cube with no texture
+// coordinates it welds 24 corners down to 8, and given one with them it splits 8
+// up to 25. So "how many vertices" and "are there UVs" cannot be varied one at a
+// time through it, and the crash that appears when both change at once cannot be
+// attributed to either.
+//
+//   MapImport <game> <project> cube-prop O_T10CHR01 <metres> [--split] [--uv]
+//     --split : 24 vertices, one per face corner, each with its own normal
+//     --uv    : texture coordinates and a tangent frame
+if (command == "cube-prop")
+{
+    var side = float.Parse(args[4], System.Globalization.CultureInfo.InvariantCulture);
+    var split = args.Contains("--split");
+    var withUv = args.Contains("--uv");
+    var h = side / 2f;
+    // Six faces, each four corners wound counter-clockwise seen from outside.
+    var faces = new (System.Numerics.Vector3 N, System.Numerics.Vector3[] C)[]
+    {
+        (new(0,0,1),  new System.Numerics.Vector3[]{ new(-h,-h,h), new(h,-h,h), new(h,h,h), new(-h,h,h) }),
+        (new(0,0,-1), new System.Numerics.Vector3[]{ new(h,-h,-h), new(-h,-h,-h), new(-h,h,-h), new(h,h,-h) }),
+        (new(-1,0,0), new System.Numerics.Vector3[]{ new(-h,-h,-h), new(-h,-h,h), new(-h,h,h), new(-h,h,-h) }),
+        (new(1,0,0),  new System.Numerics.Vector3[]{ new(h,-h,h), new(h,-h,-h), new(h,h,-h), new(h,h,h) }),
+        (new(0,1,0),  new System.Numerics.Vector3[]{ new(-h,h,h), new(h,h,h), new(h,h,-h), new(-h,h,-h) }),
+        (new(0,-1,0), new System.Numerics.Vector3[]{ new(-h,-h,-h), new(h,-h,-h), new(h,-h,h), new(-h,-h,h) }),
+    };
+    var corner = new[]
+    {
+        new System.Numerics.Vector2(0,1), new System.Numerics.Vector2(1,1),
+        new System.Numerics.Vector2(1,0), new System.Numerics.Vector2(0,0),
+    };
+    var vertices = new List<PhyreVertexSource>();
+    var indices = new List<int>();
+    if (split)
+    {
+        foreach (var (normal, corners) in faces)
+        {
+            var first = vertices.Count;
+            // A tangent that lies in the face and follows u: the face's own first edge.
+            var tangent = System.Numerics.Vector3.Normalize(corners[1] - corners[0]);
+            var bitangent = System.Numerics.Vector3.Cross(normal, tangent);
+            for (var at = 0; at < 4; at++)
+            {
+                vertices.Add(new PhyreVertexSource(
+                    corners[at], normal,
+                    // A texture coordinate set ALWAYS, zeroed when none is asked
+                    // for. The shader's input signature demands POSITION, NORMAL,
+                    // TEXCOORD and COLOR; dropping the set drops three streams —
+                    // ST, Tangent, Binormal — and the model no longer matches what
+                    // the shader reads. "Without UVs" has to mean flat coordinates,
+                    // not absent ones, or the two cases differ in more than UVs.
+                    new[] { withUv
+                        ? new PhyreTexCoordSet(corner[at], tangent, bitangent)
+                        : new PhyreTexCoordSet(System.Numerics.Vector2.Zero, tangent, bitangent) },
+                    Array.Empty<int>(), Array.Empty<float>()));
+            }
+            indices.AddRange(new[] { first, first + 1, first + 2, first, first + 2, first + 3 });
+        }
+    }
+    else
+    {
+        // Eight shared corners: a normal pointing out along the diagonal, and one
+        // texture coordinate per corner, which is all a shared corner can carry.
+        var shared = new List<System.Numerics.Vector3>();
+        foreach (var (_, corners) in faces)
+        foreach (var c in corners)
+        {
+            if (!shared.Any(value => System.Numerics.Vector3.Distance(value, c) < 1e-6f)) shared.Add(c);
+        }
+        foreach (var c in shared)
+        {
+            var normal = System.Numerics.Vector3.Normalize(c);
+            vertices.Add(new PhyreVertexSource(
+                c, normal,
+                new[] { new PhyreTexCoordSet(
+                    withUv
+                        ? new System.Numerics.Vector2((c.X / h + 1) / 2, (c.Y / h + 1) / 2)
+                        : System.Numerics.Vector2.Zero,
+                    new System.Numerics.Vector3(1, 0, 0),
+                    new System.Numerics.Vector3(0, 1, 0)) },
+                Array.Empty<int>(), Array.Empty<float>()));
+        }
+        int Index(System.Numerics.Vector3 c)
+            => shared.FindIndex(value => System.Numerics.Vector3.Distance(value, c) < 1e-6f);
+        foreach (var (_, corners) in faces)
+        {
+            var a = Index(corners[0]); var b = Index(corners[1]);
+            var cc = Index(corners[2]); var dd = Index(corners[3]);
+            indices.AddRange(new[] { a, b, cc, a, cc, dd });
+        }
+    }
+    Console.WriteLine($"cube built here: {vertices.Count} vertices,"
+        + $" {indices.Count / 3} triangles, {side} m,"
+        + $" {(withUv ? "with" : "without")} texture coordinates");
+    var cube = new PhyreModelSource(
+        name, new[] { new PhyreMeshSource("material", vertices, indices.ToArray()) },
+        Array.Empty<PhyreJointSource>());
+    var written = MapModelPackage.WriteProp(
+        project, name, cube, Console.WriteLine, material: PropMaterial.Whole);
+    Console.WriteLine("  " + Path.GetRelativePath(game, written));
+    return 0;
+}
+
+// Puts one cluster into a package and leaves every other byte of it alone.
+//
+// The package that renders holds a cluster nobody here wrote — the one from
+// CS1AssetProcessor, with its texture and shader swapped. Everything around that
+// cluster is therefore known to work: the container, the stamp, the shader, the
+// texture, the map slot. Swapping only the cluster makes "does OUR cluster load"
+// a question with one variable in it, which no test so far has been.
+//
+//   MapImport <game> <project> swap-cluster O_T10LIG03 <cluster.dae.phyre>
+if (command == "swap-cluster")
+{
+    var target = Path.Combine(game, "data", "asset", "D3D11", name + ".pkg");
+    var replacement = File.ReadAllBytes(args[4]);
+    var current = new PkgArchiveReader().Read(target);
+    var swapEntry = current.Entries.First(entry =>
+        entry.Name.EndsWith(".dae.phyre", StringComparison.OrdinalIgnoreCase));
+    Console.WriteLine($"{name}: {swapEntry.Name} <- {Path.GetFileName(args[4])}"
+        + $" ({replacement.Length} bytes, was {swapEntry.UncompressedSize})");
+    var swapped = new List<(string, byte[], byte[], uint)>();
+    using (var reading = File.OpenRead(target))
+    {
+        foreach (var entry in current.Entries)
+        {
+            if (entry.Name == swapEntry.Name)
+            {
+                swapped.Add((entry.Name, replacement, replacement, 0u));
+                continue;
+            }
+            // Byte for byte, in whatever encoding it already had.
+            var stored = new byte[entry.StoredSize];
+            reading.Position = entry.Offset;
+            reading.ReadExactly(stored);
+            swapped.Add((entry.Name, new byte[entry.UncompressedSize],
+                stored, (uint)entry.CompressionType));
+        }
+    }
+    project.CaptureOriginal(target);
+    new PkgArchiveWriter().WriteRaw(target, current.Magic, swapped);
+    project.TrackSave(target);
+    Console.WriteLine("written; everything but the cluster is unchanged.");
     return 0;
 }
 

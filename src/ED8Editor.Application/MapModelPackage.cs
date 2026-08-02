@@ -27,15 +27,15 @@ public enum PropMaterial
 public static class MapModelPackage
 {
     private const string NeutralTextureName = "ed8editor_neutral.dds.phyre";
-    /// <summary>
-    /// The asset id the material asks for — a bare file name, matching the package
-    /// entry that carries it.
+/// <summary>
+    /// The asset id the material asks for. It is a logical path, not the package
+    /// entry name: the entry is "ed8editor_neutral.dds.phyre" while the id keeps the
+    /// "map/images/" prefix every shipped model that renders uses.
     ///
-    /// It had a "map/images/" prefix, which no cluster known to load uses: the one
-    /// non-shipped cluster that the game does load names its texture "5t10ob04.dds"
-    /// against an entry called "5t10ob04.dds.phyre". A prefixed id names something
-    /// the package does not contain even when the file is sitting right there, which
-    /// is the same defect as a material binding a shader its package does not ship.
+    /// The prefix was removed once, on the grounds that the CS1AssetProcessor cluster
+    /// names its texture bare — but that cluster has never rendered anything but a
+    /// black surface, so it was the wrong thing to copy. O_T10LIG04, which does
+    /// render, names "map/images/5t10ob00.dds".
     /// </summary>
     private const string NeutralTextureAsset = "ed8editor_neutral.dds";
 

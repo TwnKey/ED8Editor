@@ -1127,6 +1127,43 @@ if (args.Length > 2 && args[1] == "--shape-of")
         Console.WriteLine(
             $"  {classes[(int)group.ClassId - 1].Name} x{group.Count}"
             + $" ({each} bytes each, arrays {group.ArraysSize})");
+        // Every non-zero field of every object. The graph has been compared to
+        // exhaustion; the NUMBERS inside the objects never were, and a wrong
+        // m_elementCount or m_offsetInVertexBuffer crashes without moving a single
+        // pointer.
+        {
+            var members = PhyreObjectWriter.Chain(classes[(int)group.ClassId - 1], classes).ToList();
+            var stored = read.GetGroupObjectsData(group.Index).Span;
+            var size = (int)(group.ObjectsSize / group.Count);
+            for (uint id = 0; id < group.Count && id < 64; id++)
+            {
+                var told = new List<string>();
+                foreach (var member in members)
+                {
+                    var span = (int)(member.Size * Math.Max(member.FixedArraySize, 1));
+                    if (member.ValueOffset + span > size || span is 0 or > 16) continue;
+                    var bytes = stored.Slice((int)(id * size) + (int)member.ValueOffset, span);
+                    var zero = true;
+                    foreach (var b in bytes) if (b != 0) { zero = false; break; }
+                    if (zero) continue;
+                    told.Add($"{member.Name}={Convert.ToHexString(bytes)}");
+                }
+                if (told.Count != 0) Console.WriteLine($"      [{id}] {string.Join(", ", told)}");
+                // A mesh segment embeds its index block at +28, whose fields belong
+                // to PIndexDataBlockD3D11 and not to the segment — so no member walk
+                // reaches them. They are the only bytes in the file nothing here has
+                // ever looked at.
+                if (classes[(int)group.ClassId - 1].Name == "PMeshSegment")
+                {
+                    var raw = stored.Slice((int)(id * size), size);
+                    for (var at = 0; at < size; at += 16)
+                    {
+                        Console.WriteLine($"        +{at,3} {Convert.ToHexString(raw[at..Math.Min(at + 16, size)])}");
+                    }
+                }
+            }
+        }
+
         // The names a group carries live in its array data. Printing them turns a
         // size difference — the only thing left between this writer's output and a
         // cluster known to load — into the actual strings that differ.
@@ -1141,6 +1178,64 @@ if (args.Length > 2 && args[1] == "--shape-of")
         foreach (var word in text.ToString().Split('·', StringSplitOptions.RemoveEmptyEntries))
         {
             if (word.Length >= 2) Console.WriteLine($"      \"{word}\"");
+        }
+    }
+    return 0;
+}
+
+// Which shader each parameter buffer of a package is bound to, and its bytes.
+//
+// A buffer's values belong to ONE shader. Ours are synthesised neutral defaults,
+// which is why an authored cube draws black: the layout is right and the numbers
+// mean nothing. To copy real ones we first have to find, among a package's several
+// buffers, the one bound to the shader we actually use — the first mesh's material
+// is not it.
+//
+//   PhyreAuthoringProbe x --buffer-shaders <package.pkg> [<hash> <out.bin>]
+if (args.Length > 2 && args[1] == "--buffer-shaders")
+{
+    var cluster = ReadClusterOrPackage(args[2]);
+    var read = new PhyreClusterReader().Read(cluster);
+    var fixups = new PhyreFixupReader().Read(cluster, read.Metadata);
+    var groups = read.Metadata.InstanceGroups;
+    var imports = groups.FirstOrDefault(value => value.ClassName == "PAssetReferenceImport");
+    string ImportName(uint index)
+    {
+        if (imports is null || index >= imports.Count) return $"?{index}";
+        var descriptor = read.Metadata.Classes.First(value => value.Name == "PAssetReferenceImport");
+        var member = PhyreObjectWriter.Chain(descriptor, read.Metadata.Classes)
+            .First(value => value.Name == "m_id");
+        var array = fixups.Arrays.FirstOrDefault(value =>
+            value.SourceListIndex == imports.Index
+            && value.SourceObjectId == index
+            && (value.SourceOffsetOrMember == member.Index
+                || value.SourceOffsetOrMember == member.ValueOffset
+                || value.SourceOffsetOrMember == (0x80000000u | member.ValueOffset)));
+        if (array is null) return $"?{index}";
+        // Clamp to what the group actually holds: a name near the end of the run
+        // has fewer than 128 bytes after it.
+        var room = imports.ArraysSize - array.Offset;
+        var bytes = read.GetArrayData(imports.Index, array.Offset, Math.Min(128u, room)).Span;
+        var end = bytes.IndexOf((byte)0);
+        return System.Text.Encoding.ASCII.GetString(bytes[..(end < 0 ? bytes.Length : end)]);
+    }
+    foreach (var group in groups.Where(value => value.ClassName == "PParameterBuffer"))
+    {
+        var bound = "(none)";
+        foreach (var pointer in fixups.Pointers)
+        {
+            if (pointer.SourceListIndex != group.Index || pointer.UserFixupId is null) continue;
+            var user = fixups.UserFixups[(int)pointer.UserFixupId.Value];
+            if (user.Data.Length < 2) continue;
+            var name = ImportName((uint)((user.Data.Span[0] << 8) | user.Data.Span[1]));
+            if (name.Contains(".fx#", StringComparison.OrdinalIgnoreCase)) bound = name;
+        }
+        var each = (int)(group.ObjectsSize / Math.Max(group.Count, 1));
+        Console.WriteLine($"  group {group.Index}: {each} bytes -> {bound}");
+        if (args.Length > 4 && bound.Contains(args[3], StringComparison.OrdinalIgnoreCase))
+        {
+            File.WriteAllBytes(args[4], read.GetGroupObjectsData(group.Index).Span[..each].ToArray());
+            Console.WriteLine($"    wrote {args[4]} ({each} bytes)");
         }
     }
     return 0;

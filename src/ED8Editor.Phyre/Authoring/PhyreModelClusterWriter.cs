@@ -327,17 +327,19 @@ public static class PhyreModelClusterWriter
         // p_collada loader resolves these against the compiled-class registry
         // keyed by entry name, and a path prefix makes the two disagree.
         var colladaId = $"{model.AssetName}.dae#";
-        // The order and the names of the one cluster known to load: the scene node
-        // first, then the material, then the instance, then the mesh. Its instance is
-        // named after the node that carries it and its mesh adds "Shape" to that same
-        // name — so the three agree. Ours named the nodes after the asset while the
-        // references said "Map" and "MapShape", which agreed with nothing.
+        // The names of the one cluster known to load, in ITS object order: material,
+        // node, mesh, instance. That order had been changed to follow the order the
+        // name STRINGS appear in the group's array data, which is not the order of the
+        // objects those names belong to — the reference lists its strings scene-node
+        // first and its objects material first. The names themselves do matter: the
+        // instance is named after the node that carries it and the mesh adds "Shape"
+        // to that same name, so the three agree.
         var named = new List<(string Class, uint Id, string Name)>
         {
-            ("PNode", 0, colladaId + "VisualSceneNode"),
             ("PMaterial", 0, colladaId + "colladadx11Shader1"),
-            ("PMeshInstance", 0, colladaId + model.AssetName),
+            ("PNode", 0, colladaId + "VisualSceneNode"),
             ("PMesh", 0, colladaId + model.AssetName + "Shape"),
+            ("PMeshInstance", 0, colladaId + model.AssetName),
         };
         if (physics is not null)
             named.Add(("PShape", 0, colladaId + model.AssetName + "Shape-PhysicsShape"));
@@ -791,6 +793,14 @@ public static class PhyreModelClusterWriter
                     var bytes = System.Text.Encoding.ASCII.GetBytes(text);
                     arrays.Write(bytes);
                     arrays.WriteByte(0);
+                    // Every name starts on an even offset. The names were packed back
+                    // to back, so whether the next one landed even was decided by the
+                    // length of the one before it — and a cluster whose second name
+                    // began on an odd byte crashed the game while an otherwise
+                    // identical one loaded. Measured: the asset processor's own cube
+                    // puts its shader name at 14 after a twelve-character texture name
+                    // (13 bytes with its terminator), leaving exactly this gap.
+                    if (arrays.Length % 2 != 0) arrays.WriteByte(0);
                     // Only PAssetReference and PAssetReferenceImport carry m_id;
                     // other classes (PMeshInstance, PNode) that have names do not.
                     // Looking up m_id on those returns a garbage member index that

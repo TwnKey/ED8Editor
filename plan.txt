@@ -3676,3 +3676,202 @@ Verifie : 0x59B85914 avant et apres greffage.
 RESTE, signale par Antoine : pour le rendu, viser le shader D506953A et non
 9B711195 (celui-ci rend le cube invisible).
 
+
+## 2026-08-02 — le cube noir, c'est le cluster de REFERENCE, pas le notre
+
+O_T10LIG03.pkg (etat qui rend) contient un cluster de 15 groupes, 126 classes,
+PMaterial x1, PParameterBuffer x1, PMeshInstance 112, PDataBlockD3D11 64,
+PNode x3 — et ses noms sont "t10chr01.dae#colladadx11Shader1",
+"t15chr01_polySurface17". C'est le fichier de CS1AssetProcessor, avec sa texture
+basculee sur 5t10ef00.dds et son shader sur D506953A, pose dans le slot du
+lampadaire.
+
+Donc : le chemin AUTORISE charge et rend. Ce que je prenais pour "l'autorat
+plante" etait O_T10CHR01 — un personnage dont le shader attend du skinning qu'un
+cube n'a pas.
+
+Nouvelle commande : swap-cluster <pkg> <cluster.phyre> — remplace la seule entree
+du cluster, tout le reste passe octet pour octet. Premier banc d'essai a une
+seule variable qu'on ait eu.
+
+Banc monte dans le scratchpad :
+  lig03_cube_noir.pkg      = l'etat qui rend (a remettre pour revenir en arriere)
+  ours_mapshader.dae.phyre = notre cluster, shader rebascule sur D506953A
+  lig03_notre_cluster.pkg  = le meme paquet avec NOTRE cluster + notre texture
+                             ajoutee (son nom est trop long pour une substitution
+                             en place, donc elle voyage en entree supplementaire)
+
+INSTALLE. Si ca rend : notre ecrivain est bon et il ne reste que le noir. Si ca
+plante : la difference est dans le cluster, et elle est enfin isolee.
+
+
+## 2026-08-02 — l'ordre des PAssetReference : j'avais casse le bon
+
+swap-cluster a isole la variable : notre cluster plante la ou celui de reference
+rend, meme conteneur / shader / texture / slot. Le diff donne :
+
+  reference : PAssetReference[0]->PMaterial [1]->PNode [2]->PMesh [3]->PMeshInstance
+  nous      : PAssetReference[0]->PNode [1]->PMaterial [2]->PMeshInstance [3]->PMesh
+
+Ce matin j'avais reordonne en me fiant a l'ordre des CHAINES dans les donnees de
+tableau du groupe. Ce n'est pas l'ordre des OBJETS : la reference liste ses
+chaines noeud-de-scene en premier et ses objets materiau en premier. L'ordre
+d'origine de notre ecrivain etait juste ; je l'ai casse en croyant l'aligner.
+
+Retabli (les NOMS restent ceux de la reference, seul l'ordre revient). Le graphe
+de pointeurs est desormais identique, au miroir des samplers pres.
+
+Restent : mot 14 (4972 vs 4936, longueur des noms) et mot 19 (1728 vs 576) — leur
+cube a 24 sommets, le notre 8. Un cube a 8 sommets partage ses coins, donc ses
+normales sont moyennees ; geometriquement pauvre, mais pas une cause de plantage
+a priori.
+
+
+## 2026-08-02 — NOTRE CLUSTER CHARGE ET REND
+
+Etape franchie. Notre cluster autorise se charge en jeu et affiche le cube. Il
+est noir — mais le cluster de reference CS1AssetProcessor l'a TOUJOURS ete aussi
+(precision d'Antoine). On a donc atteint la parite avec la reference ; personne
+n'a encore jamais vu un cube correctement eclairé.
+
+Ce qui a debloque, dans l'ordre :
+  1. l'ordre des PAssetReference remis comme la reference (materiau, noeud, mesh,
+     instance) — je l'avais casse le matin meme en confondant l'ordre des CHAINES
+     dans les donnees de tableau avec l'ordre des OBJETS
+  2. --scale 0.5 au lieu de 0.01 : le cube faisait 2 cm, il etait rendu mais
+     invisible. La reference mesure 0,6 x 0,69 x 1,14 m.
+
+Ecarte pour le noir :
+  - les switches (PhyreContextSwitches/PhyreMaterialSwitches) : a 0 AUSSI dans
+    O_T10LIG04, modele livre qui utilise le meme shader et qui rend. Notre queue
+    de tampon lui est identique octet pour octet.
+  - la texture : liee a 5t10ob00.dds (la diffuse de 46 Ko du lampadaire), noir
+    quand meme.
+
+PISTE PRINCIPALE pour le noir : notre materiau est un "source-bound neutral
+default" — un tampon de parametres synthetise, pas la copie d'un materiau qui
+rend. 55 definitions a la bonne disposition, mais des valeurs neutres. La doc
+CS1 d'Antoine le disait des le debut : "The most difficult and important part of
+importing the model correctly is getting the shaderParameter values right."
+
+A FAIRE : prendre le tampon de parametres d'un modele livre qui rend AVEC
+D506953A, au lieu d'en synthetiser un neutre. Note : O_T10LIG04 et O_T10LIG03
+lient tous deux 9B711195 sur leur PMesh[0] — il faut chercher quel modele livre
+utilise D506953A en premier materiau.
+
+
+## 2026-08-02 — ce que sont les identifiants d'asset (question d'Antoine)
+
+Verifie sur les manifestes :
+
+  CHAISE (CS1AssetProcessor, rend)
+    xml : data/D3D11/5t10ob04.dds.phyre
+    id  : 5t10ob04.dds
+
+  BANQUETTE (livree, rend)
+    xml : data/D3D11/map/images/5t10ob04.dds.phyre
+    id  : map/images/5t10ob04.dds
+
+REGLE : l'identifiant que le cluster nomme est le chemin declare dans
+asset_D3D11.xml, ampute de "data/D3D11/" et de ".phyre". Il n'a rien a voir avec
+le nom de l'entree du .pkg (qui est le seul nom de fichier). Les deux formes,
+prefixee ou nue, marchent — ce qui compte est qu'elles CONCORDENT avec le xml du
+meme paquet.
+
+Consequence : la suppression du prefixe faite plus tot etait fausse dans les deux
+sens. Notre xml declare map/images/, donc notre id doit le porter. Remis.
+
+Les deux "corrections" du prefixe de la journee (retrait le matin, remise
+l'apres-midi, retrait le soir) reposaient chacune sur une comparaison avec un
+fichier different sans regarder son manifeste. Le manifeste tranche.
+
+
+## 2026-08-02 — l'outil d'empaquetage de reference
+
+Antoine a empaquete la chaise avec Desktop/pkg (PKGToolCmd, Sewer56). Sa sortie,
+comparee a la notre sur les MEMES fichiers :
+
+  PKGToolCmd : estampille 0x00000000, entrees xml/dds/dae/fx, toutes compressees
+  nous       : estampille 0x59B85914, entrees xml/dae/dds/fx
+
+DONC : le premier mot du .pkg n'est PAS un controle a preserver. L'outil qui
+marche y ecrit ZERO. Toute la piste "horodatage de build" est fausse — les 399
+valeurs distinctes sur 400 paquets livres sont bien des timestamps, mais le
+moteur ne les verifie pas.
+
+Restent comme differences reelles : l'ordre des entrees et la compression.
+
+A VALIDER : le paquet PKGToolCmd de la chaise, installe tel quel. C'est la
+premiere base dont on saura qu'elle rend ET comment elle a ete construite.
+
+
+## 2026-08-02 — NOTRE ECRIVAIN DE CLUSTER EST VALIDE
+
+Empaquete par PKGToolCmd (Desktop/pkg, l'outil d'Antoine), notre cluster autorise
+donne en jeu des CUBES A LA PLACE DES CHAISES, de la couleur de la texture. Il
+charge, il s'affiche, il echantillonne la texture.
+
+Ce qui bloquait n'etait donc pas le cluster mais NOTRE .pkg.差 avec l'outil qui
+marche, sur les memes fichiers :
+  PKGToolCmd : premier mot 0x00000000, entrees xml/dds/dae/fx, compressees
+  nous       : premier mot recopie du natif, entrees xml/dae/dds/fx
+
+=> A CORRIGER : PkgArchiveWriter. C'est le bug de la journee.
+
+Le cube rendu est gris uni parce que le fichier source
+tmp-inspect/phyre-authoring-cube.obj n'a NI UV NI NORMALES (8 sommets, 0 vt,
+0 vn) : tous les sommets lisent le meme texel.
+
+NON RESOLU : un cube a 24 sommets avec UV et normales plante. Verifie sain —
+aucun NaN dans les six flux, bloc d'index juste (max 23, 36 indices, type 12),
+tailles et offsets de blocs coherents (somme = mot 19), structure et fixups
+identiques au cube qui rend. Ses UV et tangentes ont la meme forme que celles de
+la chaise (2 flottants dans [0,1], tangentes unitaires).
+
+Impossible de bisecter par l'importateur : sans UV il fusionne 24 -> 8, avec UV
+il eclate 8 -> 25. Il faut fabriquer la geometrie packee sans passer par Assimp
+pour separer "nombre de sommets" de "presence d'UV".
+
+METHODE (rappel, apres un plantage cause par DEUX paquets modifies a la fois) :
+verifier `find data/asset/D3D11 -name '*.pkg' -newermt <date>` AVANT chaque essai.
+
+
+## 2026-08-02 (soir) — bisection par octets : ou en est-on
+
+BASE QUI REND : scratchpad/goodbuild/O_T10CHR01.pkg
+  = dossier de la chaise (xml, texture, shader) + ours7.dae.phyre, empaquete par
+    PKGToolCmd. ours7 = notre ecrivain, cube 8 sommets depuis
+    tmp-inspect/phyre-authoring-cube.obj, id texture raccourci sur place.
+  Verifie par SHA-256 que le cluster installe EST ours7.
+
+DEVIATIONS TESTEES, chacune repartant de ours7 et ne changeant qu'un bloc, taille
+du fichier inchangee, le reste identique octet pour octet :
+  1. binormales     (0,0,1) -> (0,1,0)      -> REND
+  2. indices        ordre/enroulement de v8 -> REND (cube deforme, normal)
+  3. positions      ordre de v8             -> REND
+  4. normales       moyennees -> diagonales -> REND
+
+Donc AUCUN flux de sommets pris isolement ne plante.
+
+MAIS v8 (cube-prop, 8 sommets, meme reglage) PLANTE. Les deux ne different
+pourtant que par 8 octets de bourrage dans le tableau de noms (mot 14 : 4936
+contre 4928) d'apres --shape-of. La comparaison brute montre qu'ils divergent
+plus largement — normal, leurs charges utiles ne sont pas rangees pareil.
+
+PIEGE A EVITER — c'est moi qui l'ai pose : le script de substitution du nom de
+texture faisait
+    at = data.find(old)              # -1 si absent
+    data[at:at+len(old)] = new+pad   # INSERE 24 octets au lieu de remplacer
+Sans garde sur `at`, tout fichier portant deja le nom court se retrouvait avec 24
+octets parasites dans sa region de sommets. Les essais "24 sommets sans UV",
+"24 sommets 6 flux" et "8 sommets nouveau code" ont TOUS ete faits sur des
+fichiers ainsi corrompus. Leurs trois plantages ne mesurent rien.
+
+AUTRE PIEGE, trouve par Antoine : deux .pkg modifies en meme temps (LIG03 et
+CHR01) faisaient planter sans rapport avec le contenu teste. Verifier
+  find data/asset/D3D11 -name '*.pkg' -newermt <date>
+AVANT chaque essai, pas apres.
+
+SUITE : reprendre v8 contre ours7 en remplacant non plus un flux mais le bloc
+d'objets et le tableau de noms, pour trouver ce qui reste. Et corriger
+PkgArchiveWriter (premier mot a 0, ordre des entrees) — le bug identifie du jour.
