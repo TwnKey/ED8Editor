@@ -4260,3 +4260,22 @@ un corps.
 Note : le fil de fer vert FONCTIONNE. Il couvre presque toute la map parce que
 CS00 (35 702 triangles) est le sol praticable — les cinq maillages sont tous en
 materiau S_atari (当たり, "collision").
+
+## 2026-08-03 — la forme etait ajoutee avec une matrice nulle
+
+PPhysicsShapeBase.m_transform est une PMatrix4x3 a l'offset 20, jamais ecrite :
+douze zeros. Or PhyrePhysicsMeshBullet fait
+
+    m_compoundShape->addChildShape(convertToBulletTransform(m_transform), mesh)
+
+donc notre collision entrait dans le corps avec une matrice nulle et s'effondrait
+sur un point. C'est le meme defaut que m_massFrameTransform, sur un autre objet —
+et il n'etait visible qu'apres avoir compris la disposition de PMatrix4x3, sans
+quoi "douze zeros" ressemblait a une identite.
+
+  livree : 1.0 aux offsets 4, 12, 24 (identite), translation nulle
+  nous   : douze zeros -> corrige, mêmes offsets
+
+Rappel de la disposition (PhyreMatrix4x3.h) : la premiere colonne est rangee dans
+les composantes W des trois autres, donc l'identite n'a PAS ses uns sur une
+diagonale.

@@ -825,6 +825,13 @@ public static class PhyreModelClusterWriter
                         Set("m_shapes", 1);
                         break;
                     case "PPhysicsMesh" when physics is not null:
+                        // Where the shape sits inside its body. Bullet adds it with
+                        // addChildShape(convertToBulletTransform(m_transform), ...),
+                        // so twelve zeros collapse the collision onto a point —
+                        // exactly the shape of a mesh that stops nothing. Shipped
+                        // maps write the identity here, translation included in the
+                        // body's own frame.
+                        members["m_transform"] = Identity3x4();
                         Set("m_type", MeshShape);
                         Set("m_hollow", 1);
                         Float("m_mass", 1f);
