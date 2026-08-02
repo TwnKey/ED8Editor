@@ -1133,13 +1133,24 @@ public static class PhyreModelClusterWriter
     }
 
     /// <summary>A unit scale, in the sixteen bytes the shape keeps it in.</summary>
-    /// <summary>A 3x4 identity: three unit axes and no translation.</summary>
+    /// <summary>
+    /// The identity, as a PMatrix4x3 — three Vector4 whose W components hold the
+    /// FIRST column between them:
+    ///
+    ///   m_col1 = (col1.x, col1.y, col1.z, col0.x)
+    ///   m_col2 = (col2.x, col2.y, col2.z, col0.y)
+    ///   m_col3 = (translation, col0.z)
+    ///
+    /// so the three ones land at 4, 12 and 24 rather than on a diagonal. Written on
+    /// the diagonal, as it was, the matrix is not the identity and not a rotation —
+    /// and a shipped body has its ones at exactly 4, 12 and 24.
+    /// </summary>
     private static byte[] Identity3x4()
     {
         var bytes = new byte[48];
-        BinaryPrimitives.WriteSingleLittleEndian(bytes, 1f);
-        BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(20), 1f);
-        BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(40), 1f);
+        BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(4), 1f);   // col1.y
+        BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(12), 1f);  // col0.x
+        BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(24), 1f);  // col2.z
         return bytes;
     }
 

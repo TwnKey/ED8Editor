@@ -4232,3 +4232,31 @@ VIEWER TOUJOURS BLANC, alors que tout ce qu'il demande est verifie :
   bornes              couvrent ce qu'on dessine
 A creuser du cote de l'etat du viewer (modele en cache, camera) plutot que du
 fichier.
+
+## 2026-08-03 — PMatrix4x3 : la premiere colonne est dans les W
+
+L'en-tete PhyreMatrix4x3.h le dit :
+  m_col1 = (col1.x, col1.y, col1.z, col0.x)
+  m_col2 = (col2.x, col2.y, col2.z, col0.y)
+  m_col3 = (translation.x, .y, .z,  col0.z)
+La PREMIERE colonne est eparpillee dans les composantes W des trois autres —
+d'ou l'impossibilite de lire les douze flottants en lignes ou en colonnes
+regulieres.
+
+L'identite met donc ses 1.0 aux offsets 4, 12 et 24, pas sur une diagonale.
+Notre Identity3x4() les mettait a 0, 20, 40 : ce n'etait ni l'identite ni une
+rotation. Corrige, et verifie contre le fichier livre :
+  livree : 1.0 aux offsets [4, 12, 24], translation (68.66, 19.46, -125.26)
+  nous   : 1.0 aux offsets [4, 12, 24], translation (0, 0, 0)
+
+Le corps rigide ne differe donc plus du livre que par m_scale (0.6/0.7/0.7 chez
+lui, 1/1/1 chez nous — le sien porte l'echelle de SON noeud) et par la
+translation, la notre etant a l'origine.
+
+RESTE la difference structurelle : la map livree a 3 corps, chacun avec UNE forme
+visant SON noeud ; nous fusionnons les 5 maillages de collision en une forme sur
+un corps.
+
+Note : le fil de fer vert FONCTIONNE. Il couvre presque toute la map parce que
+CS00 (35 702 triangles) est le sol praticable — les cinq maillages sont tous en
+materiau S_atari (当たり, "collision").
