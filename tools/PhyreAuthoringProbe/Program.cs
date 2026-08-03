@@ -1566,6 +1566,22 @@ if (args.Length > 2 && args[1] == "--normals")
     return 0;
 }
 
+//   PhyreAuthoringProbe x --hlsl <cluster> <sortie>
+// The HLSL a shader cluster carries, written out whole. It lives in the PEffect
+// group's array region.
+if (args.Length > 3 && args[1] == "--hlsl")
+{
+    var image = ReadClusterOrPackage(args[2]);
+    var read = new PhyreClusterReader().Read(image);
+    var group = read.Metadata.InstanceGroups
+        .FirstOrDefault(value => value.ClassName == "PEffect" && value.ArraysSize != 0);
+    if (group is null) { Console.WriteLine("aucun PEffect"); return 1; }
+    var bytes = read.GetArrayData(group.Index, 0, group.ArraysSize).ToArray();
+    File.WriteAllBytes(args[3], bytes);
+    Console.WriteLine($"  {bytes.Length} octets ecrits dans {args[3]}");
+    return 0;
+}
+
 //   PhyreAuthoringProbe x --arrays <cluster|package> <ClassName>
 // The array region a class's group carries, as text. Names live there rather than in
 // the objects, which hold only an offset into it.
