@@ -59,7 +59,8 @@ public static class MapModelPackage
         string? shippedShaderPackage = null,
         bool withCollision = true,
         string? collisionFrom = null,
-        bool perMaterialShaders = true)
+        bool perMaterialShaders = true,
+        IReadOnlyCollection<string>? onlyMaterials = null)
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentNullException.ThrowIfNull(model);
@@ -148,6 +149,14 @@ public static class MapModelPackage
             var matched = 0;
             for (var slot = 0; slot < slots.Count; slot++)
             {
+                // A named subset when one is asked for. Fourteen materials binding
+                // their own shader is fourteen changes at once; one at a time says
+                // whether it is the machinery or a particular shader.
+                if (onlyMaterials is not null
+                    && !onlyMaterials.Contains(slots[slot], StringComparer.Ordinal))
+                {
+                    continue;
+                }
                 if (!donorTables.TryGetValue(slots[slot], out var table)) continue;
                 found[slot] = table;
                 matched++;

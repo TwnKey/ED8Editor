@@ -597,6 +597,7 @@ if (problems.Count != 0)
 // The one exception is deliberate and asked for: --shader-from <package> binds a
 // compiled shader the game ships instead of the one ED8Editor compiles, which is how
 // a map that will not draw is told apart from a model that will not draw.
+IReadOnlyCollection<string>? MaterialSubset(string[] given) => MaterialSubsetHolder.Of(given);
 var shaderFrom = Array.IndexOf(args, "--shader-from") is var flag && flag >= 0 && flag + 1 < args.Length
     ? args[flag + 1]
     : null;
@@ -615,7 +616,8 @@ var packagePath = MapModelPackage.WriteMinimal(
     project, name, converted.Model, Console.WriteLine, shaderFrom,
     withCollision: !args.Contains("--no-collision"),
     collisionFrom: collisionFrom,
-    perMaterialShaders: !args.Contains("--one-shader"));
+    perMaterialShaders: !args.Contains("--one-shader"),
+    onlyMaterials: MaterialSubset(args));
 
 if (replaceModel)
 {
@@ -637,6 +639,22 @@ Console.WriteLine();
 Console.WriteLine($"to undo everything:  MapImport <game> {Path.GetFileName(projectPath)} revert");
 return 0;
 
+
+/// <summary>
+/// --material-shaders a,b : only these materials bind a shader of their own; the
+/// rest keep the one the model is bound with. Absent, every material does.
+/// </summary>
+internal static class MaterialSubsetHolder
+{
+    public static IReadOnlyCollection<string>? Of(string[] args)
+    {
+        var at = Array.IndexOf(args, "--material-shaders");
+        if (at < 0 || at + 1 >= args.Length) return null;
+        return args[at + 1]
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToHashSet(StringComparer.Ordinal);
+    }
+}
 
 /// <summary>The span of one material's first coordinate set, as imported.</summary>
 internal struct UvBox
