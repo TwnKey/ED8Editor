@@ -74,6 +74,14 @@ public static class Variants
                     // guard. What the source wants is the COUNT, plus a LIGHTTYPE_n
                     // naming the struct of each light — "LIGHTTYPE_0 Light0 : LIGHT0"
                     // is a declaration whose type is the macro.
+                    // RECEIVE_SHADOWS is kept everywhere, which is right for thirty
+                    // five of the thirty six. The exception is the default PIXEL
+                    // program of the one-light-no-shadow context: dropping the switch
+                    // brings it to 6816 against the game's 6828, exactly. But the
+                    // same drop takes that context's VERTEX program to 5796 against
+                    // 5928 — so the two are not compiled from one switch set, and
+                    // what tells them apart is not established. Keeping the switch is
+                    // the state that costs one slot rather than four.
                     var defines = new List<string>(material) { "PHYRE_D3DFX" };
                     for (var at = 0; at < switchNames.Length && at < contexts[context].Count; at++)
                     {
@@ -117,6 +125,22 @@ public static class Variants
         Console.WriteLine();
         Console.WriteLine($"  {matched} sur {total} a la taille du jeu, au nom du compilateur pres");
         return 0;
+    }
+
+    /// <summary>Whether any light of a packed switch casts a shadow.</summary>
+    private static bool HasShadow(uint packed)
+    {
+        const int CountBits = 4;
+        const int LightBits = 5;
+        const int ShadowBits = 5;
+        var count = (int)(packed & ((1u << CountBits) - 1));
+        var at = CountBits + LightBits;
+        for (var light = 0; light < count; light++)
+        {
+            if (((packed >> at) & ((1u << ShadowBits) - 1)) != 0) return true;
+            at += LightBits + ShadowBits;
+        }
+        return false;
     }
 
     /// <summary>
