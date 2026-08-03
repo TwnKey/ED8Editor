@@ -541,33 +541,6 @@ public static class MapModelPackage
         return result;
     }
 
-    /// <summary>The CA parameters a shipped node information file states, by node.</summary>
-    private static IReadOnlyDictionary<string, string> NodeParameters(string? path)
-    {
-        var found = new Dictionary<string, string>(StringComparer.Ordinal);
-        if (path is null || !File.Exists(path)) return found;
-        foreach (System.Text.RegularExpressions.Match one in
-            System.Text.RegularExpressions.Regex.Matches(
-                File.ReadAllText(path),
-                @"name=""(CA[0-9]+)""\s+param0=""([0-9]+)"""))
-        {
-            found[one.Groups[1].Value] = one.Groups[2].Value;
-        }
-        return found;
-    }
-
-    /// <summary>
-    /// The node information file beside the map, naming its collision nodes.
-    ///
-    /// Every one of the 1202 maps the game ships carries one, and ours carried none.
-    /// It is the only place a collision node is given a parameter: read off the
-    /// shipped files, CS## takes its own index and CK## takes zero — two identity
-    /// tables — while CA## takes a chosen value, which is what makes it worth
-    /// writing at all. r0100, a map with bridges, states CA00 6 and CA01 1, and
-    /// those are also the commonest values across the 190 files that name a CA node.
-    ///
-    /// Sixteen of each are declared whether or not the map has them, as shipped.
-    /// </summary>
     private static void WriteNodeInformation(
         ModProject project,
         string mapName,
@@ -595,14 +568,21 @@ public static class MapModelPackage
         // of, and the executable turns it into one of foot01, foot09, foot10 or
         // foot12 under data/effects/system. Copying another map's numbers would be
         // stating a material we never measured.
-        var borrowed = NodeParameters(takeFrom);
+        // Whatever the map already states is kept: this runs on every rebuild, and
+        // a value the author chose in the editor must not be thrown away by one.
+        var written = MapNodeInformation.PathOf(project.GameDirectory, mapName);
+        var stated = MapNodeInformation.Read(written);
+        var borrowed = MapNodeInformation.Read(takeFrom ?? string.Empty);
         foreach (var node in collisions
             .Select(value => value.Node)
             .Where(value => value.StartsWith("CA", StringComparison.Ordinal))
             .Distinct(StringComparer.Ordinal)
             .OrderBy(value => value, StringComparer.Ordinal))
         {
-            if (!borrowed.TryGetValue(node, out var chosen)) continue;
+            var chosen = stated.Names(node) ? stated[node]
+                : borrowed.Names(node) ? borrowed[node]
+                : (int?)null;
+            if (chosen is null) continue;
             text.Append($"  <node_param name=\"{node}\" param0=\"{chosen}\" />").Append(Newline);
         }
         text.Append(Newline).Append("</node_infomation>").Append(Newline);

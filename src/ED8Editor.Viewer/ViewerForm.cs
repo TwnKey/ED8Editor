@@ -1437,6 +1437,8 @@ public sealed class ViewerForm : Form
             "Quest editor…", null, (_, _) => ShowQuestEditor()));
         windows.DropDownItems.Add(new ToolStripMenuItem(
             "Create a map…", null, (_, _) => ShowMapStudio()));
+        windows.DropDownItems.Add(new ToolStripMenuItem(
+            "Collision surfaces…", null, (_, _) => ShowNodeInformationEditor()));
         mainMenu.Items.Add(windows);
 
         var options = new ToolStripMenuItem("Options");
@@ -3709,6 +3711,67 @@ public sealed class ViewerForm : Form
     /// project has to be open first: without one there would be nothing to undo a
     /// test with.
     /// </summary>
+    /// <summary>
+    /// Opens the editor for what a map's collision surfaces are made of — the node
+    /// information file beside the map, which the writer creates and this edits.
+    /// </summary>
+    private void ShowNodeInformationEditor()
+    {
+        if (session.Map?.SourcePath is not { } opsPath)
+        {
+            MessageBox.Show(
+                this,
+                "Aucune carte chargée : ouvrez-en une, ses surfaces de collision sont"
+                    + " nommées dans le fichier posé à côté d'elle.",
+                "Surfaces de collision",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+        if (session.Script.GameDataPath is not { } gameData)
+        {
+            MessageBox.Show(
+                this,
+                "Le dossier du jeu n'est pas connu de cette session.",
+                "Surfaces de collision",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        // GameDataPath names the data folder on some paths and the game folder on
+        // others; the file sits under <jeu>/data/map, so both are made to agree here
+        // rather than at each call site.
+        var trimmed = gameData.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var gameDirectory =
+            string.Equals(Path.GetFileName(trimmed), "data", StringComparison.OrdinalIgnoreCase)
+                ? Path.GetDirectoryName(trimmed) ?? trimmed
+                : trimmed;
+
+        var mapName = Path.GetFileNameWithoutExtension(opsPath);
+        var path = MapNodeInformation.PathOf(gameDirectory, mapName);
+        var information = MapNodeInformation.Read(path);
+        if (!information.ChosenNodes.Any())
+        {
+            MessageBox.Show(
+                this,
+                $"'{mapName}' ne nomme aucune surface de collision."
+                    + Environment.NewLine + Environment.NewLine
+                    + "Seules les surfaces CA## portent une valeur choisie : CS## prend"
+                    + " toujours son propre indice et CK## toujours zéro, mesuré sur les"
+                    + " 1202 fichiers du jeu. Écrivez la carte une fois pour que le"
+                    + " fichier soit créé avec ses surfaces.",
+                "Surfaces de collision",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        using var editor = new MapNodeInformationForm(
+            mapName, path, information, MapNodeInformationCatalog.ChosenValues(gameDirectory));
+        editor.ShowDialog(this);
+    }
+
     private void ShowMapStudio()
     {
         if (mapStudioWindow is { IsDisposed: false } opened)
