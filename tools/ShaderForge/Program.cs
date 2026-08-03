@@ -26,6 +26,19 @@ switch (args[0])
     case "compile": return Compile(args);
     case "inspect": return Inspect(File.ReadAllBytes(args[1]), Path.GetFileName(args[1]));
     case "compare": return Compare(args[1], args[2]);
+    case "forge":
+    {
+        var switchAt = Array.IndexOf(args, "-M");
+        var named = Array.IndexOf(args, "--as");
+        return ED8Editor.ShaderForge.Forging.Forge(
+            args[1], args[2], args[3],
+            switchAt >= 0 && switchAt + 1 < args.Length
+                ? args[switchAt + 1].Split(',', StringSplitOptions.RemoveEmptyEntries)
+                : null,
+            named >= 0 && named + 1 < args.Length ? args[named + 1] : null,
+            (source, entry, defines) => CompileOne(source, entry, defines));
+    }
+
     case "variants": return ED8Editor.ShaderForge.Variants.Report(
         args[1], args[2], (entry, defines) => CompileOne(args[2], entry, defines));
     default:
@@ -63,10 +76,12 @@ static int Compile(string[] args)
 
     var defines = new List<string>();
     string? output = null;
+    string? dump = null;
     for (var at = 4; at < args.Length; at++)
     {
         if (args[at] == "-D" && at + 1 < args.Length) defines.Add(args[++at]);
         else if (args[at] == "--out" && at + 1 < args.Length) output = args[++at];
+        else if (args[at] == "--dump" && at + 1 < args.Length) dump = args[++at];
     }
     if (defines.Count != 0) Console.WriteLine($"  defines : {string.Join(" ", defines)}");
 
@@ -121,6 +136,7 @@ static int Compile(string[] args)
         return 1;
     }
     var source = RemoveTechniques(expanded.AsString(), out var removed);
+    if (dump is not null) File.WriteAllText(dump, source);
     Console.WriteLine($"  preprocesse : {source.Split('\n').Length} lignes,"
         + $" {removed} technique(s) retiree(s)");
 
@@ -129,9 +145,14 @@ static int Compile(string[] args)
         // The same flags the shipped blobs were built with are not known, so the
         // default is used and the comparison is made on what the engine actually
         // reads: the signatures and the constant buffer layout.
+        // Terminated, as the preprocessor call is: the native side walks the array
+        // until a null name.
+        var compileMacros = macros.Length == 0
+            ? macros
+            : macros.Append(new ShaderMacro(null!, null!)).ToArray();
         var result = Compiler.Compile(
             source,
-            macros,
+            compileMacros,
             include: null!,
             entryPoint: args[2],
             sourceName: "ed8.fx",
@@ -225,7 +246,15 @@ static string RemoveTechniques(string source, out int removed)
 static int Skip(string source, int from, char opens, char closes)
 {
     var at = from;
-    while (at < source.Length && char.IsWhiteSpace(source[at])) at++;
+    // Whitespace, and the #line directives the preprocessor leaves behind. One of
+    // those sits between a technique's annotations and its body, and stopping on it
+    // left the body in place — a lone brace the compiler could make nothing of.
+    while (at < source.Length)
+    {
+        if (char.IsWhiteSpace(source[at])) { at++; continue; }
+        if (source[at] != '#') break;
+        while (at < source.Length && source[at] != '\n') at++;
+    }
     if (at >= source.Length || source[at] != opens) return from;
     var depth = 0;
     for (; at < source.Length; at++)

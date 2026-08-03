@@ -127,6 +127,40 @@ public static class Variants
         return 0;
     }
 
+    /// <summary>The material switches a shader declares, without the stray entries.</summary>
+    public static IReadOnlyList<string> MaterialSwitches(
+        PhyreClusterData data, PhyreClusterSections cut)
+        => Strings(data, cut, "PMaterialSwitch").Where(value => value.Length > 1).ToArray();
+
+    /// <summary>
+    /// Everything a slot is compiled with: the material switches, the platform, and
+    /// the context switches its packed value stands for.
+    /// </summary>
+    public static IReadOnlyList<string> DefinesFor(
+        IReadOnlyList<string> material, IReadOnlyList<uint> context)
+    {
+        var lightTypes = new[] { "DirectionalLight", "PointLight", "SpotLight" };
+        var shadowTypes = new[] { "CombinedCascadedShadowMap" };
+        var names = new[] { "NUM_LIGHTS", "INSTANCING_ENABLED", "SHADER_LOD_LEVEL" };
+        var defines = new List<string>(material) { "PHYRE_D3DFX" };
+        for (var at = 0; at < names.Length && at < context.Count; at++)
+        {
+            switch (names[at])
+            {
+                case "INSTANCING_ENABLED":
+                    if (context[at] != 0) defines.Add("INSTANCING_ENABLED");
+                    break;
+                case "NUM_LIGHTS":
+                    defines.AddRange(LightDefines(context[at], lightTypes, shadowTypes));
+                    break;
+                default:
+                    defines.Add($"{names[at]}={context[at]}");
+                    break;
+            }
+        }
+        return defines;
+    }
+
     /// <summary>Whether any light of a packed switch casts a shadow.</summary>
     private static bool HasShadow(uint packed)
     {
@@ -184,7 +218,7 @@ public static class Variants
         }
     }
 
-    private static IReadOnlyList<string> Strings(
+    public static IReadOnlyList<string> Strings(
         PhyreClusterData data, PhyreClusterSections cut, string className)
     {
         var group = cut.Metadata.InstanceGroups
@@ -197,7 +231,7 @@ public static class Variants
             .ToArray();
     }
 
-    private static IReadOnlyList<IReadOnlyList<uint>> ContextValues(
+    public static IReadOnlyList<IReadOnlyList<uint>> ContextValues(
         PhyreClusterData data, PhyreClusterSections cut)
     {
         var group = cut.Metadata.InstanceGroups
@@ -218,14 +252,14 @@ public static class Variants
         return found;
     }
 
-    private sealed record PassEntry(string Vertex, string Fragment);
+    public sealed record PassEntry(string Vertex, string Fragment);
 
     /// <summary>
     /// The entry points each render pass names. Read off the names the pass-info
     /// group carries rather than guessed: a shipped shader lists seven for four
     /// passes, the first two sharing their vertex program.
     /// </summary>
-    private static IReadOnlyList<PassEntry> PassEntryPoints(
+    public static IReadOnlyList<PassEntry> PassEntryPoints(
         PhyreClusterData data, PhyreClusterSections cut)
     {
         var names = Strings(data, cut, "PShaderPassInfo");
