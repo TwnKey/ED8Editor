@@ -682,7 +682,11 @@ public static class PhyreMaterialTableReader
             ?? throw new InvalidDataException(
                 "This model contains no mesh whose material can be resolved.");
         var defaultMaterials = RequiredMember(classes, "PMesh", "m_defaultMaterials");
-        var materialPointer = RequirePointerToClass(
+        // The FIRST of them. A mesh drawn with one material points once; a mesh with
+        // a set points once per segment, and r0510's first mesh points four times.
+        // Demanding a single pointer refused any model whose first mesh carries a
+        // set, which is most of a map.
+        var materialPointer = FirstPointerToClass(
             fixups,
             groups,
             mesh.Index,
@@ -713,6 +717,33 @@ public static class PhyreMaterialTableReader
             materialPointer.DestinationObjectId,
             bufferGroup,
             bufferPointer.DestinationObjectId);
+    }
+
+    private static PhyrePointerFixup FirstPointerToClass(
+        PhyreFixupSet fixups,
+        IReadOnlyList<PhyreInstanceGroup> groups,
+        int sourceGroupIndex,
+        uint sourceObjectId,
+        PhyreDataMember member,
+        string targetClass,
+        bool embeddedArrayPointer)
+    {
+        var rawOffset = checked(
+            member.ValueOffset + (embeddedArrayPointer ? sizeof(uint) : 0u));
+        return fixups.Pointers
+            .Where(value =>
+                value.SourceListIndex == sourceGroupIndex
+                && value.SourceObjectId == sourceObjectId
+                && value.UserFixupId is null
+                && ((value.IsClassDataMember && value.SourceMemberId == (uint)member.Index)
+                    || (!value.IsClassDataMember && value.SourceOffset == rawOffset))
+                && value.DestinationListIndex < groups.Count
+                && groups[checked((int)value.DestinationListIndex)].ClassName == targetClass)
+            .OrderBy(value => value.ArrayIndex)
+            .FirstOrDefault()
+            ?? throw new InvalidDataException(
+                $"{groups[sourceGroupIndex].ClassName}[{sourceObjectId}].{member.Name}"
+                + $" has no pointer to {targetClass}.");
     }
 
     private static PhyrePointerFixup RequirePointerToClass(
