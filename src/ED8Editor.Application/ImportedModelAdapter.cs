@@ -164,7 +164,13 @@ public static class ImportedModelAdapter
             ? new[] { new PhyreTexCoordSet(Vector2.Zero, Vector3.UnitX, Vector3.UnitZ) }
             : vertex.TexCoords
                 .Select(uv => new PhyreTexCoordSet(
-                    uv,
+                    // V the other way up. Assimp normalises a glTF's coordinates to
+                    // its own origin, which is the opposite corner, so a file that
+                    // states V 0.026 to 0.997 arrives as 0.003 to 0.974 — measured on
+                    // r0510's trees. Phyre stores them as the file states them, so
+                    // the flip has to be undone here or every texture is upside down.
+                    // A tiling ground never shows it; a tree on a billboard does.
+                    new Vector2(uv.X, 1f - uv.Y),
                     Vector3.TransformNormal(vertex.Tangent, basis),
                     Vector3.TransformNormal(vertex.Bitangent, basis)))
                 .ToArray();

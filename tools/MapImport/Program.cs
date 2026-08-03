@@ -41,6 +41,39 @@ var project = File.Exists(projectPath)
 var replaceModel = command == "replace-model";
 switch (command)
 {
+    case "uv":
+    {
+        // What the importer hands the writer, per material and per set. The
+        // question it answers: whether a coordinate arrives as the file states it
+        // or as some step along the way decided to state it.
+        var uvScene = new AssimpModelImporter().Import(args[3]);
+        var uvMade = ImportedModelAdapter.Convert(uvScene);
+        var seen = new Dictionary<string, UvBox>(StringComparer.Ordinal);
+        foreach (var mesh in uvMade.Model.Meshes)
+        {
+            var uvName = mesh.MaterialName;
+            var box = seen.TryGetValue(uvName, out var had)
+                ? had
+                : new UvBox(float.MaxValue, float.MinValue, float.MaxValue, float.MinValue, 0, 0);
+            foreach (var vertex in mesh.Vertices)
+            {
+                box.Sets = Math.Max(box.Sets, vertex.TexCoords.Count);
+                if (vertex.TexCoords.Count == 0) continue;
+                var uv = vertex.TexCoords[0].TexCoord;
+                box.U0 = Math.Min(box.U0, uv.X); box.U1 = Math.Max(box.U1, uv.X);
+                box.V0 = Math.Min(box.V0, uv.Y); box.V1 = Math.Max(box.V1, uv.Y);
+                box.N++;
+            }
+            seen[uvName] = box;
+        }
+        foreach (var (uvName, box) in seen.OrderBy(value => value.Key, StringComparer.Ordinal))
+        {
+            Console.WriteLine($"  {uvName,-30} jeux={box.Sets} n={box.N,6}"
+                + $" U[{box.U0,7:F3},{box.U1,7:F3}] V[{box.V0,7:F3},{box.V1,7:F3}]");
+        }
+        return 0;
+    }
+
     case "status":
         Console.WriteLine($"project : {project.ProjectPath}");
         Console.WriteLine($"game    : {project.GameDirectory}");
@@ -599,3 +632,13 @@ foreach (var file in made.Files.Append(packagePath))
 Console.WriteLine();
 Console.WriteLine($"to undo everything:  MapImport <game> {Path.GetFileName(projectPath)} revert");
 return 0;
+
+
+/// <summary>The span of one material's first coordinate set, as imported.</summary>
+internal struct UvBox
+{
+    public UvBox(float u0, float u1, float v0, float v1, int sets, int n)
+    { U0 = u0; U1 = u1; V0 = v0; V1 = v1; Sets = sets; N = n; }
+    public float U0; public float U1; public float V0; public float V1;
+    public int Sets; public int N;
+}
