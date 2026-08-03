@@ -26,9 +26,28 @@ switch (args[0])
     case "compile": return Compile(args);
     case "inspect": return Inspect(File.ReadAllBytes(args[1]), Path.GetFileName(args[1]));
     case "compare": return Compare(args[1], args[2]);
+    case "variants": return ED8Editor.ShaderForge.Variants.Report(
+        args[1], args[2], (entry, defines) => CompileOne(args[2], entry, defines));
     default:
         Console.WriteLine($"commande inconnue : {args[0]}");
         return 1;
+}
+
+/// <summary>One entry point, compiled from the source, or null when it will not.</summary>
+static byte[]? CompileOne(string sourcePath, string entry, IReadOnlyList<string> defines)
+{
+    var built = new List<string> { "compile", sourcePath, entry,
+        entry.Contains("VPShader", StringComparison.Ordinal) ? "vs_5_0" : "ps_5_0" };
+    foreach (var one in defines) { built.Add("-D"); built.Add(one); }
+    var quiet = Console.Out;
+    Console.SetOut(TextWriter.Null);
+    try
+    {
+        Forge.Produced = null;
+        Compile(built.ToArray());
+        return Forge.Produced;
+    }
+    finally { Console.SetOut(quiet); }
 }
 
 static int Compile(string[] args)
@@ -128,6 +147,7 @@ static int Compile(string[] args)
             return 1;
         }
         var bytes = blob.AsBytes();
+        Forge.Produced = bytes;
         Console.WriteLine($"  compile : {bytes.Length} octets");
         if (errors is not null && errors.AsString() is { } warned && warned.Trim().Length != 0)
         {
@@ -286,4 +306,11 @@ static int Compare(string ours, string shipped)
     Inspect(a, "nous");
     Inspect(b, "livre");
     return 0;
+}
+
+
+/// <summary>The blob the last compile produced, so a caller can take it.</summary>
+internal static class Forge
+{
+    public static byte[]? Produced;
 }

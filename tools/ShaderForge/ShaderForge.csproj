@@ -11,4 +11,7 @@
   <ItemGroup>
     <PackageReference Include="Vortice.D3DCompiler" Version="2.4.2" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\ED8Editor.Phyre\ED8Editor.Phyre.csproj" />
+  </ItemGroup>
 </Project>
