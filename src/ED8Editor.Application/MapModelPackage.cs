@@ -61,7 +61,8 @@ public static class MapModelPackage
         string? collisionFrom = null,
         bool perMaterialShaders = true,
         IReadOnlyCollection<string>? onlyMaterials = null,
-        IReadOnlyDictionary<string, string>? materialMap = null)
+        IReadOnlyDictionary<string, string>? materialMap = null,
+        string? nodeInformationFrom = null)
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentNullException.ThrowIfNull(model);
@@ -315,7 +316,7 @@ public static class MapModelPackage
             : PkgArchiveWriter.DefaultMagic;
         new PkgArchiveWriter().Write(destination, magic, entries);
         project.TrackSave(destination);
-        WriteNodeInformation(project, lower, collisions, say);
+        WriteNodeInformation(project, lower, collisions, nodeInformationFrom, say);
         say?.Invoke($"package: {entries.Length} entries — manifest, model and"
             + $" {shaders.Length} shader(s)");
         return destination;
@@ -540,6 +541,21 @@ public static class MapModelPackage
         return result;
     }
 
+    /// <summary>The CA parameters a shipped node information file states, by node.</summary>
+    private static IReadOnlyDictionary<string, string> NodeParameters(string? path)
+    {
+        var found = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (path is null || !File.Exists(path)) return found;
+        foreach (System.Text.RegularExpressions.Match one in
+            System.Text.RegularExpressions.Regex.Matches(
+                File.ReadAllText(path),
+                @"name=""(CA[0-9]+)""\s+param0=""([0-9]+)"""))
+        {
+            found[one.Groups[1].Value] = one.Groups[2].Value;
+        }
+        return found;
+    }
+
     /// <summary>
     /// The node information file beside the map, naming its collision nodes.
     ///
@@ -556,6 +572,7 @@ public static class MapModelPackage
         ModProject project,
         string mapName,
         IReadOnlyList<(string Node, PhyrePhysicsSource Shape)> collisions,
+        string? takeFrom,
         Action<string>? say)
     {
         if (collisions.Count == 0) return;
@@ -573,16 +590,20 @@ public static class MapModelPackage
             text.Append($"  <node_param name=\"CK{at:00}\" param0=\"0\" />").Append(Newline);
         }
         text.Append(Newline);
-        // A chosen value rather than an index. Six and one are what r0100 states for
-        // its own two, and the commonest across every shipped file that names them.
+        // A chosen value rather than an index, so it is read off the map this one is
+        // authored from rather than guessed: the value says what the surface is made
+        // of, and the executable turns it into one of foot01, foot09, foot10 or
+        // foot12 under data/effects/system. Copying another map's numbers would be
+        // stating a material we never measured.
+        var borrowed = NodeParameters(takeFrom);
         foreach (var node in collisions
             .Select(value => value.Node)
             .Where(value => value.StartsWith("CA", StringComparison.Ordinal))
             .Distinct(StringComparer.Ordinal)
             .OrderBy(value => value, StringComparer.Ordinal))
         {
-            text.Append($"  <node_param name=\"{node}\" param0=\"{(node == "CA00" ? 6 : 1)}\" />")
-                .Append(Newline);
+            if (!borrowed.TryGetValue(node, out var chosen)) continue;
+            text.Append($"  <node_param name=\"{node}\" param0=\"{chosen}\" />").Append(Newline);
         }
         text.Append(Newline).Append("</node_infomation>").Append(Newline);
 

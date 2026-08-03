@@ -618,7 +618,9 @@ var packagePath = MapModelPackage.WriteMinimal(
     collisionFrom: collisionFrom,
     perMaterialShaders: !args.Contains("--one-shader"),
     onlyMaterials: MaterialSubset(args),
-    materialMap: MaterialMapHolder.Of(args));
+    materialMap: MaterialMapHolder.Of(args),
+    nodeInformationFrom: Array.IndexOf(args, "--inf-from") is var infAt && infAt >= 0
+        && infAt + 1 < args.Length ? args[infAt + 1] : null);
 
 if (replaceModel)
 {
