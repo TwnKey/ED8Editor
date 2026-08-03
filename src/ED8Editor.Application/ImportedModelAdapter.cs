@@ -60,6 +60,18 @@ public static class ImportedModelAdapter
         // never to be seen; drawn, they are the walls standing across the map.
         var collisionMeshes = CollisionMeshes(scene);
 
+        // Where each mesh's node puts it. Assimp is not asked to pre-transform
+        // vertices — that would flatten the node graph, and the graph is what the
+        // collision nodes are named in — so a mesh arrives in its own local space
+        // and it is here that its node's chain has to be applied.
+        //
+        // Without it a map draws every mesh at the origin of its own node: r0510's
+        // forty-six tufts of grass all pile onto one spot, and a bridge sits at the
+        // wrong height under a walkable surface, because the collision surfaces
+        // happen to hang off untransformed nodes and so land correctly while the
+        // scenery does not.
+        var placements = Placements(scene, basis);
+
         var meshes = new List<PhyreMeshSource>();
         for (var index = 0; index < scene.Meshes.Count; index++)
         {
@@ -86,10 +98,11 @@ public static class ImportedModelAdapter
                 }
             }
 
+            var placement = placements[index];
             var vertices = mesh.Vertices
-                .Select(vertex => Vertex(vertex, basis, ref dropped))
+                .Select(vertex => Vertex(vertex, placement, ref dropped))
                 .ToArray();
-            var indices = Wound(mesh, vertices, basis, ref flipped);
+            var indices = Wound(mesh, vertices, placement, ref flipped);
             collisionMeshes.TryGetValue(index, out var collisionNode);
             meshes.Add(new PhyreMeshSource(
                 material, vertices, indices, texture,
@@ -232,6 +245,45 @@ public static class ImportedModelAdapter
     /// vertex influence keeps pointing at the same joint; a node no skin binds
     /// simply gets an identity bind matrix.
     /// </summary>
+    /// <summary>
+    /// The matrix each mesh's vertices are to be written through: its node's whole
+    /// chain up to the root, with the change of basis at the top.
+    ///
+    /// A skinned mesh is left on the basis alone. Its vertices are in bind space
+    /// and the skeleton is what moves them; putting the node's transform in as well
+    /// would apply the same placement twice.
+    /// </summary>
+    private static Matrix4x4[] Placements(ImportedModelScene scene, Matrix4x4 basis)
+    {
+        var nodes = scene.Nodes;
+        var world = new Matrix4x4[nodes.Count];
+        for (var at = 0; at < nodes.Count; at++)
+        {
+            var node = nodes[at];
+            // A parent always precedes its children in the flattened order, so one
+            // pass suffices; a node that claims a later parent falls back to the
+            // basis rather than reading a matrix that is not built yet.
+            world[at] = node.ParentIndex >= 0 && node.ParentIndex < at
+                ? node.LocalTransform * world[node.ParentIndex]
+                : node.LocalTransform * basis;
+        }
+
+        var placements = new Matrix4x4[scene.Meshes.Count];
+        Array.Fill(placements, basis);
+        var placed = new bool[scene.Meshes.Count];
+        for (var at = 0; at < nodes.Count; at++)
+        {
+            foreach (var mesh in nodes[at].MeshIndices)
+            {
+                if (mesh < 0 || mesh >= placements.Length || placed[mesh]) continue;
+                if (scene.Meshes[mesh].Skin is not null) { placed[mesh] = true; continue; }
+                placements[mesh] = world[at];
+                placed[mesh] = true;
+            }
+        }
+        return placements;
+    }
+
     /// <summary>
     /// The meshes that are collision rather than scenery, by the node they hang from.
     ///

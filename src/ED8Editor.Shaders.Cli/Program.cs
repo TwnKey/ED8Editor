@@ -1,6 +1,7 @@
 using System.Text.Json;
 using ED8Editor.Packages;
 using ED8Editor.Phyre;
+using ED8Editor.Shaders;
 using ED8Editor.Shaders.Investigation;
 using ED8Editor.Shaders.Compilation;
 using Vortice.D3DCompiler;
@@ -10,16 +11,18 @@ using Vortice.Direct3D11.Shader;
 // ED8Editor.Shaders.Cli — Cold Steel 1 Shader Analyzer
 // ============================================================
 // Usage:
-//   dotnet run                                    → full analysis
-//   dotnet run -- --generate <outputDir>          → generate compat HLSL
-//   dotnet run -- --build <hlslFile> <outputPath>  → compile HLSL to fx.phyre
+//   dotnet run                                          → full analysis
+//   dotnet run -- --extract-source <outputDir>          → extract HLSL + switch DB
+//   dotnet run -- --generate <outputDir>                 → generate compat HLSL
+//   dotnet run -- --build <hlslFile> <outputPath>        → compile HLSL to fx.phyre
 // ============================================================
 
+var extractSourceMode = args.Length > 0 && args[0] == "--extract-source";
 var generateMode = args.Length > 0 && args[0] == "--generate";
 var buildMode = args.Length > 0 && args[0] == "--build";
-var outputDir = generateMode && args.Length > 1 ? args[1] : ".";
+var outputDir = (extractSourceMode || generateMode) && args.Length > 1 ? args[1] : ".";
 
-var gamePath = generateMode && args.Length > 2
+var gamePath = (extractSourceMode || generateMode) && args.Length > 2
     ? args[2]
     : @"C:\Program Files (x86)\Steam\steamapps\common\Trails of Cold Steel\data\asset\D3D11";
 
@@ -27,6 +30,11 @@ if (!Directory.Exists(gamePath))
 {
     Console.Error.WriteLine($"ERROR: Game path not found: {gamePath}");
     return 1;
+}
+
+if (extractSourceMode)
+{
+    return ExtractShaderSource(gamePath, outputDir);
 }
 
 if (generateMode)
@@ -442,6 +450,78 @@ static string GenerateTestPlan(PhyreShaderSignature sig)
 - [ ] Wrong cbuffer offset -> corrupted rendering
 - [ ] Missing GameMaterialID -> possible crash
 ";
+}
+
+// ============================================================
+static int ExtractShaderSource(string gamePath, string outputDir)
+{
+    Console.WriteLine("=== Extracting Shader Source ===");
+    Directory.CreateDirectory(outputDir);
+
+    var pkgFiles = Directory.GetFiles(gamePath, "*.pkg");
+    var reader = new PkgArchiveReader();
+    var extractor = new PhyreShaderSourceExtractor();
+    
+    string? hlslSource = null;
+    var shaderDb = new List<object>();
+
+    foreach (var pkgPath in pkgFiles)
+    {
+        try
+        {
+            var archive = reader.Read(pkgPath);
+            var pkgName = Path.GetFileName(pkgPath);
+            foreach (var entry in archive.Entries)
+            {
+                if (!entry.Name.EndsWith(".fx.phyre", StringComparison.OrdinalIgnoreCase))
+                    continue;
+                try
+                {
+                    var data = archive.ReadEntry(entry);
+                    // Extract HLSL from first shader only (all identical)
+                    if (hlslSource == null)
+                    {
+                        hlslSource = extractor.ExtractHlsl(data);
+                        Console.WriteLine($"  HLSL source: {hlslSource.Length} chars from {pkgName}/{entry.Name}");
+                    }
+
+                    // Get CRC from filename: ed8.fx#CRC.phyre
+                    var crc = entry.Name.Replace("ed8.fx#", "").Replace(".phyre", "");
+                    var switches = extractor.ReadActiveSwitches(data);
+                    shaderDb.Add(new {
+                        crc,
+                        shader = $"shaders/{entry.Name.Replace(".phyre", "")}",
+                        package = pkgName,
+                        materialSwitches = switches.MaterialSwitches,
+                        contextSwitches = switches.ContextSwitches
+                    });
+                }
+                catch { }
+            }
+        }
+        catch { }
+    }
+
+    // Save HLSL
+    var hlslPath = Path.Combine(outputDir, "ed8.fx");
+    File.WriteAllText(hlslPath, hlslSource ?? "// not found");
+    Console.WriteLine($"Saved HLSL: {hlslPath} ({hlslSource?.Length ?? 0} chars)");
+
+    // Parse defines
+    var allDefines = PhyreShaderSourceExtractor.ParseDefines(hlslSource ?? "");
+    Console.WriteLine($"Parsed {allDefines.Count} #define switches:");
+    foreach (var def in allDefines)
+        Console.WriteLine($"  {def}");
+
+    // Save switch database
+    var dbJson = System.Text.Json.JsonSerializer.Serialize(
+        new { defines = allDefines, shaders = shaderDb },
+        new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+    var dbPath = Path.Combine(outputDir, "shader_switches.json");
+    File.WriteAllText(dbPath, dbJson);
+    Console.WriteLine($"Saved switch DB: {dbPath} ({shaderDb.Count} shaders)");
+
+    return 0;
 }
 
 // ============================================================
