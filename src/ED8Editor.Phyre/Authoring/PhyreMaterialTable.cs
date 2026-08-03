@@ -424,8 +424,99 @@ public static class PhyreMaterialTableReader
         var data = new PhyreClusterReader().Read(cluster);
         var fixups = new PhyreFixupReader().Read(cluster, cut.Metadata);
         var classes = cut.Metadata.Classes.ToList();
-        var types = cut.Metadata.Types;
+        var groups = cut.Metadata.InstanceGroups;
+        return ReadResolved(
+            cut, data, fixups, classes,
+            ResolveFirstMeshMaterial(fixups, classes, groups));
+    }
 
+    /// <summary>
+    /// Every material the cluster publishes a name for, each with its own block.
+    ///
+    /// One block for a whole model was a simplification that only held while every
+    /// material shared a shader. A map does not: r0510 binds fourteen, and their
+    /// blocks do not even measure the same — 112 bytes for one, 440 for another. A
+    /// material handed a block cut for another shader supplies the wrong constants,
+    /// which is how a tree came out painted by a shader that never tests its alpha.
+    ///
+    /// Keyed by the bare name, past the "file.dae#" the reference is published under.
+    /// A material that cannot be read whole is left out rather than half-read: the
+    /// caller can fall back for it, and a partial block is worse than none.
+    /// </summary>
+    public static IReadOnlyDictionary<string, PhyreMaterialTable> ReadAll(
+        ReadOnlyMemory<byte> cluster)
+    {
+        var cut = PhyreClusterSectionReader.Read(cluster);
+        var data = new PhyreClusterReader().Read(cluster);
+        var fixups = new PhyreFixupReader().Read(cluster, cut.Metadata);
+        var classes = cut.Metadata.Classes.ToList();
+        var groups = cut.Metadata.InstanceGroups;
+        var buffers = RequiredMember(classes, "PMaterial", "m_parameterBuffer");
+        var found = new Dictionary<string, PhyreMaterialTable>(StringComparer.Ordinal);
+        foreach (var (key, name) in MaterialNames(data, fixups, classes, groups))
+        {
+            var owner = groups.FirstOrDefault(value => value.Index == key.Group);
+            if (owner is null) continue;
+            PhyrePointerFixup pointer;
+            try
+            {
+                pointer = RequirePointerToClass(
+                    fixups, groups, owner.Index, key.Id, buffers, "PParameterBuffer", false);
+            }
+            catch (InvalidDataException) { continue; }
+            try
+            {
+                found[name] = ReadResolved(
+                    cut, data, fixups, classes,
+                    new ResolvedMaterial(
+                        owner,
+                        key.Id,
+                        groups[checked((int)pointer.DestinationListIndex)],
+                        pointer.DestinationObjectId));
+            }
+            catch (InvalidDataException) { }
+        }
+        return found;
+    }
+
+    /// <summary>Which PMaterial each published name belongs to.</summary>
+    private static IEnumerable<((int Group, uint Id) Key, string Name)> MaterialNames(
+        PhyreClusterData data,
+        PhyreFixupSet fixups,
+        IReadOnlyList<PhyreClassDescriptor> classes,
+        IReadOnlyList<PhyreInstanceGroup> groups)
+    {
+        var references = groups.Where(value => value.ClassName == "PAssetReference" && value.Count > 0);
+        foreach (var group in references)
+        {
+            for (var id = 0u; id < group.Count; id++)
+            {
+                var target = fixups.Pointers.FirstOrDefault(value =>
+                    value.SourceListIndex == group.Index
+                    && value.SourceObjectId == id
+                    && value.UserFixupId is null
+                    && value.DestinationListIndex < groups.Count
+                    && groups[checked((int)value.DestinationListIndex)].ClassName == "PMaterial");
+                if (target is null) continue;
+                if (NameOf(data, classes, group, id) is not { } published) continue;
+                var cut = published.LastIndexOf('#');
+                var name = cut >= 0 ? published[(cut + 1)..] : published;
+                if (name.Length == 0) continue;
+                yield return (
+                    (checked((int)target.DestinationListIndex), target.DestinationObjectId),
+                    name);
+            }
+        }
+    }
+
+    private static PhyreMaterialTable ReadResolved(
+        PhyreClusterSections cut,
+        PhyreClusterData data,
+        PhyreFixupSet fixups,
+        List<PhyreClassDescriptor> classes,
+        ResolvedMaterial material)
+    {
+        var types = cut.Metadata.Types;
         string TypeName(uint id)
         {
             if (id < types.Count) return types[(int)id];
@@ -434,7 +525,6 @@ public static class PhyreMaterialTableReader
         }
 
         var groups = cut.Metadata.InstanceGroups;
-        var material = ResolveFirstMeshMaterial(fixups, classes, groups);
         var buffer = material.ParameterBufferGroup;
         var bufferObjectId = material.ParameterBufferObjectId;
 

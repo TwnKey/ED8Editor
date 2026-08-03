@@ -1532,6 +1532,22 @@ if (args.Length > 3 && args[1] == "--members")
     return 0;
 }
 
+//   PhyreAuthoringProbe x --materials <cluster|package>
+// Each named material with the shader it binds and the size of the block it hands
+// it. Two materials on one shader share a block; two shaders never do.
+if (args.Length > 2 && args[1] == "--materials")
+{
+    var tables = PhyreMaterialTableReader.ReadAll(ReadClusterOrPackage(args[2]));
+    Console.WriteLine($"{tables.Count} materiau(x) lisible(s)");
+    foreach (var (name, table) in tables.OrderBy(value => value.Key, StringComparer.Ordinal))
+    {
+        Console.WriteLine(
+            $"  {name,-30} bloc={table.ParameterBufferSize,4} def={table.DefinitionCount,3}"
+            + $" ech={table.SamplerStates.Count,2}  {table.ShaderAsset}");
+    }
+    return 0;
+}
+
 //   PhyreAuthoringProbe x --pointer-arrays <cluster>
 // Which members of which objects hold an array of pointers, and how many.
 if (args.Length > 2 && args[1] == "--pointer-arrays")
