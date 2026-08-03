@@ -1532,6 +1532,19 @@ if (args.Length > 3 && args[1] == "--members")
     return 0;
 }
 
+//   PhyreAuthoringProbe x --manifest <package>
+// The asset_D3D11.xml a package declares, decompressed. It is what tells the engine
+// which of the entries beside it are shaders, textures and models.
+if (args.Length > 2 && args[1] == "--manifest")
+{
+    var package = new PkgArchiveReader().Read(args[2]);
+    var entry = package.Entries.FirstOrDefault(value =>
+        value.Name.Equals("asset_D3D11.xml", StringComparison.OrdinalIgnoreCase));
+    if (entry is null) { Console.WriteLine("aucun manifeste"); return 1; }
+    Console.WriteLine(System.Text.Encoding.UTF8.GetString(package.ReadEntry(entry)));
+    return 0;
+}
+
 //   PhyreAuthoringProbe x --materials <cluster|package>
 // Each named material with the shader it binds and the size of the block it hands
 // it. Two materials on one shader share a block; two shaders never do.
@@ -1544,6 +1557,22 @@ if (args.Length > 2 && args[1] == "--materials")
         Console.WriteLine(
             $"  {name,-30} bloc={table.ParameterBufferSize,4} def={table.DefinitionCount,3}"
             + $" ech={table.SamplerStates.Count,2}  {table.ShaderAsset}");
+        if (args.Length > 3 && name.Contains(args[3], StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine($"      enfants={table.Children.Count}"
+                + $" pointeurs={table.Pointers.Count}"
+                + $" tableaux={table.DefinitionArrays.Count}"
+                + $" donneesTableaux={table.DefinitionArrayData.Length}"
+                + $" objetBloc={table.ParameterBufferObject.Length}");
+            foreach (var one in table.Imports)
+            {
+                Console.WriteLine($"      import {one.Member ?? "+" + one.Source,-20} {one.Asset}");
+            }
+            foreach (var one in table.Pointers)
+            {
+                Console.WriteLine($"      ptr +{one.SourceOffset,-6} -> {one.TargetClass}[{one.TargetId}] x{one.Count}");
+            }
+        }
     }
     return 0;
 }
