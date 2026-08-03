@@ -1597,6 +1597,116 @@ if (args.Length > 2 && args[1] == "--normals")
     return 0;
 }
 
+//   PhyreAuthoringProbe x --reforge <cluster> <classe> <index> <blob.dxbc> <sortie>
+// Puts a compiled program in place of one a shipped shader carries, and writes the
+// cluster back.
+//
+// A program group's array region is its blobs laid end to end in object order, with
+// no padding — the 24 of PShaderVertexProgram sum to exactly the 135 512 bytes the
+// group declares. So a replacement means three things at once: the run itself, the
+// size each object states in m_compiledCode, and the offset each array fixup points
+// at. Changing one without the others leaves a cluster that reads but describes
+// something that is not there.
+if (args.Length > 6 && args[1] == "--reforge")
+{
+    var image = ReadClusterOrPackage(args[2]);
+    var wantedClass = args[3];
+    var wantedIndex = uint.Parse(args[4]);
+    var replacement = File.ReadAllBytes(args[5]);
+
+    var cut = PhyreClusterSectionReader.Read(image);
+    var data = new PhyreClusterReader().Read(image);
+    var fixups = new PhyreFixupReader().Read(image, cut.Metadata);
+    var classes = cut.Metadata.Classes.ToList();
+    var target = cut.Metadata.InstanceGroups
+        .FirstOrDefault(value => value.ClassName == wantedClass && value.Count != 0);
+    if (target is null) { Console.WriteLine($"'{wantedClass}' absente"); return 1; }
+    if (wantedIndex >= target.Count)
+    {
+        Console.WriteLine($"index {wantedIndex} hors du groupe de {target.Count}");
+        return 1;
+    }
+
+    var member = PhyreObjectWriter
+        .Chain(classes.First(value => value.Name == wantedClass), classes)
+        .First(value => value.Name == "m_compiledCode");
+    var arrays = data.GetArrayData(target.Index, 0, target.ArraysSize).ToArray();
+    var objectsData = data.GetGroupObjectsData(target.Index).ToArray();
+    var each = (int)(target.ObjectsSize / target.Count);
+
+    // Every blob as it stands, then the one asked for put in its place.
+    var blobs = new List<byte[]>();
+    var running = 0;
+    for (uint id = 0; id < target.Count; id++)
+    {
+        var stated = (int)BitConverter.ToUInt32(
+            objectsData, (int)(id * each) + (int)member.ValueOffset);
+        blobs.Add(id == wantedIndex
+            ? replacement
+            : arrays.AsSpan(running, stated).ToArray());
+        running += stated;
+    }
+    Console.WriteLine($"  {wantedClass}[{wantedIndex}] : {blobs[(int)wantedIndex].Length} octets"
+        + $" a la place de {BitConverter.ToUInt32(objectsData, (int)(wantedIndex * each) + (int)member.ValueOffset)}");
+
+    var laid = new MemoryStream();
+    var offsets = new uint[target.Count];
+    for (var id = 0; id < blobs.Count; id++)
+    {
+        offsets[id] = (uint)laid.Length;
+        laid.Write(blobs[id]);
+        BitConverter.GetBytes((uint)blobs[id].Length)
+            .CopyTo(objectsData, id * each + (int)member.ValueOffset);
+    }
+
+    var groups = new List<PhyreGroupContents>();
+    foreach (var group in cut.Metadata.InstanceGroups)
+    {
+        var className = group.ClassName ?? "";
+        var objects = new List<PhyreObjectContents>();
+        var size = group.Count == 0 ? 0 : (int)(group.ObjectsSize / group.Count);
+        var stored = group.Index == target.Index
+            ? objectsData.AsSpan()
+            : data.GetGroupObjectsData(group.Index).Span;
+        for (uint id = 0; id < group.Count; id++)
+        {
+            objects.Add(PhyreObjectWriter.ReadObject(
+                stored.Slice((int)(id * size), size), className, classes));
+        }
+        groups.Add(new PhyreGroupContents(className, objects,
+            group.Index == target.Index
+                ? laid.ToArray()
+                : group.ArraysSize == 0
+                    ? ReadOnlyMemory<byte>.Empty
+                    : data.GetArrayData(group.Index, 0, group.ArraysSize)));
+    }
+
+    var moved = new List<PhyreArrayFixup>();
+    foreach (var fixup in fixups.Arrays)
+    {
+        moved.Add(fixup.SourceListIndex == target.Index
+            && fixup.SourceObjectId < target.Count
+            && fixup.SourceOffsetOrMember == (uint)member.Index
+            ? fixup with { Offset = offsets[fixup.SourceObjectId] }
+            : fixup);
+    }
+
+    var written = PhyreClusterAssembler.Assemble(new PhyreClusterContents(
+        cut.Metadata.Types,
+        groups,
+        fixups with { Arrays = moved },
+        fixups.UserFixups,
+        cut.HeaderClasses,
+        cut.Payload,
+        PhyreNamespaceWriter.ReadUnmodelledHeader(cut.PackedNamespace),
+        cut.Header[(17 * sizeof(uint))..],
+        PhyreSchemaProfile.Cs1Native,
+        classes.Select(value => value.Name).ToArray()));
+    File.WriteAllBytes(args[6], written);
+    Console.WriteLine($"  ecrit : {written.Length} octets (source {image.Length})");
+    return 0;
+}
+
 //   PhyreAuthoringProbe x --hlsl <cluster> <sortie>
 // The HLSL a shader cluster carries, written out whole. It lives in the PEffect
 // group's array region.
