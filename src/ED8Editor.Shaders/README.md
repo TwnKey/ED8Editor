@@ -207,3 +207,37 @@ indépendantes le confirment :
 La disposition dans le groupe est `programme[contexte * 4 + passe]`, et la région de
 tableaux est les blobs bout à bout dans cet ordre, sans bourrage : les 24 sommes font
 exactement les 135 512 octets déclarés, les 12 pixel 47 636.
+
+## Le modèle de défines est complet
+
+Pour chaque emplacement `programme[contexte * 4 + passe]` :
+
+- le **point d'entrée** et le **profil** viennent de `PShaderPassInfo`
+- les **commutateurs de matériau** viennent de `PMaterialSwitch`, identiques aux deux
+  étages — `PShaderGatherCacheEntryCgFX::populate` les passe une seule fois
+- `PHYRE_D3DFX`, sans quoi `FRAG_OUTPUT_COLOR0` s'étend en `COLOR0`
+- les **commutateurs de contexte** décodés du `PNodeContext` : quatre bits de compte,
+  puis cinq de type de lumière et cinq de type d'ombre par lumière, donnant
+  `NUM_LIGHTS`, `LIGHTTYPE_<i>` et `SHADOWTYPE_<i>`
+
+Les tables de remappage par étage (`VpIgnoreContextSwitches`,
+`FpIgnoreContextSwitches`) ne portent que des commutateurs de **contexte** : ici le
+pixel ignore `INSTANCING_ENABLED`, d'où douze programmes pixel pour vingt-quatre
+sommet.
+
+Avec ce modèle, **35 emplacements sur 36** reviennent à la taille du jeu au nom du
+compilateur près, et sur ceux qu'on a ouverts `ISGN`, `OSGN` et `SHEX` reviennent
+octet pour octet.
+
+Le trente-sixième — le pixel par défaut du contexte à une lumière sans ombre — a la
+même interface et la même disposition de paramètres, mais 288 octets de `SHEX` en
+plus :
+
+```
+ISGN  180 = 180      OSGN  44 = 44      STAT 148 = 148
+RDEF 4476 vs 4488    (-12, le nom du compilateur)
+SHEX 2164 vs 1876    (+288, notre code)
+```
+
+Ce n'est donc pas un défine qui manque : c'est le compilateur de 2010 qui optimise
+mieux ce shader-là. Le programme est correct, simplement plus long.
