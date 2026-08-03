@@ -60,7 +60,8 @@ public static class MapModelPackage
         bool withCollision = true,
         string? collisionFrom = null,
         bool perMaterialShaders = true,
-        IReadOnlyCollection<string>? onlyMaterials = null)
+        IReadOnlyCollection<string>? onlyMaterials = null,
+        IReadOnlyDictionary<string, string>? materialMap = null)
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentNullException.ThrowIfNull(model);
@@ -157,7 +158,16 @@ public static class MapModelPackage
                 {
                     continue;
                 }
-                if (!donorTables.TryGetValue(slots[slot], out var table)) continue;
+                // The donor material to take the block from. Its name by default,
+                // which is right when both files call a thing the same; stated
+                // outright otherwise, because a map re-authored from another game
+                // shares no name with anything here and guessing one would be
+                // dressing an arbitrary pairing up as a correct one.
+                var wanted = materialMap is not null
+                    && materialMap.TryGetValue(slots[slot], out var named)
+                    ? named
+                    : slots[slot];
+                if (!donorTables.TryGetValue(wanted, out var table)) continue;
                 found[slot] = table;
                 matched++;
             }

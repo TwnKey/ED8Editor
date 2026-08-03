@@ -617,7 +617,8 @@ var packagePath = MapModelPackage.WriteMinimal(
     withCollision: !args.Contains("--no-collision"),
     collisionFrom: collisionFrom,
     perMaterialShaders: !args.Contains("--one-shader"),
-    onlyMaterials: MaterialSubset(args));
+    onlyMaterials: MaterialSubset(args),
+    materialMap: MaterialMapHolder.Of(args));
 
 if (replaceModel)
 {
@@ -653,6 +654,28 @@ internal static class MaterialSubsetHolder
         return args[at + 1]
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .ToHashSet(StringComparer.Ordinal);
+    }
+}
+
+/// <summary>
+/// --material-map notre=donneur,notre=donneur : quel materiau du donneur fournit le
+/// bloc de chacun des notres. Sans lui, le nom du notre sert de nom donneur.
+/// </summary>
+internal static class MaterialMapHolder
+{
+    public static IReadOnlyDictionary<string, string>? Of(string[] args)
+    {
+        var at = Array.IndexOf(args, "--material-map");
+        if (at < 0 || at + 1 >= args.Length) return null;
+        var pairs = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var one in args[at + 1]
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var cut = one.IndexOf('=');
+            if (cut <= 0 || cut + 1 >= one.Length) continue;
+            pairs[one[..cut]] = one[(cut + 1)..];
+        }
+        return pairs.Count == 0 ? null : pairs;
     }
 }
 
