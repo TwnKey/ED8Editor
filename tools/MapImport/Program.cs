@@ -620,7 +620,12 @@ var packagePath = MapModelPackage.WriteMinimal(
     onlyMaterials: MaterialSubset(args),
     materialMap: MaterialMapHolder.Of(args),
     nodeInformationFrom: Array.IndexOf(args, "--inf-from") is var infAt && infAt >= 0
-        && infAt + 1 < args.Length ? args[infAt + 1] : null);
+        && infAt + 1 < args.Length ? args[infAt + 1] : null,
+    materialShaders: MaterialMapHolder.Named(args, "--material-shader"),
+    extraShaderFiles: Array.IndexOf(args, "--forged") is var forgeAt && forgeAt >= 0
+        && forgeAt + 1 < args.Length
+            ? args[forgeAt + 1].Split(',', StringSplitOptions.RemoveEmptyEntries)
+            : null);
 
 if (replaceModel)
 {
@@ -666,8 +671,11 @@ internal static class MaterialSubsetHolder
 internal static class MaterialMapHolder
 {
     public static IReadOnlyDictionary<string, string>? Of(string[] args)
+        => Named(args, "--material-map");
+
+    public static IReadOnlyDictionary<string, string>? Named(string[] args, string flag)
     {
-        var at = Array.IndexOf(args, "--material-map");
+        var at = Array.IndexOf(args, flag);
         if (at < 0 || at + 1 >= args.Length) return null;
         var pairs = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var one in args[at + 1]

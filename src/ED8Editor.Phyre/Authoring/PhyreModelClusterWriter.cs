@@ -647,7 +647,13 @@ public static class PhyreModelClusterWriter
             }
             foreach (var import in table?.Imports ?? Array.Empty<PhyreMaterialImport>())
             {
-                var asset = import.Asset;
+                // The shader the TABLE names, not the one its donor block happened to
+                // import. A material can be bound to a shader of ours while keeping
+                // the donor's parameter layout; taking the import verbatim bound it
+                // straight back to the donor and left our own named by nothing.
+                var asset = import.Member == "m_effectVariant" && table is not null
+                    ? table.ShaderAsset
+                    : import.Asset;
                 // A texture import becomes this material's texture; the shader's own
                 // reference is left alone.
                 if (mine is not null

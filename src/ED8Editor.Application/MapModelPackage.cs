@@ -62,7 +62,9 @@ public static class MapModelPackage
         bool perMaterialShaders = true,
         IReadOnlyCollection<string>? onlyMaterials = null,
         IReadOnlyDictionary<string, string>? materialMap = null,
-        string? nodeInformationFrom = null)
+        string? nodeInformationFrom = null,
+        IReadOnlyDictionary<string, string>? materialShaders = null,
+        IReadOnlyList<string>? extraShaderFiles = null)
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentNullException.ThrowIfNull(model);
@@ -169,6 +171,17 @@ public static class MapModelPackage
                     ? named
                     : slots[slot];
                 if (!donorTables.TryGetValue(wanted, out var table)) continue;
+                // A shader of our own, keeping the donor's block. A forged variant is
+                // built from a shipped one and leaves its 193 parameter definitions
+                // alone, so it takes the same block: only the code differs, which is
+                // the point. Swapping the block as well would hand the shader
+                // constants laid out for something else.
+                if (materialShaders is not null
+                    && materialShaders.TryGetValue(slots[slot], out var bound))
+                {
+                    table = table with { ShaderAsset = bound };
+                    say?.Invoke($"  {slots[slot]} -> {bound}");
+                }
                 found[slot] = table;
                 matched++;
             }
@@ -229,6 +242,22 @@ public static class MapModelPackage
                 asked.Add(Path.GetFileName(bound.ShaderAsset) + ".phyre");
             }
             var only = shaders.Where(value => asked.Contains(value.Name)).ToArray();
+            // Shaders we forged ourselves travel whole, since no donor holds them.
+            foreach (var file in extraShaderFiles ?? Array.Empty<string>())
+            {
+                if (!File.Exists(file)) continue;
+                var name = Path.GetFileName(file);
+                if (!name.EndsWith(".phyre", StringComparison.OrdinalIgnoreCase))
+                {
+                    name += ".phyre";
+                }
+                only = only
+                    .Where(value => !string.Equals(
+                        value.Name, name, StringComparison.OrdinalIgnoreCase))
+                    .Append((name, File.ReadAllBytes(file)))
+                    .ToArray();
+                say?.Invoke($"  shader forge : {name}");
+            }
             if (only.Length != 0)
             {
                 foreach (var (name, _) in shaders.Except(only))
