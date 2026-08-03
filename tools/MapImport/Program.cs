@@ -608,10 +608,14 @@ var collisionFromFlag = Array.IndexOf(args, "--collision-from");
 var collisionFrom = collisionFromFlag >= 0 && collisionFromFlag + 1 < args.Length
     ? args[collisionFromFlag + 1]
     : null;
+// --one-shader : lier un seul shader a toute la carte, comme avant. La liaison par
+// materiau et le changement de paquet donneur sont deux choses ; les separer dit
+// laquelle des deux le jeu refuse.
 var packagePath = MapModelPackage.WriteMinimal(
     project, name, converted.Model, Console.WriteLine, shaderFrom,
     withCollision: !args.Contains("--no-collision"),
-    collisionFrom: collisionFrom);
+    collisionFrom: collisionFrom,
+    perMaterialShaders: !args.Contains("--one-shader"));
 
 if (replaceModel)
 {

@@ -58,7 +58,8 @@ public static class MapModelPackage
         Action<string>? say = null,
         string? shippedShaderPackage = null,
         bool withCollision = true,
-        string? collisionFrom = null)
+        string? collisionFrom = null,
+        bool perMaterialShaders = true)
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentNullException.ThrowIfNull(model);
@@ -139,7 +140,7 @@ public static class MapModelPackage
         // the shader that tests its alpha, S_atari the one that paints nothing. A
         // material with no counterpart keeps the one block, as before.
         IReadOnlyList<PhyreMaterialTable?>? perMaterial = null;
-        if (shippedShaderPackage is not null)
+        if (shippedShaderPackage is not null && perMaterialShaders)
         {
             var donorTables = DonorMaterials(shippedShaderPackage);
             var slots = MaterialSlots(drawn);
