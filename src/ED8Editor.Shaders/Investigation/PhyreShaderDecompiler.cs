@@ -6,8 +6,9 @@ using Vortice.D3DCompiler;
 namespace ED8Editor.Shaders.Investigation;
 
 /// <summary>
-/// Extracts and decompiles D3D11 shader bytecode from a .fx.phyre cluster
-/// back to human-readable HLSL. Uses D3DCompile's disassembly feature.
+/// Extracts and reflects on D3D11 shader bytecode from a .fx.phyre cluster.
+/// Produces structured metadata: constant buffer layouts, resource bindings,
+/// input/output signatures, and instruction counts for each permutation.
 /// </summary>
 public sealed class PhyreShaderDecompiler
 {
@@ -35,13 +36,13 @@ public sealed class PhyreShaderDecompiler
                     : "default";
 
                 // Decompile vertex shader
-                var vs = DecompileBytecode(
+                var vs = ReflectBytecode(
                     permutation.VertexProgram.Bytecode,
                     $"vs_{passName}_perm{i}",
                     D3D11ShaderStage.Vertex);
 
                 // Decompile fragment shader
-                var ps = DecompileBytecode(
+                var ps = ReflectBytecode(
                     permutation.FragmentProgram.Bytecode,
                     $"ps_{passName}_perm{i}",
                     D3D11ShaderStage.Fragment);
@@ -59,7 +60,6 @@ public sealed class PhyreShaderDecompiler
             }
         }
 
-        // Collect context switch info
         var contextSwitches = program.ContextSwitches ?? Array.Empty<string>();
         var contexts = program.Contexts ?? Array.Empty<CpuShaderContext>();
 
@@ -72,46 +72,67 @@ public sealed class PhyreShaderDecompiler
             stages);
     }
 
-    private static string DecompileBytecode(byte[] bytecode, string label, D3D11ShaderStage stage)
+    /// <summary>
+    /// Reflects on D3D11 bytecode to extract structured metadata
+    /// (CB layout, resource bindings, I/O signatures, instruction count).
+    /// </summary>
+    public static string ReflectBytecode(byte[] bytecode, string label, D3D11ShaderStage stage)
     {
         try
         {
-            // Use D3DReflect to get shader description
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine($"// === {label} ({stage}) ===");
+
             using var reflection = Compiler.Reflect<Vortice.Direct3D11.Shader.ID3D11ShaderReflection>(bytecode);
             var desc = reflection.Description;
-            var sb = new System.Text.StringBuilder();
-            sb.AppendLine($"// {label} ({stage})");
-            sb.AppendLine($"// Instruction count: {desc.InstructionCount}");
+            sb.AppendLine($"// Instructions: {desc.InstructionCount}");
             sb.AppendLine($"// Constant buffers: {desc.ConstantBuffers}");
             sb.AppendLine($"// Bound resources: {desc.BoundResources}");
-            sb.AppendLine($"// Input parameters: {desc.InputParameters}");
-            sb.AppendLine($"// Output parameters: {desc.OutputParameters}");
-            sb.AppendLine($"// Bytecode size: {bytecode.Length} bytes");
-            sb.AppendLine($"// Creator: {desc.Creator}");
-            sb.AppendLine($"// Version: {desc.Version}");
+            sb.AppendLine($"// Input params: {desc.InputParameters}");
+            sb.AppendLine($"// Output params: {desc.OutputParameters}");
+            sb.AppendLine($"// Bytecode: {bytecode.Length} bytes");
+            sb.AppendLine($"// Creator: {desc.Creator} v{desc.Version}");
             sb.AppendLine();
 
+            // Constant buffer details
             foreach (var cb in reflection.ConstantBuffers)
             {
                 var cbDesc = cb.Description;
-                sb.AppendLine($"// cbuffer {cbDesc.Name} ({cbDesc.Size} bytes)");
+                sb.AppendLine($"// cbuffer {cbDesc.Name} ({cbDesc.Size}b)");
                 foreach (var variable in cb.Variables)
                 {
                     var varDesc = variable.Description;
-                    sb.AppendLine($"//   {varDesc.Name}: offset={varDesc.StartOffset}, size={varDesc.Size}");
+                    sb.AppendLine($"//   {varDesc.Name} @{varDesc.StartOffset} sz={varDesc.Size}");
                 }
             }
+            sb.AppendLine();
 
-            foreach (var resource in reflection.BoundResources)
+            // Bound resources
+            foreach (var res in reflection.BoundResources)
             {
-                sb.AppendLine($"// resource {resource.Name}: type={resource.Type}, bind={resource.BindPoint}, count={resource.BindCount}");
+                sb.AppendLine($"// bind {res.Name}: {res.Type} @[{res.BindPoint},{res.BindCount}]");
             }
+            sb.AppendLine();
+
+            // Input signature
+            foreach (var p in reflection.InputParameters)
+            {
+                sb.AppendLine($"// in  {p.SemanticName}{p.SemanticIndex}: {p.ComponentType} r={p.Register}");
+            }
+            sb.AppendLine();
+
+            // Output signature
+            foreach (var p in reflection.OutputParameters)
+            {
+                sb.AppendLine($"// out {p.SemanticName}{p.SemanticIndex}: {p.ComponentType} r={p.Register}");
+            }
+            sb.AppendLine();
 
             return sb.ToString();
         }
         catch (Exception ex)
         {
-            return $"// Failed to decompile {label}: {ex.Message}\n// Bytecode size: {bytecode.Length} bytes\n";
+            return $"// Failed: {label} — {ex.Message}\n";
         }
     }
 }

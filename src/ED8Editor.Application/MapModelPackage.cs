@@ -88,7 +88,10 @@ public static class MapModelPackage
         }
         var drawn = surfaces.Length == 0 || scenery.Length == 0
             ? authoredModel
-            : authoredModel with { Meshes = scenery.Concat(surfaces).ToArray() };
+            : authoredModel with
+            {
+                Meshes = scenery.Concat(surfaces.Select(Unpainted)).ToArray(),
+            };
         var packed = PhyreModelGeometryPacker.Pack(drawn);
         // Collision is the render mesh itself, which for a map is far heavier than
         // what the game ships: r0510 carries three simplified shapes totalling 75 KB
@@ -686,6 +689,37 @@ public static class MapModelPackage
                 at < names.Length ? names[at] : $"CX{at:00}",
                 new PhyrePhysicsSource(shape.Vertices, shape.Indices)))
             .ToArray();
+    }
+
+    /// <summary>
+    /// A collision surface reduced to a triangle of no area, keeping everything
+    /// about it that is not its geometry.
+    ///
+    /// The surfaces have to stay in the drawn scene: taking them out costs the
+    /// collision outright, measured — the nodes keep their bodies and their
+    /// shapes, and the player walks through the map again. So each one keeps its
+    /// node, its mesh, its instance and its bounds, and gives up only the
+    /// triangles.
+    ///
+    /// They cannot be drawn as they are either. A shipped map paints them with a
+    /// material named S_atari, whose own shader paints nothing; we ship one
+    /// shader for the whole map, so S_atari came out painted by the general one —
+    /// and S_atari's texture, 0a19jim0.dds, is olive green. The ground surface
+    /// landed on the real ground, all but coplanar, and the two fought over every
+    /// pixel; the bridge vanished under its own.
+    ///
+    /// Three copies of one vertex span no area, so the rasteriser has nothing to
+    /// fill and the surface never reaches a pixel.
+    /// </summary>
+    private static PhyreMeshSource Unpainted(PhyreMeshSource surface)
+    {
+        if (surface.Vertices.Count == 0) return surface;
+        var point = surface.Vertices[0];
+        return surface with
+        {
+            Vertices = new[] { point, point, point },
+            Indices = new[] { 0, 1, 2 },
+        };
     }
 
     private static PhyrePhysicsSource Collision(PhyreModelSource model)
