@@ -315,6 +315,7 @@ public static class MapModelPackage
             : PkgArchiveWriter.DefaultMagic;
         new PkgArchiveWriter().Write(destination, magic, entries);
         project.TrackSave(destination);
+        WriteNodeInformation(project, lower, collisions, say);
         say?.Invoke($"package: {entries.Length} entries — manifest, model and"
             + $" {shaders.Length} shader(s)");
         return destination;
@@ -537,6 +538,61 @@ public static class MapModelPackage
             result[entryName] = import.Asset;
         }
         return result;
+    }
+
+    /// <summary>
+    /// The node information file beside the map, naming its collision nodes.
+    ///
+    /// Every one of the 1202 maps the game ships carries one, and ours carried none.
+    /// It is the only place a collision node is given a parameter: read off the
+    /// shipped files, CS## takes its own index and CK## takes zero — two identity
+    /// tables — while CA## takes a chosen value, which is what makes it worth
+    /// writing at all. r0100, a map with bridges, states CA00 6 and CA01 1, and
+    /// those are also the commonest values across the 190 files that name a CA node.
+    ///
+    /// Sixteen of each are declared whether or not the map has them, as shipped.
+    /// </summary>
+    private static void WriteNodeInformation(
+        ModProject project,
+        string mapName,
+        IReadOnlyList<(string Node, PhyrePhysicsSource Shape)> collisions,
+        Action<string>? say)
+    {
+        if (collisions.Count == 0) return;
+        const string Newline = "\r\n";
+        var text = new System.Text.StringBuilder();
+        text.Append("﻿<!-- daeノード情報ファイル -->").Append(Newline);
+        text.Append("<node_infomation>").Append(Newline);
+        for (var at = 0; at < 16; at++)
+        {
+            text.Append($"  <node_param name=\"CS{at:00}\" param0=\"{at}\" />").Append(Newline);
+        }
+        text.Append(Newline);
+        for (var at = 0; at < 16; at++)
+        {
+            text.Append($"  <node_param name=\"CK{at:00}\" param0=\"0\" />").Append(Newline);
+        }
+        text.Append(Newline);
+        // A chosen value rather than an index. Six and one are what r0100 states for
+        // its own two, and the commonest across every shipped file that names them.
+        foreach (var node in collisions
+            .Select(value => value.Node)
+            .Where(value => value.StartsWith("CA", StringComparison.Ordinal))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(value => value, StringComparer.Ordinal))
+        {
+            text.Append($"  <node_param name=\"{node}\" param0=\"{(node == "CA00" ? 6 : 1)}\" />")
+                .Append(Newline);
+        }
+        text.Append(Newline).Append("</node_infomation>").Append(Newline);
+
+        var folder = Path.Combine(project.GameDirectory, "data", "map", mapName);
+        Directory.CreateDirectory(folder);
+        var path = Path.Combine(folder, mapName + ".inf");
+        project.CaptureOriginal(path);
+        File.WriteAllText(path, text.ToString(), new System.Text.UTF8Encoding(false));
+        project.TrackSave(path);
+        say?.Invoke($"node information: data/map/{mapName}/{mapName}.inf");
     }
 
     /// <summary>Every named material of the donor package's model, by bare name.</summary>

@@ -1532,6 +1532,40 @@ if (args.Length > 3 && args[1] == "--members")
     return 0;
 }
 
+//   PhyreAuthoringProbe x --normals <cluster|package>
+// For each collision shape, how many of its triangles face up and how many face
+// down. A floor whose triangles face down is not a floor to a character controller.
+if (args.Length > 2 && args[1] == "--normals")
+{
+    var shapes = PhyreCollisionReader.Read(ReadClusterOrPackage(args[2]));
+    for (var at = 0; at < shapes.Count; at++)
+    {
+        var solid = shapes[at];
+        int up = 0, down = 0, side = 0;
+        var lowest = float.MaxValue;
+        var highest = float.MinValue;
+        for (var i = 0; i + 2 < solid.Indices.Count; i += 3)
+        {
+            var a = solid.Vertices[solid.Indices[i]];
+            var b = solid.Vertices[solid.Indices[i + 1]];
+            var c = solid.Vertices[solid.Indices[i + 2]];
+            var n = Vector3.Cross(b - a, c - a);
+            if (n.Length() < 1e-9f) continue;
+            n = Vector3.Normalize(n);
+            if (n.Y > 0.5f) up++;
+            else if (n.Y < -0.5f) down++;
+            else side++;
+            lowest = Math.Min(lowest, Math.Min(a.Y, Math.Min(b.Y, c.Y)));
+            highest = Math.Max(highest, Math.Max(a.Y, Math.Max(b.Y, c.Y)));
+        }
+        Console.WriteLine(
+            $"  forme {at}: {solid.Indices.Count / 3,6} triangles — "
+            + $"vers le haut {up,6}, vers le bas {down,6}, de cote {side,6}"
+            + $"   Y[{lowest:F2},{highest:F2}]");
+    }
+    return 0;
+}
+
 //   PhyreAuthoringProbe x --manifest <package>
 // The asset_D3D11.xml a package declares, decompressed. It is what tells the engine
 // which of the entries beside it are shaders, textures and models.
