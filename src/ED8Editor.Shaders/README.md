@@ -166,3 +166,44 @@ src/ED8Editor.Shaders/
 └── Tests/
     └── ShaderTests.cs               ← tests unitaires
 ```
+
+## Quel programme correspond à quoi — mesuré sur `ed8.fx#D2620AD4…`
+
+La correspondance n'est pas à deviner : elle est écrite dans le cluster.
+
+`PEffectVariant` pointe 4 `PSceneRenderPass`, chacune nommant son type et six
+`PShader` — les six contextes :
+
+```
+[0] "Opaque"            PShaderPassInfo[0]   PShader[0..5]
+[1] "ForceTransparent"  PShaderPassInfo[1]   PShader[6..11]
+[2] "EdgeTransparent"   PShaderPassInfo[2]   PShader[12..17]
+[3] "Shadow"            PShaderPassInfo[3]   PShader[18..23]
+```
+
+`PShaderPassInfo` porte les points d'entrée par nom et les profils (`vs50`, `ps50`).
+Les sept noms du groupe : `DefaultVPShader`, `DefaultFPShader`,
+`ForceTransparentFPShader`, `EdgeVPShader`, `EdgeFPShader`, `ShadowVPShader`,
+`ShadowFPShader` — sept et non huit, `DefaultVPShader` servant aux deux premières
+passes.
+
+`PEffect.m_contextSwitches` nomme trois commutateurs — `INSTANCING_ENABLED`,
+`NUM_LIGHTS`, `SHADER_LOD_LEVEL` — et les six `PNodeContext` en donnent les valeurs :
+
+```
+contexte 0 (   0, 0, 0)    contexte 3 (  17, 1, 0)
+contexte 1 (   0, 1, 0)    contexte 4 (1553, 0, 0)
+contexte 2 (  17, 0, 0)    contexte 5 (1553, 1, 0)
+```
+
+Trois configurations de lumière fois deux états d'instanciation. Deux mesures
+indépendantes le confirment :
+
+- l'instanciation ne concerne que le sommet, d'où **24** programmes sommet
+  (3 × 2 × 4 passes) contre **12** pixel (3 × 4)
+- les tailles de bytecode vont par paires — 5616, 5616 puis 5928, 5928 puis
+  6208, 6208 — c'est-à-dire qu'elles ne changent qu'avec la lumière
+
+La disposition dans le groupe est `programme[contexte * 4 + passe]`, et la région de
+tableaux est les blobs bout à bout dans cet ordre, sans bourrage : les 24 sommes font
+exactement les 135 512 octets déclarés, les 12 pixel 47 636.
