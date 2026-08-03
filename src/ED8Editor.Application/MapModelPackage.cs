@@ -134,37 +134,7 @@ public static class MapModelPackage
                 ? PhyreMinimalEffectWriter.AssetId
                 : "shaders/" + Path.GetFileNameWithoutExtension(shaders[0].Name));
 
-        // A block per material, matched to the donor by name. Our map is that map
-        // re-authored, so every material has an exact counterpart there: S_tree binds
-        // the shader that tests its alpha, S_atari the one that paints nothing. A
-        // material with no counterpart keeps the one block, as before.
-        IReadOnlyList<PhyreMaterialTable?>? perMaterial = null;
-        if (shippedShaderPackage is not null)
-        {
-            var donorTables = DonorMaterials(shippedShaderPackage);
-            var slots = MaterialSlots(drawn);
-            var found = new PhyreMaterialTable?[slots.Count];
-            var matched = 0;
-            for (var slot = 0; slot < slots.Count; slot++)
-            {
-                if (!donorTables.TryGetValue(slots[slot], out var table)) continue;
-                found[slot] = table;
-                matched++;
-            }
-            if (matched != 0)
-            {
-                perMaterial = found;
-                var shadersUsed = found
-                    .Where(value => value is not null)
-                    .Select(value => value!.ShaderAsset)
-                    .Distinct(StringComparer.Ordinal)
-                    .Count();
-                say?.Invoke($"materials: {matched} of {slots.Count} matched to the donor,"
-                    + $" binding {shadersUsed} shader(s)");
-            }
-        }
-
-        var material = new PhyreShaderBinding(shaderAsset, parameters, perMaterial);
+        var material = new PhyreShaderBinding(shaderAsset, parameters);
         // The same schema profile as a prop, when there is no collision to write.
         // A prop written this way loads; a map written the "native" way does not, and
         // the profile is one of the few things that has always differed between the
@@ -195,19 +165,10 @@ public static class MapModelPackage
         // declaration the shipped file never has.
         if (shippedShaderPackage is not null)
         {
-            // Every shader a material binds, and only those. Keeping the one the
-            // model was bound with was right while the materials shared it; they do
-            // not, so the other twelve came out named and unresolved.
-            var asked = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            {
-                Path.GetFileName(shaderAsset) + ".phyre",
-            };
-            foreach (var bound in perMaterial ?? Array.Empty<PhyreMaterialTable?>())
-            {
-                if (bound is null) continue;
-                asked.Add(Path.GetFileName(bound.ShaderAsset) + ".phyre");
-            }
-            var only = shaders.Where(value => asked.Contains(value.Name)).ToArray();
+            var asked = Path.GetFileName(shaderAsset) + ".phyre";
+            var only = shaders
+                .Where(value => value.Name.Equals(asked, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
             if (only.Length != 0)
             {
                 foreach (var (name, _) in shaders.Except(only))
@@ -517,44 +478,6 @@ public static class MapModelPackage
             result[entryName] = import.Asset;
         }
         return result;
-    }
-
-    /// <summary>Every named material of the donor package's model, by bare name.</summary>
-    private static IReadOnlyDictionary<string, PhyreMaterialTable> DonorMaterials(
-        string packagePath)
-    {
-        var package = new PkgArchiveReader().Read(packagePath);
-        var model = package.Entries.FirstOrDefault(entry =>
-            entry.Name.EndsWith(".dae.phyre", StringComparison.OrdinalIgnoreCase));
-        if (model is null)
-        {
-            return new Dictionary<string, PhyreMaterialTable>(StringComparer.Ordinal);
-        }
-        try
-        {
-            return PhyreMaterialTableReader.ReadAll(package.ReadEntry(model));
-        }
-        catch (InvalidDataException)
-        {
-            return new Dictionary<string, PhyreMaterialTable>(StringComparer.Ordinal);
-        }
-    }
-
-    /// <summary>
-    /// The material names in the order the writer numbers them: first use wins, which
-    /// is how it builds its own list.
-    /// </summary>
-    private static IReadOnlyList<string> MaterialSlots(PhyreModelSource model)
-    {
-        var order = new List<string>();
-        foreach (var mesh in model.Meshes)
-        {
-            if (!order.Contains(mesh.MaterialName, StringComparer.Ordinal))
-            {
-                order.Add(mesh.MaterialName);
-            }
-        }
-        return order;
     }
 
     /// <summary>

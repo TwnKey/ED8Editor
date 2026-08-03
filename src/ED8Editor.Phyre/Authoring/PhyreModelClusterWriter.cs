@@ -33,17 +33,7 @@ public sealed record PhyrePhysicsSource(
 /// and the engine issues no draw, so a model written with none is a model that will
 /// not appear.
 /// </param>
-/// <param name="PerMaterial">
-/// One block per material slot, when the donor could supply them. A map's materials
-/// do not share a shader — r0510 binds fourteen — and a block belongs to the shader
-/// it was cut for, so handing every material the same one supplies the wrong
-/// constants to thirteen of them. Null entries, and a null list, fall back to
-/// <paramref name="Parameters"/>.
-/// </param>
-public sealed record PhyreShaderBinding(
-    string ShaderAsset,
-    PhyreMaterialTable? Parameters = null,
-    IReadOnlyList<PhyreMaterialTable?>? PerMaterial = null);
+public sealed record PhyreShaderBinding(string ShaderAsset, PhyreMaterialTable? Parameters = null);
 
 /// <summary>
 /// Writes a model cluster from nothing — no source file, no template.
@@ -173,38 +163,6 @@ public static class PhyreModelClusterWriter
                 textureOf[at] = model.Meshes[mesh].Texture?.Name;
             }
         }
-        // The block each material hands its shader. Where the donor named the
-        // material, it is that material's own; otherwise the one block the model
-        // was bound with, which is what every slot used before.
-        PhyreMaterialTable? TableOf(int slot)
-            => shader.PerMaterial is { } list && slot >= 0 && slot < list.Count
-                && list[slot] is { } own
-                ? own
-                : material;
-
-        // Samplers and definitions stay one group each, so a material's own run sits
-        // at an offset inside it. Everything that names one — the buffer's pointers,
-        // the definitions' name fixups — counts from that offset.
-        var samplerStart = new int[materialCount];
-        var definitionStart = new int[materialCount];
-        var samplerTotal = 0;
-        var definitionTotal = 0;
-        for (var slot = 0; slot < materialCount; slot++)
-        {
-            samplerStart[slot] = samplerTotal;
-            definitionStart[slot] = definitionTotal;
-            samplerTotal += TableOf(slot)?.SamplerStates.Count ?? 0;
-            definitionTotal += TableOf(slot)?.ParameterDefinitions.Count ?? 0;
-        }
-        int SlotOf(int[] starts, int totalCount, uint id)
-        {
-            for (var slot = materialCount - 1; slot >= 0; slot--)
-            {
-                if (id >= starts[slot]) return slot;
-            }
-            return 0;
-        }
-
         var layout = physics is null ? Layout : Layout.Concat(PhysicsLayout).ToArray();
         if (material is not null)
         {
@@ -516,15 +474,7 @@ public static class PhyreModelClusterWriter
             var asset = $"map/images/{own}.dds";
             if (!importAssets.Contains(asset, StringComparer.Ordinal)) importAssets.Add(asset);
         }
-        // Every shader any material binds, not only the one the model was bound
-        // with. A map's materials do not share one.
-        for (var slot = 0; slot < materialCount; slot++)
-        {
-            if (TableOf(slot)?.ShaderAsset is not { } bound) continue;
-            if (!importAssets.Contains(bound, StringComparer.Ordinal)) importAssets.Add(bound);
-        }
-        foreach (var import in Enumerable.Range(0, materialCount)
-            .SelectMany(slot => TableOf(slot)?.Imports ?? Array.Empty<PhyreMaterialImport>()))
+        foreach (var import in material?.Imports ?? Array.Empty<PhyreMaterialImport>())
         {
             // Same rule as above: a donor picture is only carried when the model has
             // none of its own, or the cluster names a file the package does not hold.
@@ -543,14 +493,6 @@ public static class PhyreModelClusterWriter
         {
             throw new InvalidOperationException(
                 $"Shader import '{shader.ShaderAsset}' was not registered.");
-        }
-        // Which import a material's shader is, falling back to the model's own when
-        // that material brought no block of its own.
-        int ShaderImportOf(int slot)
-        {
-            if (TableOf(slot)?.ShaderAsset is not { } bound) return shaderImportId;
-            var at = importAssets.IndexOf(bound);
-            return at < 0 ? shaderImportId : at;
         }
         for (var index = 0; index < importAssets.Count; index++)
         {
@@ -585,7 +527,7 @@ public static class PhyreModelClusterWriter
         var firstBuffer = Group("PParameterBuffer");
         for (uint slot = 0; slot < materialCount; slot++)
         {
-            ImportedPoint("PMaterial", slot, "m_effectVariant", (uint)ShaderImportOf((int)slot));
+            ImportedPoint("PMaterial", slot, "m_effectVariant", (uint)shaderImportId);
             // Each material reaches its own buffer. The groups sit next to each
             // other because the layout is sorted, so the nth is the first plus n.
             pointers.Add(new PhyrePointerFixup(
@@ -621,12 +563,11 @@ public static class PhyreModelClusterWriter
                     ImportedPointAtGroup(buffer, rawOffset, importId);
                 }
             }
-            var table = TableOf((int)slot);
-            if (table?.Imports.Any(value => value.Member == "m_effectVariant") != true)
+            if (material?.Imports.Any(value => value.Member == "m_effectVariant") != true)
             {
-                BufferImport("m_effectVariant", 0, (uint)ShaderImportOf((int)slot));
+                BufferImport("m_effectVariant", 0, (uint)shaderImportId);
             }
-            foreach (var import in table?.Imports ?? Array.Empty<PhyreMaterialImport>())
+            foreach (var import in material?.Imports ?? Array.Empty<PhyreMaterialImport>())
             {
                 var asset = import.Asset;
                 // A texture import becomes this material's texture; the shader's own
@@ -641,19 +582,12 @@ public static class PhyreModelClusterWriter
                 if (at < 0) continue;
                 BufferImport(import.Member, import.Source, (uint)at);
             }
-            foreach (var pointer in table?.Pointers ?? Array.Empty<PhyreMaterialPointer>())
+            foreach (var pointer in material?.Pointers ?? Array.Empty<PhyreMaterialPointer>())
             {
                 if (Group(pointer.TargetClass) < 0) continue;
-                // Its target is numbered inside the donor material's own run; here
-                // one group holds every material's, so the run's start is added.
-                var shift = pointer.TargetClass == "PSamplerState"
-                    ? samplerStart[slot]
-                    : pointer.TargetClass == "PShaderParameterDefinition"
-                        ? definitionStart[slot]
-                        : 0;
                 pointers.Add(new PhyrePointerFixup(
                     (int)buffer, 0, pointer.SourceOffset,
-                    (uint)Group(pointer.TargetClass), pointer.TargetId + (uint)shift, 0,
+                    (uint)Group(pointer.TargetClass), pointer.TargetId, 0,
                     pointer.Count, null));
             }
         }
@@ -832,13 +766,8 @@ public static class PhyreModelClusterWriter
         }
 
         var groups = new List<PhyreGroupContents>();
-        var bufferSlot = 0;
         foreach (var className in layout)
         {
-            // Which material this group belongs to, for the classes a material has
-            // one group of. The layout is sorted, so its buffers are consecutive and
-            // counting them off in order is what pairs each with its own block.
-            var slotHere = className == "PParameterBuffer" ? bufferSlot++ : 0;
             var descriptor = descriptors.First(value => value.Name == className);
             var count = className switch
             {
@@ -869,8 +798,8 @@ public static class PhyreModelClusterWriter
                 "PMaterial" when material is not null => (uint)materialCount,
                 "PShape" or "PPhysicsMesh" or "PPhysicsRigidBody" or "PPhysicsMaterial"
                     when bodies.Count != 0 => (uint)bodies.Count,
-                "PSamplerState" => (uint)samplerTotal,
-                "PShaderParameterDefinition" => (uint)definitionTotal,
+                "PSamplerState" => (uint)(material?.SamplerStates.Count ?? 0),
+                "PShaderParameterDefinition" => (uint)(material?.ParameterDefinitions.Count ?? 0),
                 _ => 1u,
             };
 
@@ -1040,9 +969,8 @@ public static class PhyreModelClusterWriter
                         Set("m_type", StreamType(streams[(int)id]));
                         break;
                     case "PParameterBuffer":
-                        Set("m_parameterBufferSize", TableOf(slotHere)?.ParameterBufferSize ?? 0);
-                        Set("m_tweakableShaderParameterDefinitions",
-                            TableOf(slotHere)?.DefinitionCount ?? 0);
+                        Set("m_parameterBufferSize", material?.ParameterBufferSize ?? 0);
+                        Set("m_tweakableShaderParameterDefinitions", material?.DefinitionCount ?? 0);
                         break;
                     case "PWorldMatrix":
                         members["m_matrix"] = Identity4x3();
@@ -1060,18 +988,14 @@ public static class PhyreModelClusterWriter
                 // size — their bytes are the object, not something after it. Handing
                 // those over as a payload appends them to a zeroed class and doubles
                 // the object, which the engine walks straight off the end of.
-                var trailing = className == "PParameterBuffer" && TableOf(slotHere) is { } block
-                    ? Beyond(block.ParameterBufferObject, ClassSize(descriptors, className))
+                var trailing = className == "PParameterBuffer" && material is not null
+                    ? Beyond(material.ParameterBufferObject, ClassSize(descriptors, className))
                     : ReadOnlyMemory<byte>.Empty;
                 if (material is not null && className is "PSamplerState" or "PShaderParameterDefinition")
                 {
-                    var sampler = className == "PSamplerState";
-                    var slot = SlotOf(sampler ? samplerStart : definitionStart, 0, id);
-                    var mineHere = TableOf(slot)!;
-                    var within = (int)id - (sampler ? samplerStart[slot] : definitionStart[slot]);
-                    var donor = sampler
-                        ? mineHere.SamplerStates[within]
-                        : mineHere.ParameterDefinitions[within];
+                    var donor = className == "PSamplerState"
+                        ? material.SamplerStates[(int)id]
+                        : material.ParameterDefinitions[(int)id];
                     members.Clear();
                     foreach (var (name, value) in MembersOf(descriptors, className, donor))
                     {
@@ -1137,25 +1061,12 @@ public static class PhyreModelClusterWriter
                 // A definition's name lives in the group's array data, and the fixup
                 // beside it says where. Carrying the objects alone leaves every name
                 // pointing into a region that is not there.
-                //
-                // One group holds every material's definitions, so each material's
-                // names are appended after the last and both the object it belongs to
-                // and the offset it sits at move by where that material's run begins.
-                for (var slot = 0; slot < materialCount; slot++)
+                arrays.Write(material.DefinitionArrayData.Span);
+                foreach (var array in material.DefinitionArrays)
                 {
-                    var mineHere = TableOf(slot);
-                    if (mineHere is null) continue;
-                    var baseAt = (uint)arrays.Length;
-                    arrays.Write(mineHere.DefinitionArrayData.Span);
-                    foreach (var array in mineHere.DefinitionArrays)
-                    {
-                        arrayFixups.Add(new PhyreArrayFixup(
-                            group,
-                            array.ObjectId + (uint)definitionStart[slot],
-                            StringArraySource(className, "m_name"),
-                            array.Count,
-                            array.Offset + baseAt));
-                    }
+                    arrayFixups.Add(new PhyreArrayFixup(
+                        group, array.ObjectId, StringArraySource(className, "m_name"),
+                        array.Count, array.Offset));
                 }
             }
             if (className == "PShape" && bodies.Count != 0)
@@ -1222,12 +1133,11 @@ public static class PhyreModelClusterWriter
         // four bytes early, which reads as a truncated fixup stream.
         var headerClasses = new MemoryStream();
         var headerRecords = new MemoryStream();
-        var childSlot = 0;
         foreach (var className in layout)
         {
             if (!PhyreSchemaLibrary.IsHeaderClass(className)) continue;
-            var children = className == "PParameterBuffer" && TableOf(childSlot++) is { } childrenOf
-                ? childrenOf.Children
+            var children = className == "PParameterBuffer" && material is not null
+                ? material.Children
                 : Array.Empty<PhyreMaterialChild>();
             headerClasses.Write(BitConverter.GetBytes((uint)children.Count));
             foreach (var child in children)
