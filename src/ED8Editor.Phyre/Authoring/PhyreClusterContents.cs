@@ -31,7 +31,8 @@ public sealed record PhyreClusterContents(
     ReadOnlyMemory<byte> Payload,
     PhyreNamespaceWriter.UnmodelledHeader NamespaceHeader,
     ReadOnlyMemory<byte> HeaderTail,
-    PhyreSchemaProfile SchemaProfile = PhyreSchemaProfile.Cs1Native)
+    PhyreSchemaProfile SchemaProfile = PhyreSchemaProfile.Cs1Native,
+    IReadOnlyList<string>? StatedClasses = null)
 {
     /// <summary>
     /// The classes the cluster has to list: the ones its groups instantiate,

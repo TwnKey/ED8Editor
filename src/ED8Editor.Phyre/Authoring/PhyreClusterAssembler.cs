@@ -24,14 +24,24 @@ public static class PhyreClusterAssembler
     {
         ArgumentNullException.ThrowIfNull(contents);
 
-        var classNames = contents.ClassNames();
+        // The table the caller states, when it states one. Deriving a class list is
+        // right when authoring — a cluster names nothing it does not use — but it
+        // cannot reproduce a shipped file: a class is identified by WHERE it sits,
+        // and the game's own tables were not derived by this rule. A shader lists 65
+        // classes where our library holds 125, so rebuilding one meant writing a
+        // namespace half again too big and every id shifted.
+        var classNames = contents.StatedClasses ?? contents.ClassNames();
         // The canonical class table and its primitive-type table are one ABI.
         // ClassNames() deliberately promotes authored model/effect clusters to
         // that fixed game table; retaining a smaller caller-derived type list
         // would leave canonical descriptors referring to enum types that have no
         // id in the destination namespace.
         IReadOnlyList<string> typeNames;
-        if (contents.SchemaProfile == PhyreSchemaProfile.FalcomAssetProcessor)
+        if (contents.StatedClasses is not null)
+        {
+            typeNames = contents.TypeNames;
+        }
+        else if (contents.SchemaProfile == PhyreSchemaProfile.FalcomAssetProcessor)
         {
             typeNames = PhyreSchemaLibrary.AssetProcessorCanonicalTypes;
         }

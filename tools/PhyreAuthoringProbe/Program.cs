@@ -718,12 +718,30 @@ if (args.Length > 1 && args[1] == "--roundtrip-trace")
 if (args.Length > 2 && args[1] == "--fidelity")
 {
     var name = args[2];
-    var pkg = new PkgArchiveReader().Read(name);
-    foreach (var entry in pkg.Entries.Where(e =>
-                 e.Name.EndsWith(".phyre", StringComparison.OrdinalIgnoreCase)
-                 && e.Name.Contains(".dae.", StringComparison.OrdinalIgnoreCase)))
+    // A package, or a single cluster saved out of one. Shaders are asked for by
+    // name — "--fidelity <paquet> fx" — because a map carries a dozen of them and
+    // rebuilding every one on every run is a minute of waiting for nothing.
+    var wanted = args.Length > 3 ? args[3] : ".dae.";
+    var fidelityEntries = new List<(string Name, byte[] Bytes)>();
+    if (name.EndsWith(".phyre", StringComparison.OrdinalIgnoreCase)
+        && File.Exists(name)
+        && !name.EndsWith(".pkg", StringComparison.OrdinalIgnoreCase))
     {
-        var cluster = pkg.ReadEntry(entry);
+        fidelityEntries.Add((Path.GetFileName(name), File.ReadAllBytes(name)));
+    }
+    else
+    {
+        var opened = new PkgArchiveReader().Read(name);
+        foreach (var one in opened.Entries.Where(e =>
+                     e.Name.EndsWith(".phyre", StringComparison.OrdinalIgnoreCase)
+                     && e.Name.Contains(wanted, StringComparison.OrdinalIgnoreCase)))
+        {
+            fidelityEntries.Add((one.Name, opened.ReadEntry(one)));
+        }
+    }
+    foreach (var entry in fidelityEntries)
+    {
+        var cluster = entry.Bytes;
         var cut = PhyreClusterSectionReader.Read(cluster);
         var data = new PhyreClusterReader().Read(cluster);
         var fixups = new PhyreFixupReader().Read(cluster, cut.Metadata);
@@ -749,6 +767,9 @@ if (args.Length > 2 && args[1] == "--fidelity")
                 value.Name == "PIndexDataBlock")
             ? PhyreSchemaProfile.FalcomAssetProcessor
             : PhyreSchemaProfile.Cs1RuntimeAuthoring;
+        // The classes the shipped file itself lists, in its own order. Deriving
+        // them cannot reproduce it: a class id is a position.
+        var stated = cut.Metadata.Classes.Select(value => value.Name).ToArray();
         var rebuilt = PhyreClusterAssembler.Assemble(new PhyreClusterContents(
             cut.Metadata.Types,
             groups,
@@ -758,8 +779,11 @@ if (args.Length > 2 && args[1] == "--fidelity")
             cut.Payload,
             PhyreNamespaceWriter.ReadUnmodelledHeader(cut.PackedNamespace),
             cut.Header[(17 * sizeof(uint))..],
-            schemaProfile));
+            schemaProfile,
+            stated));
 
+        // Written out when asked, so the two can be taken apart side by side.
+        if (args.Length > 4) File.WriteAllBytes(args[4], rebuilt);
         var original = cluster.AsSpan();
         var made = rebuilt.AsSpan();
         var first = -1;
