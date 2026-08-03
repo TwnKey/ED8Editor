@@ -1566,6 +1566,26 @@ if (args.Length > 2 && args[1] == "--normals")
     return 0;
 }
 
+//   PhyreAuthoringProbe x --arrays <cluster|package> <ClassName>
+// The array region a class's group carries, as text. Names live there rather than in
+// the objects, which hold only an offset into it.
+if (args.Length > 3 && args[1] == "--arrays")
+{
+    var image = ReadClusterOrPackage(args[2]);
+    var read = new PhyreClusterReader().Read(image);
+    foreach (var group in read.Metadata.InstanceGroups
+        .Where(value => value.ClassName == args[3] && value.ArraysSize != 0))
+    {
+        var bytes = read.GetArrayData(group.Index, 0, group.ArraysSize).Span;
+        var text = System.Text.Encoding.ASCII.GetString(bytes)
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+            .Where(value => value.Trim().Length != 0);
+        Console.WriteLine($"  {args[3]} x{group.Count}, {group.ArraysSize} octets de tableaux");
+        foreach (var one in text) Console.WriteLine($"     {one}");
+    }
+    return 0;
+}
+
 //   PhyreAuthoringProbe x --manifest <package>
 // The asset_D3D11.xml a package declares, decompressed. It is what tells the engine
 // which of the entries beside it are shaders, textures and models.
