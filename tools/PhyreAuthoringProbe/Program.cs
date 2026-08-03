@@ -763,10 +763,17 @@ if (args.Length > 2 && args[1] == "--fidelity")
                     ? ReadOnlyMemory<byte>.Empty
                     : data.GetArrayData(group.Index, 0, group.ArraysSize)));
         }
+        // Which table this file was written against. A shader cluster follows the
+        // GAME'S own — PShaderProgramD3D11 measures 1248 bytes there — where Falcom's
+        // asset processor states 64 for the same class. Choosing by the presence of
+        // PIndexDataBlock alone sent shaders to the wrong table and shrank every
+        // shader program object by 1184 bytes.
         var schemaProfile = cut.Metadata.Classes.Any(value =>
                 value.Name == "PIndexDataBlock")
             ? PhyreSchemaProfile.FalcomAssetProcessor
-            : PhyreSchemaProfile.Cs1RuntimeAuthoring;
+            : cut.Metadata.Classes.Any(value => value.Name == "PEffect")
+                ? PhyreSchemaProfile.Cs1Native
+                : PhyreSchemaProfile.Cs1RuntimeAuthoring;
         // The classes the shipped file itself lists, in its own order. Deriving
         // them cannot reproduce it: a class id is a position.
         var stated = cut.Metadata.Classes.Select(value => value.Name).ToArray();

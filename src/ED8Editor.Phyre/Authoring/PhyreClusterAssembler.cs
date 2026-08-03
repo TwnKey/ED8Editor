@@ -102,9 +102,17 @@ public static class PhyreClusterAssembler
             // arrays are the case that exposes this: their logical byte count
             // is arbitrary, but the following instance list still starts on a
             // four-byte boundary.
-            while ((objectData.Length - before) % InstanceDataAlignment != 0)
+            //
+            // Except for the last, which nothing follows: a shipped shader ends on a
+            // group whose arrays measure 33 bytes and stops there. Padding it made
+            // the cluster three bytes long and its declared data size disagree with
+            // the game's by the same three.
+            if (index + 1 < contents.Groups.Count)
             {
-                objectData.WriteByte(0);
+                while ((objectData.Length - before) % InstanceDataAlignment != 0)
+                {
+                    objectData.WriteByte(0);
+                }
             }
             var groupSize = (uint)(objectData.Length - before);
             var arraysSize = groupSize - objectsSize;
