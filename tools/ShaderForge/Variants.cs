@@ -36,6 +36,10 @@ public static class Variants
         var switchNames = new[] { "NUM_LIGHTS", "INSTANCING_ENABLED", "SHADER_LOD_LEVEL" };
         Console.WriteLine($"  {contexts.Count} contextes");
 
+        // The names the effect declares for what it supports; the packed values
+        // index these.
+        var lightTypes = new[] { "DirectionalLight", "PointLight", "SpotLight" };
+        var shadowTypes = new[] { "CombinedCascadedShadowMap", "PCFShadowMap" };
         var passes = PassEntryPoints(data, cut);
         foreach (var (index, pass) in passes.Select((value, index) => (index, value)))
         {
@@ -80,11 +84,9 @@ public static class Variants
                                 if (value != 0) defines.Add("INSTANCING_ENABLED");
                                 break;
                             case "NUM_LIGHTS":
-                                var lights = value == 0 ? 0 : 1;
-                                defines.Add($"NUM_LIGHTS={lights}");
-                                for (var light = 0; light < lights; light++)
+                                foreach (var one in LightDefines(value, lightTypes, shadowTypes))
                                 {
-                                    defines.Add($"LIGHTTYPE_{light}=DirectionalLight");
+                                    defines.Add(one);
                                 }
                                 break;
                             default:
@@ -115,6 +117,47 @@ public static class Variants
         Console.WriteLine();
         Console.WriteLine($"  {matched} sur {total} a la taille du jeu, au nom du compilateur pres");
         return 0;
+    }
+
+    /// <summary>
+    /// The defines a packed light switch stands for.
+    ///
+    /// Read off the engine: four bits of light count, then five bits of light type
+    /// and five of shadow type per light — PhyreContextSwitch.h names the widths, and
+    /// PContextSwitchLights::getStringsFromPackedState builds exactly these strings.
+    /// A shipped shader states 0, 17 and 1553, which come out as no light, one
+    /// directional light without a shadow caster, and the same light WITH one. That
+    /// last is why its pixel program measures 11 712 bytes against 6 828.
+    /// </summary>
+    private static IEnumerable<string> LightDefines(
+        uint packed, IReadOnlyList<string> lightTypes, IReadOnlyList<string> shadowTypes)
+    {
+        const int CountBits = 4;
+        const int LightBits = 5;
+        const int ShadowBits = 5;
+        var count = (int)(packed & ((1u << CountBits) - 1));
+        yield return $"NUM_LIGHTS={count}";
+        var at = CountBits;
+        for (var light = 0; light < count; light++)
+        {
+            var lightType = (int)((packed >> at) & ((1u << LightBits) - 1));
+            at += LightBits;
+            var shadowType = (int)((packed >> at) & ((1u << ShadowBits) - 1));
+            at += ShadowBits;
+            // The ids are mask bit ids, so one-based over what the effect supports.
+            if (lightType > 0 && lightType <= lightTypes.Count)
+            {
+                yield return $"LIGHTTYPE_{light}={lightTypes[lightType - 1]}";
+            }
+            // The id is a mask bit over every shadow caster type the ENGINE knows,
+            // not an index into what this effect supports — a shipped shader states 3
+            // while declaring one type. So the effect's own declaration is what gets
+            // named.
+            if (shadowType > 0 && shadowTypes.Count != 0)
+            {
+                yield return $"SHADOWTYPE_{light}={shadowTypes[0]}";
+            }
+        }
     }
 
     private static IReadOnlyList<string> Strings(
