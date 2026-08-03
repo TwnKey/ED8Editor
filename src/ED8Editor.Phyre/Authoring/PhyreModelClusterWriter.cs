@@ -996,11 +996,17 @@ public static class PhyreModelClusterWriter
                         // four zeros has no length, and the body it orients collapses.
                         // Shipped maps write the identity, w = 1.
                         members["m_initialOrientation"] = Quaternion();
-                        // The frame the body's mass sits in. Twelve zeros are not a
-                        // transformation: shipped bodies carry a real one, whose
-                        // translation is where their collision node stands. Ours sits
-                        // at the origin, so the identity is what it is.
-                        members["m_massFrameTransform"] = Identity3x4();
+                        // The frame the body's mass sits in, centred on its own
+                        // shape. Read off r0100 — a map the game actually plays, at
+                        // the same identity scale as ours — every one of its five
+                        // bodies states the CENTRE OF ITS SHAPE'S BOX there, to the
+                        // thousandth. Ours stated the origin, which left each body
+                        // sitting a couple of hundred units from the triangles it
+                        // owns. Bullet shifts the child by minus this and places the
+                        // body at plus it, so the two cancel and the geometry lands in
+                        // the same place either way — but it is the last field where
+                        // we still differed from a shipped body.
+                        members["m_massFrameTransform"] = MassFrame(bodies[(int)id].Shape);
                         // And a scale of zero flattens the shape to a point, which is
                         // what a collision mesh that never stops anything looks like.
                         members["m_scale"] = Scale();
@@ -1373,6 +1379,30 @@ public static class PhyreModelClusterWriter
     }
 
     /// <summary>A unit scale, in the sixteen bytes the shape keeps it in.</summary>
+    /// <summary>
+    /// The identity, with the centre of a shape's box for its translation — which is
+    /// what a shipped body carries. The translation sits at bytes 32, 36 and 40: the
+    /// third column of a PMatrix4x3 holds it, the fourth float of each column being
+    /// the first column's own component.
+    /// </summary>
+    private static byte[] MassFrame(PhyrePhysicsSource shape)
+    {
+        var bytes = Identity3x4();
+        if (shape.Vertices.Count == 0) return bytes;
+        var low = shape.Vertices[0];
+        var high = shape.Vertices[0];
+        foreach (var point in shape.Vertices)
+        {
+            low = Vector3.Min(low, point);
+            high = Vector3.Max(high, point);
+        }
+        var middle = (low + high) * 0.5f;
+        BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(32), middle.X);
+        BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(36), middle.Y);
+        BinaryPrimitives.WriteSingleLittleEndian(bytes.AsSpan(40), middle.Z);
+        return bytes;
+    }
+
     /// <summary>
     /// The identity, as a PMatrix4x3 — three Vector4 whose W components hold the
     /// FIRST column between them:
