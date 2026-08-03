@@ -187,22 +187,41 @@ public static class PhyreModelClusterWriter
         // the definitions' name fixups — counts from that offset.
         var samplerStart = new int[materialCount];
         var definitionStart = new int[materialCount];
-        var samplerTotal = 0;
-        var definitionTotal = 0;
+        var samplerOwner = new List<int>();
+        var definitionOwner = new List<int>();
+        // Definitions belong to the SHADER, so materials that bind the same one share
+        // a single run — measured on the donor, whose 461 definitions are the sum over
+        // its distinct shaders and not over its 29 materials. Sampler states are the
+        // material's own: its 186 are twice our 92, one set per material.
+        var definitionRuns = new Dictionary<string, int>(StringComparer.Ordinal);
         for (var slot = 0; slot < materialCount; slot++)
         {
-            samplerStart[slot] = samplerTotal;
-            definitionStart[slot] = definitionTotal;
-            samplerTotal += TableOf(slot)?.SamplerStates.Count ?? 0;
-            definitionTotal += TableOf(slot)?.ParameterDefinitions.Count ?? 0;
-        }
-        int SlotOf(int[] starts, int totalCount, uint id)
-        {
-            for (var slot = materialCount - 1; slot >= 0; slot--)
+            var table = TableOf(slot);
+            samplerStart[slot] = samplerOwner.Count;
+            for (var at = 0; at < (table?.SamplerStates.Count ?? 0); at++) samplerOwner.Add(slot);
+
+            var bound = table?.ShaderAsset ?? string.Empty;
+            if (definitionRuns.TryGetValue(bound, out var shared))
             {
-                if (id >= starts[slot]) return slot;
+                definitionStart[slot] = shared;
+                continue;
             }
-            return 0;
+            definitionStart[slot] = definitionOwner.Count;
+            definitionRuns[bound] = definitionOwner.Count;
+            for (var at = 0; at < (table?.ParameterDefinitions.Count ?? 0); at++)
+            {
+                definitionOwner.Add(slot);
+            }
+        }
+        var samplerTotal = samplerOwner.Count;
+        var definitionTotal = definitionOwner.Count;
+        // Which material a shared object belongs to, and where in that material's own
+        // run it sits. A start is no longer ordered by slot once runs are shared, so
+        // this is a lookup rather than a search.
+        (int Slot, int Within) OwnerOf(List<int> owners, int[] starts, uint id)
+        {
+            var slot = id < owners.Count ? owners[(int)id] : 0;
+            return (slot, (int)id - starts[slot]);
         }
 
         var layout = physics is null ? Layout : Layout.Concat(PhysicsLayout).ToArray();
@@ -1066,9 +1085,10 @@ public static class PhyreModelClusterWriter
                 if (material is not null && className is "PSamplerState" or "PShaderParameterDefinition")
                 {
                     var sampler = className == "PSamplerState";
-                    var slot = SlotOf(sampler ? samplerStart : definitionStart, 0, id);
+                    var (slot, within) = sampler
+                        ? OwnerOf(samplerOwner, samplerStart, id)
+                        : OwnerOf(definitionOwner, definitionStart, id);
                     var mineHere = TableOf(slot)!;
-                    var within = (int)id - (sampler ? samplerStart[slot] : definitionStart[slot]);
                     var donor = sampler
                         ? mineHere.SamplerStates[within]
                         : mineHere.ParameterDefinitions[within];
@@ -1141,10 +1161,14 @@ public static class PhyreModelClusterWriter
                 // One group holds every material's definitions, so each material's
                 // names are appended after the last and both the object it belongs to
                 // and the offset it sits at move by where that material's run begins.
+                var written = new HashSet<int>();
                 for (var slot = 0; slot < materialCount; slot++)
                 {
                     var mineHere = TableOf(slot);
-                    if (mineHere is null) continue;
+                    // One run per shader, so the names of a run already laid down are
+                    // not laid again: the second material to bind a shader points at
+                    // what the first put there.
+                    if (mineHere is null || !written.Add(definitionStart[slot])) continue;
                     var baseAt = (uint)arrays.Length;
                     arrays.Write(mineHere.DefinitionArrayData.Span);
                     foreach (var array in mineHere.DefinitionArrays)
