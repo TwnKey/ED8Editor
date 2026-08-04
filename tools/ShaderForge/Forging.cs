@@ -162,10 +162,17 @@ public static class Forging
                 moved.RemoveAll(value => value.SourceListIndex == group.Index);
                 for (var one = 0; one < material.Count; one++)
                 {
+                    // By RAW OFFSET, with the high bit, which is how the shipped
+                    // file writes them — 0x80000000 for m_name at zero and the same
+                    // plus four for m_value. Our reader takes a member index too, so
+                    // the names read back correctly and nothing looked wrong; the
+                    // engine reads one form only.
                     moved.Add(new PhyreArrayFixup(
-                        group.Index, (uint)one, (uint)nameMember.Index, 0, where[one]));
+                        group.Index, (uint)one,
+                        0x80000000u | nameMember.ValueOffset, 0, where[one]));
                     moved.Add(new PhyreArrayFixup(
-                        group.Index, (uint)one, (uint)valueMember.Index, 0, 0));
+                        group.Index, (uint)one,
+                        0x80000000u | valueMember.ValueOffset, 0, 0));
                 }
                 Console.WriteLine($"  declare : {material.Count} commutateur(s)");
             }

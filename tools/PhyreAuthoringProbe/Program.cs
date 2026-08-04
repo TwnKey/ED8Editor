@@ -1788,6 +1788,26 @@ if (args.Length > 2 && args[1] == "--materials")
     return 0;
 }
 
+//   PhyreAuthoringProbe x --array-fixups <cluster> <ClassName>
+// How a group's array fixups are written: by member index or by raw byte offset.
+if (args.Length > 3 && args[1] == "--array-fixups")
+{
+    var image = ReadClusterOrPackage(args[2]);
+    var read = new PhyreClusterReader().Read(image);
+    var all = new PhyreFixupReader().Read(image, read.Metadata);
+    var group = read.Metadata.InstanceGroups
+        .FirstOrDefault(value => value.ClassName == args[3] && value.Count != 0);
+    if (group is null) { Console.WriteLine($"'{args[3]}' absente"); return 1; }
+    foreach (var one in all.Arrays.Where(value => value.SourceListIndex == group.Index))
+    {
+        var raw = one.SourceOffsetOrMember >= 0x80000000u;
+        Console.WriteLine(
+            $"  objet {one.SourceObjectId,3} source {one.SourceOffsetOrMember,10}"
+            + $" ({(raw ? "offset" : "membre")}) x{one.Count} -> +{one.Offset}");
+    }
+    return 0;
+}
+
 //   PhyreAuthoringProbe x --pointer-arrays <cluster>
 // Which members of which objects hold an array of pointers, and how many.
 if (args.Length > 2 && args[1] == "--pointer-arrays")
