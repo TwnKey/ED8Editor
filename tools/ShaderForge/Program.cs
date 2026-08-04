@@ -26,6 +26,13 @@ switch (args[0])
     case "compile": return Compile(args);
     case "inspect": return Inspect(File.ReadAllBytes(args[1]), Path.GetFileName(args[1]));
     case "compare": return Compare(args[1], args[2]);
+    case "reflect": return ED8Editor.ShaderForge.Reflection.Report(args[1]);
+    case "plan": return ED8Editor.ShaderForge.Generation.Plan(args[1]);
+    case "semantics": return ED8Editor.ShaderForge.Generation.Semantics(args[1..]);
+    case "streams": return ED8Editor.ShaderForge.Generation.Streams(args[1..]);
+    case "capture": return ED8Editor.ShaderForge.Generation.Capture(args[1]);
+    case "interface": return ED8Editor.ShaderForge.Interface.Report(
+        args[1], args.Length > 2 ? args[2] : null);
     case "forge":
     {
         var switchAt = Array.IndexOf(args, "-M");

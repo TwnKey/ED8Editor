@@ -241,3 +241,116 @@ SHEX 2164 vs 1876    (+288, notre code)
 
 Ce n'est donc pas un défine qui manque : c'est le compilateur de 2010 qui optimise
 mieux ce shader-là. Le programme est correct, simplement plus long.
+
+## L'interface de paramètres, calculée et non recopiée
+
+Tant que les tables de paramètres étaient recopiées d'un modèle, seul un HLSL gardant
+l'interface de `ed8.fx` pouvait être écrit. Elles se déduisent en fait du bytecode
+compilé, ce que `ShaderForge reflect`, `ShaderForge interface` et `ShaderForge plan`
+établissent.
+
+`PShaderParameterDefinition` (16 octets) porte quatre choses :
+
+- `m_dataType` et la taille, lues de la réflexion : classe 0 scalaire → `0` pour un
+  flottant et `8` pour un entier ; classe 1 vecteur → `1`, `2` ou `3` selon deux,
+  trois ou quatre colonnes ; classe 3 matrice → `49` ; une ressource → `52`. Les
+  tailles valent 4, 4, 8, 12, 16, 64 et 16.
+- `m_parameterType`, la sémantique, qui est **une propriété du nom** : sur 117 noms
+  récoltés dans dix-sept effets livrés (`ShaderForge semantics`), aucun désaccord.
+  Douze noms seulement sont des sémantiques que le moteur alimente lui-même — les
+  matrices monde, la lumière courante, ses cascades d'ombre, le matériau de jeu.
+  Tout autre nom retombe sur `64` s'il s'agit d'une constante, `66` d'une liaison
+  échantillonneur, `71` d'une texture seule. **C'est ce qui rend un HLSL quelconque
+  écrivable** : un uniforme inventé n'a pas besoin d'être connu du moteur, le
+  matériau le fournit par son nom.
+- `m_constantBufferLocation`, qui est l'offset en octets dans le `$Globals` du
+  programme, tel quel.
+- `m_bufferLoc`, soit `(taille << 16) | offset` dans le capture buffer. Deux
+  réservoirs — les matrices d'un côté, le reste de l'autre — démarrant chacun à
+  seize et tassés par taille décroissante. Cette disposition-là n'appartient qu'à
+  l'effet ; rien d'extérieur ne la lit.
+
+Les 193 définitions d'une variante ne forment pas une table unique : les cinquante-sept
+premières sont celles de l'effet, les suivantes vingt-quatre séries contiguës, une par
+`PShader`, qui portent les paramètres liés au moment du tracé — la lumière, l'ombre,
+le matériau de jeu. C'est nécessaire, le pixel n'ayant pas la même disposition que le
+sommet : `AlphaThreshold` est à 632 d'un côté et 600 de l'autre.
+
+`ShaderForge plan <effet.phyre>` reconstruit la table d'un effet livré depuis ses
+propres programmes et la compare à ce qu'il déclare. Les dix-sept effets essayés
+passent, 548 paramètres, sans un écart de sémantique, de type ni de taille. Les
+offsets de capture, eux, ne sont pas comparés : un effet livré déclare tout ce que la
+source `ed8.fx` expose, y compris ce qu'aucun de ses programmes n'utilise, là où une
+reconstruction ne voit que ce que la variante compile.
+
+### D'où vient la sémantique
+
+Le premier registre écrit ici associait un nom à une sémantique, ce qui marchait mais
+n'expliquait rien. Les sources de PhyreEngine, présentes sur le disque avec l'outil
+d'assets de Cold Steel 3, donnent la vraie règle.
+
+Une sémantique se déclare en HLSL, après le deux-points :
+
+```hlsl
+float4x4 World                : World;
+float3   m_direction          : LIGHTDIRECTIONWS;
+float4   GameMaterialDiffuse  : NodeMaterialDiffuse
+float    AlphaThreshold       : ALPHATHRESHOLD
+float4   GameMaterialTexcoord //: NodeMaterialTexcoord
+```
+
+D3D ne conserve pas la sémantique d'une uniforme : elle a disparu du bytecode. Elle se
+lit donc dans la source, et se résout comme `Core/Rendering/PhyreSemantic.cpp` le
+fait — table exacte de noms d'abord, puis le nom du paramètre contre la même table,
+puis une recherche des mots que le moteur cherche : « shadow » suivi de « map », de
+« transform » ou de « distance » ; « light » suivi de « colorinten », de « dir » puis
+« ws » ; « eye » ou « cam » suivi de « po ». C'est ainsi que `m_direction` devient
+`LIGHT_DIRECTION_WORLD_SPACE`, soit 203.
+
+Ce que rien ne reconnaît revient au matériau : `CONSTANT` (64) pour une constante,
+`TEXTURE2D`, `TEXTURE3D` ou `TEXTURECUBE` (66, 67, 68) selon la dimension que le
+bytecode déclare, `SAMPLER` (71) pour un échantillonneur. La dernière ligne de
+l'exemple le montre à l'envers : Falcom a commenté la sémantique de
+`GameMaterialTexcoord`, et l'effet livré la déclare bien en `CONSTANT`.
+
+Trois sémantiques n'existent pas dans le SDK — `NodeEdgeParameters`,
+`NodeMaterialDiffuse` et `NodeMaterialEmission`, soit 223, 224 et 225. Falcom les a
+ajoutées au bout de la plage ; elles sont lues des fichiers de CS1.
+
+`ShaderForge plan` fait passer les dix-sept effets livrés avec ce seul mécanisme,
+sans aucune liste de noms écrite à la main.
+
+### Le hachage d'un flux de sommets
+
+`PShaderStreamDefinition.m_nameHash` est `PHashTableTree::Hash`, graine 1973 :
+
+```
+h = 1973 ; pour chaque caractere : h = h * 33 + (c & 0x1f)
+```
+
+gardé sur seize bits. Le masque `& 0x1f` sur chaque caractère est ce qui met en échec
+toute tentative de reconnaître la fonction depuis ses seules sorties — six flux
+récoltés dans les effets livrés n'y suffisaient pas. `ShaderForge streams` vérifie le
+calcul contre eux.
+
+### Retrouver la disposition du tampon de capture
+
+Un effet ne nomme que ce qu'un matériau remplit. Les paramètres de la scène — la vue,
+la projection, le brouillard, les lumières ponctuelles — sont dans les programmes et
+dans les tables de localisation des passes, mais **nulle part par leur nom**. Or ils
+sont indispensables : ajouter une seule uniforme redispose tout le constant buffer, et
+chaque entrée doit alors être réécrite avec son offset de capture.
+
+Ils se retrouvent par composition. La réflexion d'un programme donne nom → offset de
+constant buffer ; la table `PShaderParameterCaptureBufferLocationTypeConstantBuffer` de
+sa passe donne offset de constant buffer → offset de capture. Les deux se recollent.
+
+`ShaderForge capture <effet.phyre>` fait la composition et la vérifie contre ce que
+l'effet déclare : sur les dix-sept effets livrés, **887 constantes situées, et toutes
+celles que l'effet nomme tombent exactement sur l'offset qu'il déclare**. Les autres —
+27 sur cs1shader, celles de la scène — sont récupérées du même coup.
+
+Un effet réécrit garde donc les offsets de capture du modèle pour tout ce qu'il
+partage avec lui, et n'alloue de nouveaux offsets que pour les uniformes que son HLSL
+ajoute. C'est ce qui permet d'en ajouter sans rien déplacer de ce que le moteur
+remplit lui-même.
