@@ -43,7 +43,8 @@ switch (args[0])
                 ? args[switchAt + 1].Split(',', StringSplitOptions.RemoveEmptyEntries)
                 : null,
             named >= 0 && named + 1 < args.Length ? args[named + 1] : null,
-            (source, entry, defines) => CompileOne(source, entry, defines));
+            (source, entry, defines) => CompileOne(source, entry, defines),
+            Array.IndexOf(args, "--interface") >= 0);
     }
 
     case "variants": return ED8Editor.ShaderForge.Variants.Report(

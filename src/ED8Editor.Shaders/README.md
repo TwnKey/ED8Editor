@@ -354,3 +354,34 @@ Un effet réécrit garde donc les offsets de capture du modèle pour tout ce qu'
 partage avec lui, et n'alloue de nouveaux offsets que pour les uniformes que son HLSL
 ajoute. C'est ce qui permet d'en ajouter sans rien déplacer de ce que le moteur
 remplit lui-même.
+
+### Écrire l'interface
+
+`ShaderForge forge … --interface` écrit l'interface au lieu de garder celle du modèle.
+Sans le drapeau, rien ne change : recompiler `ed8.fx` avec d'autres commutateurs
+dispose le constant buffer de la même façon, et les tables venues du modèle le
+décrivent déjà. Le drapeau sert quand la source, elle, a changé.
+
+Ce qui est réécrit :
+
+- les quatre séries de localisation de chaque passe — constantes du sommet, du pixel,
+  puis les textures de chacun — avec les offsets de constant buffer neufs ;
+- les quatre départs et les quatre comptes que chaque passe garde par fréquence ;
+- les définitions que l'effet déclare, la série de chaque `PShader`, et les deux du
+  `PEffectVariant` ;
+- la taille de constant buffer que chaque programme annonce.
+
+Ce qui ne l'est pas : la place, dans le tampon de capture, de tout ce que le modèle
+avait déjà. Ces offsets sont partagés avec le moteur, qui y écrit lui-même les
+paramètres de la scène. Ils sont donc récupérés du modèle et conservés, et seule une
+uniforme que le modèle n'avait pas reçoit une place neuve, allouée après tout le
+reste.
+
+Une structure — la lumière avec laquelle on dessine en est une — n'est qu'une variable
+pour le compilateur, mais autant de paramètres pour le moteur, qui en nomme les
+membres. Le lecteur les déplie, sans quoi `Light0` se déclarerait comme une matrice de
+64 octets là où l'effet attend `m_direction` et `m_colorIntensity`.
+
+Vérification hors ligne : l'effet produit se relit, `capture` retrouve sa disposition
+et tout ce qu'il nomme tombe sur l'offset qu'il déclare, et `plan` le reconstruit
+depuis ses seuls programmes sans un écart. L'essai en jeu reste à faire.

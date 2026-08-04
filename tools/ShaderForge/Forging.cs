@@ -24,7 +24,8 @@ public static class Forging
         string outputPath,
         IReadOnlyList<string>? switches,
         string? assetName,
-        Func<string, string, IReadOnlyList<string>, byte[]?> compile)
+        Func<string, string, IReadOnlyList<string>, byte[]?> compile,
+        bool generateInterface = false)
     {
         ArgumentNullException.ThrowIfNull(compile);
         var image = (ReadOnlyMemory<byte>)File.ReadAllBytes(templatePath);
@@ -48,6 +49,7 @@ public static class Forging
 
         var groups = new List<PhyreGroupContents>();
         var moved = fixups.Arrays.ToList();
+        var links = fixups.Pointers.ToList();
         foreach (var group in cut.Metadata.InstanceGroups)
         {
             var className = group.ClassName ?? "";
@@ -192,6 +194,17 @@ public static class Forging
             }
         }
 
+        // The interface the programs ask for, rather than the one the template came
+        // with. Only worth doing when the source is not the template's own: recompiling
+        // ed8.fx with other switches lays the constant buffer out the same way, and
+        // the tables that came with the template already describe it.
+        if (generateInterface)
+        {
+            Emission.Apply(
+                groups, moved, links, cut, data, fixups, classes, vertex, fragment,
+                File.ReadAllText(sourcePath));
+        }
+
         // The name it answers to. A cluster naming the shader it was copied from
         // would be a second file claiming to be the first.
         if (assetName is not null)
@@ -210,7 +223,7 @@ public static class Forging
         var written = PhyreClusterAssembler.Assemble(new PhyreClusterContents(
             cut.Metadata.Types,
             groups,
-            fixups with { Arrays = moved },
+            fixups with { Arrays = moved, Pointers = links },
             fixups.UserFixups,
             cut.HeaderClasses,
             cut.Payload,

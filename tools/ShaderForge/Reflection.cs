@@ -127,9 +127,35 @@ public static class Reflection
                 // blob and another in the next.
                 var variable = body + variableAt + which * variableSize;
                 var typeAt = body + BitConverter.ToInt32(blob, variable + 16);
+                var declared = Text(blob, body + BitConverter.ToInt32(blob, variable));
+                var offset = BitConverter.ToUInt32(blob, variable + 4);
+                // A struct is one variable here but many parameters to the engine: the
+                // light a shader is drawn with arrives as a struct, and it is its
+                // members the effect names. Class 5 is the struct, and its type record
+                // holds how many members it has at +10 and where they are at +12.
+                if (BitConverter.ToUInt16(blob, typeAt) == 5)
+                {
+                    var members = BitConverter.ToUInt16(blob, typeAt + 10);
+                    var memberAt = body + BitConverter.ToInt32(blob, typeAt + 12);
+                    for (var member = 0; member < members; member++)
+                    {
+                        var record = memberAt + member * 12;
+                        var memberType = body + BitConverter.ToInt32(blob, record + 4);
+                        constants.Add(new Constant(
+                            Text(blob, body + BitConverter.ToInt32(blob, record)),
+                            offset + BitConverter.ToUInt32(blob, record + 8),
+                            0,
+                            BitConverter.ToUInt16(blob, memberType),
+                            BitConverter.ToUInt16(blob, memberType + 2),
+                            BitConverter.ToUInt16(blob, memberType + 4),
+                            BitConverter.ToUInt16(blob, memberType + 6),
+                            BitConverter.ToUInt16(blob, memberType + 8)));
+                    }
+                    continue;
+                }
                 constants.Add(new Constant(
-                    Text(blob, body + BitConverter.ToInt32(blob, variable)),
-                    BitConverter.ToUInt32(blob, variable + 4),
+                    declared,
+                    offset,
                     BitConverter.ToUInt32(blob, variable + 8),
                     BitConverter.ToUInt16(blob, typeAt),
                     BitConverter.ToUInt16(blob, typeAt + 2),

@@ -374,15 +374,21 @@ public static class Generation
     /// and an entry cannot be written without knowing where in the capture buffer it
     /// reads from.
     /// </summary>
-    public static Dictionary<string, (uint Capture, uint Size, byte Type)> CaptureOffsets(
-        string templatePath)
+    public sealed record Placed(uint Capture, uint Size, byte Type, byte Frequency);
+
+    public static Dictionary<string, Placed> CaptureOffsets(string templatePath)
     {
         var image = (ReadOnlyMemory<byte>)File.ReadAllBytes(templatePath);
         var cut = PhyreClusterSectionReader.Read(image);
         var data = new PhyreClusterReader().Read(image);
         var fixups = new PhyreFixupReader().Read(image, cut.Metadata);
-        var classes = cut.Metadata.Classes.ToList();
+        return CaptureOffsets(data, cut, fixups, cut.Metadata.Classes.ToList());
+    }
 
+    public static Dictionary<string, Placed> CaptureOffsets(
+        PhyreClusterData data, PhyreClusterSections cut, PhyreFixupSet fixups,
+        IReadOnlyList<PhyreClassDescriptor> classes)
+    {
         var located = cut.Metadata.InstanceGroups
             .First(value => value.ClassName == "PShaderParameterCaptureBufferLocationTypeConstantBuffer");
         var entries = data.GetGroupObjectsData(located.Index).Span;
@@ -399,7 +405,20 @@ public static class Generation
         var fragmentAt = 0x80000000u
             | (chain.First(value => value.Name == "m_fragmentParameterLocation").ValueOffset + 16 + 4);
 
-        var found = new Dictionary<string, (uint, uint, byte)>(StringComparer.Ordinal);
+        // The starts and counts belong to the block embedded in the pass, not to the
+        // pass itself, so they are read from that class and offset by where it sits.
+        var block = PhyreObjectWriter
+            .Chain(
+                classes.First(value =>
+                    value.Name == "PShaderPassParameterLocationTypesConstantBuffer"),
+                classes)
+            .ToList();
+        var starts = block.First(value => value.Name == "m_parameterStart").ValueOffset;
+        var counts = block.First(value => value.Name == "m_parameterCount").ValueOffset;
+        var passObjects = data.GetGroupObjectsData(pass.Index).Span;
+        var passSize = checked((int)(pass.ObjectsSize / pass.Count));
+
+        var found = new Dictionary<string, Placed>(StringComparer.Ordinal);
         var programs = new Dictionary<string, List<Reflection.Program>>(StringComparer.Ordinal);
         foreach (var className in new[] { "PShaderVertexProgram", "PShaderFragmentProgram" })
         {
@@ -429,14 +448,33 @@ public static class Generation
             var byOffset = reflected[(int)link.DestinationObjectId].Constants
                 .ToDictionary(value => value.Offset, value => value.Name);
 
+            // How many of the run belong to each frequency, so a constant's own can be
+            // read off. The pass holds four starts and four counts — scene, material,
+            // node, node context — and they run end to end over the array.
+            var passBytes = passObjects.Slice((int)(one.SourceObjectId * passSize), passSize);
+            var side = (int)(vertex
+                ? chain.First(two => two.Name == "m_vertexParameterLocation").ValueOffset
+                : chain.First(two => two.Name == "m_fragmentParameterLocation").ValueOffset);
+            var frequencyOf = new byte[one.ArrayIndex];
+            for (byte frequency = 0; frequency < 4; frequency++)
+            {
+                var from = BitConverter.ToUInt16(passBytes[(side + (int)starts + frequency * 2)..]);
+                var many = BitConverter.ToUInt16(passBytes[(side + (int)counts + frequency * 2)..]);
+                for (var at = from; at < from + many && at < frequencyOf.Length; at++)
+                {
+                    frequencyOf[at] = frequency;
+                }
+            }
+
             for (var at = 0u; at < one.ArrayIndex; at++)
             {
                 var entry = entries.Slice(
                     (int)((one.DestinationObjectId + at) * entrySize), entrySize);
                 var location = BitConverter.ToUInt32(entry[4..]);
                 if (!byOffset.TryGetValue(location, out var name)) continue;
-                found.TryAdd(name, (
-                    BitConverter.ToUInt16(entry), BitConverter.ToUInt32(entry[8..]), entry[12]));
+                found.TryAdd(name, new Placed(
+                    BitConverter.ToUInt16(entry), BitConverter.ToUInt32(entry[8..]),
+                    entry[12], frequencyOf[at]));
             }
         }
         return found;
@@ -466,6 +504,16 @@ public static class Generation
             Console.WriteLine($"     DIFFERE {name,-34} retrouve cap {one.Capture}"
                 + $" taille {one.Size} | declare cap {says.Capture} taille {says.Size}");
             wrong++;
+        }
+        foreach (var frequency in recovered.GroupBy(value => value.Value.Frequency)
+                     .OrderBy(value => value.Key))
+        {
+            var kind = frequency.Key switch
+            {
+                0 => "scene", 1 => "materiau", 2 => "noeud", _ => "contexte de noeud",
+            };
+            Console.WriteLine($"     frequence {frequency.Key} ({kind}) : {frequency.Count()}"
+                + $"   ex. {string.Join(", ", frequency.Take(3).Select(value => value.Key))}");
         }
         Console.WriteLine($"  {recovered.Count} constantes situees dans le tampon de capture,"
             + $" dont {checkedCount} que l'effet nomme");
@@ -510,7 +558,7 @@ public static class Generation
     }
 
     /// <summary>The parameters the effect declares, read back with their names.</summary>
-    private static Dictionary<string, Parameter> Declared(
+    public static Dictionary<string, Parameter> Declared(
         PhyreClusterData data, PhyreClusterSections cut, PhyreFixupSet fixups,
         IReadOnlyList<PhyreClassDescriptor> classes)
     {
