@@ -82,15 +82,29 @@ public static class Forging
                     laid.Write(replacement[id]);
                     BitConverter.GetBytes((uint)replacement[id].Length)
                         .CopyTo(stored, id * size + (int)member.ValueOffset);
+                    // By raw offset, and on the array's POINTER field — the member
+                    // holds a count then a pointer, and the fixup names the pointer,
+                    // so its source is the member's offset plus four. Matching on the
+                    // member index instead found nothing: every offset stayed where
+                    // the template had put it while the blobs moved underneath, and
+                    // each program but the first read another one's code.
+                    //
+                    // The fixup's own count is the run's length in bytes, so it moves
+                    // with the blob.
+                    var pointerAt = 0x80000000u | (member.ValueOffset + sizeof(uint));
                     for (var one = 0; one < moved.Count; one++)
                     {
                         if (moved[one].SourceListIndex != group.Index
                             || moved[one].SourceObjectId != (uint)id
-                            || moved[one].SourceOffsetOrMember != (uint)member.Index)
+                            || moved[one].SourceOffsetOrMember != pointerAt)
                         {
                             continue;
                         }
-                        moved[one] = moved[one] with { Offset = at };
+                        moved[one] = moved[one] with
+                        {
+                            Offset = at,
+                            Count = (uint)replacement[id].Length,
+                        };
                     }
                 }
                 arrays = laid.ToArray();

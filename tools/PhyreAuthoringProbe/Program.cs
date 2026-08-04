@@ -1681,13 +1681,21 @@ if (args.Length > 6 && args[1] == "--reforge")
                     : data.GetArrayData(group.Index, 0, group.ArraysSize)));
     }
 
+    // By raw offset, on the array's pointer field: a fixup names the pointer that
+    // follows the count, so its source is the member's offset plus four. Matching on
+    // the member index found nothing and left every offset where it was.
+    var pointerField = 0x80000000u | (member.ValueOffset + sizeof(uint));
     var moved = new List<PhyreArrayFixup>();
     foreach (var fixup in fixups.Arrays)
     {
         moved.Add(fixup.SourceListIndex == target.Index
             && fixup.SourceObjectId < target.Count
-            && fixup.SourceOffsetOrMember == (uint)member.Index
-            ? fixup with { Offset = offsets[fixup.SourceObjectId] }
+            && fixup.SourceOffsetOrMember == pointerField
+            ? fixup with
+            {
+                Offset = offsets[fixup.SourceObjectId],
+                Count = (uint)blobs[(int)fixup.SourceObjectId].Length,
+            }
             : fixup);
     }
 
