@@ -45,7 +45,8 @@ public static class CharacterCreation
     {
         ArgumentNullException.ThrowIfNull(gameDirectory);
         ArgumentNullException.ThrowIfNull(assetId);
-        var assets = Path.Combine(gameDirectory, "data", "asset", "D3D11");
+        var assets = GameContentDirectories.Assets(gameDirectory).FirstOrDefault()
+            ?? Path.Combine(gameDirectory, "data", "asset", "D3D11");
         if (!Directory.Exists(assets)) return Array.Empty<string>();
         return Directory.EnumerateFiles(assets, assetId + "*.pkg")
             .Where(path =>

@@ -33,6 +33,9 @@ public sealed class ModProject
     private readonly Dictionary<string, ModProjectFile> files =
         new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>The folder the game loads loose files from, when it has one.</summary>
+    private const string DevelopmentFolder = "dev";
+
     private ModProject(string projectPath, string gameDirectory, string name)
     {
         ProjectPath = Path.GetFullPath(projectPath);
@@ -43,6 +46,35 @@ public sealed class ModProject
     public string ProjectPath { get; }
     public string GameDirectory { get; }
     public string Name { get; private set; }
+
+    /// <summary>Who made the mod, and what it is. Shipped with it, not with the game.</summary>
+    public string Author { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Where this project's files are written.
+    ///
+    /// The game loads loose files from a <c>dev</c> folder that mirrors its own
+    /// layout, and it loads them without being restarted — which is the difference
+    /// between checking a change in ten seconds and in two minutes. So when that
+    /// folder exists, it is where edits go; the game's own folder is left alone,
+    /// which is also the safest place for it to be.
+    ///
+    /// Read at each use rather than cached: the folder can be made while the editor
+    /// is open, and someone who has just made it means it to be used.
+    /// </summary>
+    public string ContentDirectory
+    {
+        get
+        {
+            var development = Path.Combine(GameDirectory, DevelopmentFolder);
+            return Directory.Exists(development) ? development : GameDirectory;
+        }
+    }
+
+    /// <summary>Whether edits are going to the loose-loading folder.</summary>
+    public bool UsesDevelopmentFolder => !string.Equals(
+        ContentDirectory, GameDirectory, StringComparison.OrdinalIgnoreCase);
 
     public string StoreDirectory => Path.Combine(
         Path.GetDirectoryName(ProjectPath)!,
@@ -72,7 +104,11 @@ public sealed class ModProject
             ?? throw new InvalidDataException($"'{fullPath}' is not a readable mod project.");
         if (string.IsNullOrWhiteSpace(document.GameDirectory))
             throw new InvalidDataException("The mod project has no game directory.");
-        var project = new ModProject(fullPath, document.GameDirectory, document.Name ?? "mod");
+        var project = new ModProject(fullPath, document.GameDirectory, document.Name ?? "mod")
+        {
+            Author = document.Author ?? string.Empty,
+            Description = document.Description ?? string.Empty,
+        };
         foreach (var entry in document.Files ?? new List<ProjectFileDocument>())
         {
             if (string.IsNullOrWhiteSpace(entry.Path)) continue;
@@ -91,6 +127,8 @@ public sealed class ModProject
         var document = new ProjectDocument
         {
             Name = Name,
+            Author = Author,
+            Description = Description,
             GameDirectory = GameDirectory,
             Files = Files
                 .Select(value => new ProjectFileDocument
@@ -220,8 +258,48 @@ public sealed class ModProject
         return File.Exists(path) ? path : null;
     }
 
+    /// <summary>Where a file of this project is written.</summary>
     public string GameFilePath(string relativePath)
-        => Path.Combine(GameDirectory, Normalize(relativePath).Replace('/', Path.DirectorySeparatorChar));
+        => Path.Combine(
+            ContentDirectory, Normalize(relativePath).Replace('/', Path.DirectorySeparatorChar));
+
+    /// <summary>
+    /// Where a file is read from: the loose-loading folder first, the game's own
+    /// after. That is the order the game itself resolves them in, so what the editor
+    /// shows is what the game would load.
+    /// </summary>
+    public string ResolveExisting(string relativePath)
+    {
+        var normalized = Normalize(relativePath).Replace('/', Path.DirectorySeparatorChar);
+        var loose = Path.Combine(ContentDirectory, normalized);
+        return File.Exists(loose) ? loose : Path.Combine(GameDirectory, normalized);
+    }
+
+    /// <summary>
+    /// Takes every file already in the loose-loading folder into the project.
+    ///
+    /// Those files are somebody's mod — often several people's — and they are
+    /// already what the game loads. Leaving them outside the project would mean
+    /// editing them without the project knowing, so nothing could be reverted and
+    /// nothing shipped. No pristine copy is taken: the file on disk is already a
+    /// modified one, and pretending otherwise would let a revert write it back as if
+    /// it were the game's.
+    /// </summary>
+    public int ImportDevelopmentFiles()
+    {
+        var root = Path.Combine(GameDirectory, DevelopmentFolder);
+        if (!Directory.Exists(root)) return 0;
+        var imported = 0;
+        foreach (var path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+        {
+            if (!TryGetRelative(path, out var relative)) continue;
+            if (files.ContainsKey(relative)) continue;
+            TrackSave(path);
+            imported++;
+        }
+        if (imported != 0) Save();
+        return imported;
+    }
 
     /// <summary>
     /// Registers a file the mod ships without the editor having written it. The
@@ -263,12 +341,19 @@ public sealed class ModProject
         relative = string.Empty;
         if (string.IsNullOrWhiteSpace(gameFilePath)) return false;
         var full = Path.GetFullPath(gameFilePath);
-        var root = GameDirectory.EndsWith(Path.DirectorySeparatorChar)
-            ? GameDirectory
-            : GameDirectory + Path.DirectorySeparatorChar;
-        if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase)) return false;
-        relative = Normalize(full[root.Length..]);
-        return relative.Length != 0;
+        // A file is named the same whichever root it sits under, so the loose folder
+        // is tried first: it is the longer path, and under it every file is also
+        // under the game folder.
+        foreach (var candidate in new[] { ContentDirectory, GameDirectory })
+        {
+            var root = candidate.EndsWith(Path.DirectorySeparatorChar)
+                ? candidate
+                : candidate + Path.DirectorySeparatorChar;
+            if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase)) continue;
+            relative = Normalize(full[root.Length..]);
+            if (relative.Length != 0) return true;
+        }
+        return false;
     }
 
     private static string Normalize(string relativePath)
@@ -277,6 +362,8 @@ public sealed class ModProject
     private sealed class ProjectDocument
     {
         public string? Name { get; set; }
+        public string? Author { get; set; }
+        public string? Description { get; set; }
         public string? GameDirectory { get; set; }
         public List<ProjectFileDocument>? Files { get; set; }
     }

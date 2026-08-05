@@ -65,6 +65,7 @@ internal static class CameraPropertyWriter
             unavailable.Distinct(StringComparer.Ordinal).ToArray());
     }
 
+
     private static ScriptCameraState? MaterializeCamera(ScriptSceneState? scene)
     {
         if (scene is null) return null;

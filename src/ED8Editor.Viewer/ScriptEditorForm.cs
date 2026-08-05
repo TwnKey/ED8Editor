@@ -489,6 +489,10 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
         {
             ShortcutKeys = Keys.Control | Keys.O,
         });
+        fileMenu.DropDownItems.Add(new ToolStripMenuItem("Close", null, (_, _) => CloseDat())
+        {
+            ShortcutKeys = Keys.Control | Keys.W,
+        });
         fileMenu.DropDownItems.Add(new ToolStripSeparator());
         fileMenu.DropDownItems.Add(new ToolStripMenuItem("Save", null, (_, _) => Save(saveAs: false))
         {
@@ -695,8 +699,36 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
             ? codeFunctions[scenesList.SelectedIndex]
             : null;
 
+    /// <summary>
+    /// Whether a mod project is open, and may be edited into. Set by the host.
+    ///
+    /// Opening a file without one meant working in a place nothing tracked: no
+    /// pristine copy, nothing to revert to, nothing to ship. That was easy to do by
+    /// accident and impossible to notice until the work was already loose in the
+    /// game folder.
+    /// </summary>
+    public Func<bool>? HasModProject { get; set; }
+
+    private bool RequireModProject()
+    {
+        if (HasModProject?.Invoke() != false) return true;
+        MessageBox.Show(
+            this,
+            "Open or create a mod project first."
+            + Environment.NewLine + Environment.NewLine
+            + "Everything this editor writes goes"
+            + " through a project: it keeps the untouched original, so a change can be"
+            + " undone, and it is what a mod is shipped from. Editing without one leaves"
+            + " the work loose in the game folder with nothing recording it.",
+            "Mod project required",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
+        return false;
+    }
+
     private void OpenDialog()
     {
+        if (!RequireModProject()) return;
         using var dialog = new OpenFileDialog
         {
             Filter = "CS1 scripts (*.dat)|*.dat|All files|*.*",
@@ -709,6 +741,7 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
 
     public void LoadDat(string datPath)
     {
+        if (!RequireModProject()) return;
         if (document is not null
             && string.Equals(document.SourcePath, Path.GetFullPath(datPath), StringComparison.OrdinalIgnoreCase))
         {
@@ -739,6 +772,48 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
         Text = $"CS1 Script Editor — {script.SceneName}";
         RefreshDocument(selectedFunction: null, selectedInstruction: null);
     }
+
+    /// <summary>
+    /// Closes the open script without closing the window.
+    ///
+    /// Opening another one already did this, so the only way to put a file down was
+    /// to pick up a different one or to shut the editor. Unsaved edits are asked
+    /// about first, by the same question every other way out asks.
+    /// </summary>
+    private void CloseDat()
+    {
+        if (document is null)
+        {
+            statusLabel.Text = "No script is open.";
+            return;
+        }
+        if (!ConfirmCloseDocument()) return;
+
+        activeInstructionEditor?.Close();
+        document.Dispose();
+        document = null;
+        script = null;
+        selectedFunctionIndex = -1;
+        selectedInstructionIndex = null;
+        selectedInstructionIndices.Clear();
+        codeFunctions.Clear();
+        voiceTable = null;
+
+        scenesList.Items.Clear();
+        functionSelector.Items.Clear();
+        tablesTree.Nodes.Clear();
+        entitiesList.Items.Clear();
+        flagContextList.Items.Clear();
+        blocks.SetGraph(Array.Empty<ScriptFlowBlock>(), EmptyFunction);
+        ClearInstructionInspector();
+        SetInstructionToolsEnabled(false);
+        Text = "CS1 Script Editor";
+        statusLabel.Text = "Closed.";
+    }
+
+    /// <summary>A function with nothing in it, to empty the canvas with.</summary>
+    private static DecompiledFunction EmptyFunction { get; } =
+        new(0, string.Empty, true, Array.Empty<DecompiledInstruction>());
 
     protected override void OnFormClosing(FormClosingEventArgs eventArgs)
     {
@@ -1625,6 +1700,15 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
                     child.BackColor = Color.FromArgb(24, 24, 28);
                     child.ForeColor = Color.Gainsboro;
                     break;
+                case Button button:
+                    // A button keeps the system's black text, and the panels here are
+                    // dark: it has to be told both colours, and told to use them —
+                    // the system style ignores BackColor outright.
+                    button.FlatStyle = FlatStyle.Flat;
+                    button.BackColor = Color.FromArgb(62, 64, 72);
+                    button.ForeColor = Color.Gainsboro;
+                    button.FlatAppearance.BorderColor = Color.FromArgb(96, 99, 110);
+                    break;
                 case CheckBox or RadioButton or Label:
                     child.ForeColor = Color.Gainsboro;
                     break;
@@ -1683,10 +1767,16 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
             };
             row.Controls.Add(choose);
         }
+        void ApplyFields() => RunEdit(() =>
+        {
+            for (var index = 0; index < arguments.Count; index++)
+                SetScalar(instruction.Index, arguments[index], fields[index].Text);
+        }, instruction.Index);
+
         if (ScriptSemanticValueConverter.IsPosition(arguments)
             && semanticContext?.BeginSurfacePositionCapture is { } beginCapture)
         {
-            var pick = new Button { AutoSize = true, Text = "Pick on map…" };
+            var pick = new Button { AutoSize = true, Text = "Pick a point on the map…" };
             pick.Click += (_, _) =>
             {
                 beginCapture(position =>
@@ -1695,16 +1785,16 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
                     var values = ScriptSemanticValueConverter.WritePosition(position);
                     for (var index = 0; index < fields.Count; index++)
                         fields[index].Text = values[index];
+                    // And write it. Filling the boxes and stopping there meant the
+                    // point was picked, shown, and then lost by anyone who did not
+                    // know a second button had to be pressed afterwards.
+                    ApplyFields();
                 });
             };
             row.Controls.Add(pick);
         }
         var apply = new Button { AutoSize = true, Text = "Apply" };
-        apply.Click += (_, _) => RunEdit(() =>
-        {
-            for (var index = 0; index < arguments.Count; index++)
-                SetScalar(instruction.Index, arguments[index], fields[index].Text);
-        }, instruction.Index);
+        apply.Click += (_, _) => ApplyFields();
         row.Controls.Add(apply);
         return row;
     }
@@ -1776,9 +1866,19 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
             : ScriptSceneStateResolver.ResolveBefore(script, function, instruction.Index);
     }
 
+    /// <summary>
+    /// Whether the viewport camera has anything to give this instruction.
+    ///
+    /// Decided by what the instruction's operands are, not by which opcode it is.
+    /// The check used to start with "opcode 45 or nothing", which hid the panel on
+    /// every other camera command however plainly its operands asked for a camera —
+    /// a position setter with a camera semantic on its operands got no button at all.
+    /// Both capturers already answer "nothing here" for an instruction they cannot
+    /// fill, and they answer it by reading the operands, which is the thing that
+    /// actually decides.
+    /// </summary>
     private bool HasCameraCapture(DecompiledInstruction instruction, ScriptCameraSnapshot snapshot)
     {
-        if (instruction.Opcode != 45) return false;
         var capture = CameraPropertyWriter.Capture(
             instruction, snapshot, ResolveSceneBefore(instruction));
         return capture.CanCapture

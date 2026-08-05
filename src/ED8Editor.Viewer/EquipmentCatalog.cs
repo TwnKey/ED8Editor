@@ -1,3 +1,4 @@
+using ED8Editor.Application;
 using ED8Editor.Core;
 using ED8Editor.Packages;
 using ED8Editor.Phyre;
@@ -73,8 +74,13 @@ internal sealed record EquipmentEntry(
 internal static class EquipmentCatalog
 {
     /// <summary>Where the game keeps its assets, given the folder holding data.</summary>
+    /// <summary>
+    /// Where equipment packages are written and read. The loose folder when the game
+    /// has one: a package there is the one it loads.
+    /// </summary>
     public static string AssetDirectory(string gameDirectory)
-        => Path.Combine(gameDirectory, "data", "asset", "D3D11");
+        => GameContentDirectories.Assets(gameDirectory).FirstOrDefault()
+            ?? Path.Combine(gameDirectory, "data", "asset", "D3D11");
 
     /// <summary>
     /// What the game models as equipment: every package the attach table names, and
@@ -94,14 +100,16 @@ internal static class EquipmentCatalog
 
         var uses = Uses(gameDirectory);
         var packages = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var path in Directory.EnumerateFiles(assets, "C_EQU*.pkg"))
+        foreach (var path in GameContentDirectories.Files(
+                     GameContentDirectories.Assets(gameDirectory), "C_EQU*.pkg"))
         {
             packages[Path.GetFileNameWithoutExtension(path)] = path;
         }
         foreach (var named in uses.Keys)
         {
             if (packages.ContainsKey(named)) continue;
-            var path = Path.Combine(assets, named + ".pkg");
+            var path = GameContentDirectories.Resolve(
+                gameDirectory, Path.Combine("data", "asset", "D3D11", named + ".pkg"));
             if (File.Exists(path)) packages[named] = path;
         }
 

@@ -1061,6 +1061,8 @@ var tests = new (string Name, Action Run)[]
     ("reads a condition into an editable tree and back", RoundTripsConditionTree),
     ("reads joined and arithmetic conditions the builder shows", ReadsComposedConditions),
     ("reads instruction presets, and survives a bad file", ReadsInstructionPresets),
+    ("prefers a loose dev asset over the shipped one", PrefersLooseAssets),
+    ("reads a GitHub release, and only offers a newer one", ReadsGitHubReleases),
 };
 
 var failures = 0;
@@ -2184,6 +2186,117 @@ static void WritesAuthoredModelFixups()
 /// Presets are read from the file beside the instruction definitions, and a file
 /// that is missing or malformed costs the presets, not the editor.
 /// </summary>
+/// <summary>
+/// A package in the game's loose-loading folder stands in for the shipped one of the
+/// same name: the editor has to resolve to it, or it shows one thing while the game
+/// loads another.
+/// </summary>
+/// <summary>
+/// What the updater decides, decided without a network: which tags read as versions,
+/// which releases are worth offering, and what is shown as the changelog.
+/// </summary>
+static void ReadsGitHubReleases()
+{
+    Equal(new Version(1, 2, 3, 0), GitHubUpdateCheck.ParseVersion("v1.2.3")!);
+    Equal(new Version(1, 2, 3, 0), GitHubUpdateCheck.ParseVersion("1.2.3")!);
+    Equal(new Version(1, 2, 0, 0), GitHubUpdateCheck.ParseVersion("V1.2")!);
+    // A tag may carry a suffix the version does not.
+    Equal(new Version(1, 2, 3, 0), GitHubUpdateCheck.ParseVersion("v1.2.3-hotfix")!);
+    Equal(true, GitHubUpdateCheck.ParseVersion("nightly") is null);
+    Equal(true, GitHubUpdateCheck.ParseVersion("") is null);
+
+    const string json = """
+        {
+          "tag_name": "v0.4.1",
+          "name": "Loose asset loading",
+          "body": "- dev/ assets are used\n- undo covers pasting",
+          "draft": false,
+          "prerelease": false,
+          "assets": [
+            { "name": "notes.txt", "browser_download_url": "https://x/notes.txt", "size": 12 },
+            { "name": "ED8Editor.zip", "browser_download_url": "https://x/ED8Editor.zip", "size": 4096 }
+          ]
+        }
+        """;
+    var release = GitHubUpdateCheck.ParseRelease(json)
+        ?? throw new InvalidOperationException("The release did not read.");
+    Equal(new Version(0, 4, 1, 0), release.Version);
+    Equal("Loose asset loading", release.Name);
+    Equal("https://x/ED8Editor.zip", release.DownloadUrl!);
+    Equal(4096L, release.DownloadSize);
+    // The notes are the author's own account, shown unaltered.
+    Equal(true, release.Notes.Contains("undo covers pasting", StringComparison.Ordinal));
+
+    // Newer only. Re-offering what is already installed teaches people to dismiss it.
+    Equal(true, GitHubUpdateCheck.IsNewer(release, new Version(0, 4, 0)));
+    Equal(false, GitHubUpdateCheck.IsNewer(release, new Version(0, 4, 1)));
+    Equal(false, GitHubUpdateCheck.IsNewer(release, new Version(0, 5, 0)));
+    // 1.2 and 1.2.0.0 are the same release under two spellings.
+    Equal(false, GitHubUpdateCheck.IsNewer(
+        GitHubUpdateCheck.ParseRelease(json.Replace("v0.4.1", "1.2"))!, new Version(1, 2, 0, 0)));
+
+    // A draft is not published; a prerelease is not what someone starting the tool
+    // asked to be given.
+    Equal(true, GitHubUpdateCheck.ParseRelease(json.Replace("\"draft\": false", "\"draft\": true")) is null);
+    Equal(true, GitHubUpdateCheck.ParseRelease(
+        json.Replace("\"prerelease\": false", "\"prerelease\": true")) is null);
+    // A release with no build attached is one there is nothing to install from.
+    var noBuild = GitHubUpdateCheck.ParseRelease(json.Replace("ED8Editor.zip", "ED8Editor.7z"))!;
+    Equal(true, noBuild.DownloadUrl is null);
+
+    Equal(true, GitHubUpdateCheck.ParseRelease("not json") is null);
+    Equal(true, GitHubUpdateCheck.ParseRelease("[]") is null);
+}
+
+static void PrefersLooseAssets()
+{
+    var root = Path.Combine(Path.GetTempPath(), $"ed8-dev-{Guid.NewGuid():N}");
+    var shipped = Path.Combine(root, "data", "asset", "D3D11");
+    var loose = Path.Combine(root, "dev", "data", "asset", "D3D11");
+    Directory.CreateDirectory(shipped);
+    Directory.CreateDirectory(loose);
+    try
+    {
+        File.WriteAllBytes(Path.Combine(shipped, "M_T1000.pkg"), new byte[16]);
+        File.WriteAllBytes(Path.Combine(shipped, "M_T1001.pkg"), new byte[16]);
+        File.WriteAllBytes(Path.Combine(loose, "M_T1000.pkg"), new byte[32]);
+
+        var data = Path.Combine(root, "data");
+        Equal(
+            Path.Combine(root, "dev", "data", "asset"),
+            GameAssetResolverFactory.Development(data)!);
+
+        var resolver = new GameAssetResolverFactory().Create(data);
+
+        // The modded one answers, and only it: two packages of the same name and
+        // variant would leave the choice to whichever sorted first.
+        var modded = resolver.Resolve("M_T1000", AssetVariantPreference.Base);
+        Equal(AssetResolutionStatus.Resolved, modded.Status);
+        Equal(Path.Combine(loose, "M_T1000.pkg"), modded.SelectedPackage!.Path);
+
+        // One the loose folder does not carry still comes from the game.
+        var untouched = resolver.Resolve("M_T1001", AssetVariantPreference.Base);
+        Equal(AssetResolutionStatus.Resolved, untouched.Status);
+        Equal(Path.Combine(shipped, "M_T1001.pkg"), untouched.SelectedPackage!.Path);
+
+        // With no loose folder at all, nothing changes.
+        var plain = Path.Combine(Path.GetTempPath(), $"ed8-plain-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(plain, "data", "asset", "D3D11"));
+        try
+        {
+            Equal(true, GameAssetResolverFactory.Development(Path.Combine(plain, "data")) is null);
+        }
+        finally
+        {
+            try { Directory.Delete(plain, true); } catch (IOException) { }
+        }
+    }
+    finally
+    {
+        try { Directory.Delete(root, true); } catch (IOException) { }
+    }
+}
+
 static void ReadsInstructionPresets()
 {
     var directory = Path.Combine(Path.GetTempPath(), $"ed8-presets-{Guid.NewGuid():N}");

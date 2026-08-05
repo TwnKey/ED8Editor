@@ -874,6 +874,9 @@ public sealed class ViewerForm : Form
     protected override async void OnShown(EventArgs eventArgs)
     {
         base.OnShown(eventArgs);
+        // Asked once, at the start, and never again during a session: an updater
+        // that interrupts work is one people learn to close without reading.
+        await UpdateForm.OfferAsync(this);
         try
         {
             InitializeRenderer();
@@ -1668,6 +1671,7 @@ public sealed class ViewerForm : Form
                 OpenBattleScriptEditor);
             scriptEditor = editor;
             editor.ProjectGameDirectory = modProject?.GameDirectory;
+        editor.HasModProject = () => modProject is not null;
             editor.TopLevel = false;
             editor.FormBorderStyle = FormBorderStyle.None;
             editor.Dock = DockStyle.Fill;
@@ -3795,9 +3799,9 @@ public sealed class ViewerForm : Form
         {
             MessageBox.Show(
                 this,
-                "Le dossier du jeu n'est pas connu de cette session : ouvrez un projet"
-                    + " de mod ou un script du jeu.",
-                "Équipements",
+                "This session does not know where the game is: open a mod project or a"
+                    + " script of the game.",
+                "Equipment",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
             return;
@@ -3807,9 +3811,9 @@ public sealed class ViewerForm : Form
         {
             MessageBox.Show(
                 this,
-                "L'aperçu des équipements demande le dossier de données du jeu et le"
-                    + " rendu : ouvrez un script du jeu.",
-                "Équipements",
+                "Previewing equipment needs the game's data folder and the renderer:"
+                    + " open a script of the game.",
+                "Equipment",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
             return;
@@ -5804,11 +5808,22 @@ public sealed class ViewerForm : Form
             OverwritePrompt = true,
         };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        using var details = new NewModProjectForm(
+            gameRoot, Path.GetFileNameWithoutExtension(dialog.FileName));
+        if (details.ShowDialog(this) != DialogResult.OK) return;
         RunModProjectAction(() =>
         {
-            modProject = ModProject.Create(dialog.FileName, gameRoot);
+            modProject = ModProject.Create(dialog.FileName, gameRoot, details.ModName);
+            modProject.Author = details.ModAuthor;
+            modProject.Description = details.ModDescription;
+            modProject.Save();
+            var adopted = details.AdoptDevelopmentFiles ? modProject.ImportDevelopmentFiles() : 0;
             settingsStore.Save(settingsStore.Load() with { LastProjectPath = modProject.ProjectPath });
             RefreshModProjectTab();
+            effectMetadataStatus.Text = modProject.UsesDevelopmentFolder
+                ? $"'{modProject.Name}' writes to dev/"
+                    + (adopted == 0 ? "." : $", and took in {adopted} file(s) already there.")
+                : $"'{modProject.Name}' writes into the game folder: there is no dev/.";
         });
     }
 

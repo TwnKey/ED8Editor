@@ -59,7 +59,8 @@ public sealed class MapPackageAuthoring
             throw new ArgumentException("A map needs a name.", nameof(mapName));
         }
 
-        var assets = Path.Combine(project.GameDirectory, "data", "asset", "D3D11");
+        var assets = GameContentDirectories.Assets(project.GameDirectory).FirstOrDefault()
+            ?? Path.Combine(project.GameDirectory, "data", "asset", "D3D11");
         var source = Path.Combine(assets, MapAuthoring.ModelAsset(baseMapName) + ".pkg");
         if (!File.Exists(source))
         {
@@ -136,7 +137,8 @@ public sealed class MapPackageAuthoring
     public IReadOnlyList<string> Problems(string baseMapName, PhyreModelSource model)
     {
         ArgumentNullException.ThrowIfNull(model);
-        var assets = Path.Combine(project.GameDirectory, "data", "asset", "D3D11");
+        var assets = GameContentDirectories.Assets(project.GameDirectory).FirstOrDefault()
+            ?? Path.Combine(project.GameDirectory, "data", "asset", "D3D11");
         var source = Path.Combine(assets, MapAuthoring.ModelAsset(baseMapName) + ".pkg");
         if (!File.Exists(source))
         {

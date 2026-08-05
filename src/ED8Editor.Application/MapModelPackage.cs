@@ -358,8 +358,9 @@ public static class MapModelPackage
             (lower + ".dae.phyre", modelCluster),
         }.Concat(mapTextures).Concat(shaders).ToArray();
 
-        var destination = Path.Combine(
-            project.GameDirectory, "data", "asset", "D3D11", symbol + ".pkg");
+        // Through the project, which writes into the loose-loading folder when the
+        // game has one: the package is then picked up without a restart.
+        var destination = project.GameFilePath($"data/asset/D3D11/{symbol}.pkg");
         project.CaptureOriginal(destination);
         // Use the same magic as the shipped package, not a hardcoded default
         var magic = shippedShaderPackage is not null
@@ -413,8 +414,9 @@ public static class MapModelPackage
         ArgumentNullException.ThrowIfNull(project);
         ArgumentNullException.ThrowIfNull(model);
 
-        var source = Path.Combine(
-            project.GameDirectory, "data", "asset", "D3D11", assetId + ".pkg");
+        // Read where the game would read it — the loose copy when there is one —
+        // and written back to where the project writes.
+        var source = project.ResolveExisting($"data/asset/D3D11/{assetId}.pkg");
         if (!File.Exists(source))
         {
             throw new FileNotFoundException($"There is no prop package called '{assetId}'.", source);

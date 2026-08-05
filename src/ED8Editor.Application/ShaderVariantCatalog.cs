@@ -40,12 +40,12 @@ public sealed record ShaderParameter(
     /// <summary>What kind of value it holds, said plainly.</summary>
     public string Kind => DataType switch
     {
-        0 => "flottant",
-        1 => "vecteur 2",
-        2 => "vecteur 3",
-        3 => "vecteur 4",
-        8 => "entier",
-        49 => "matrice",
+        0 => "float",
+        1 => "vector 2",
+        2 => "vector 3",
+        3 => "vector 4",
+        8 => "integer",
+        49 => "matrix",
         52 => "texture",
         _ => $"type {DataType}",
     };
@@ -83,12 +83,14 @@ public static class ShaderVariantCatalog
         Action<int, int>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(gameDirectory);
-        var assets = Path.Combine(gameDirectory, "data", "asset", "D3D11");
-        if (!Directory.Exists(assets)) return Array.Empty<ShaderVariant>();
+        // The loose folder first: a package there is the one the game loads, so its
+        // shaders are the ones a material would be pointed at.
+        var assets = GameContentDirectories.Assets(gameDirectory);
+        if (assets.Count == 0) return Array.Empty<ShaderVariant>();
 
         var reader = new PkgArchiveReader();
         var found = new Dictionary<string, ShaderVariant>(StringComparer.OrdinalIgnoreCase);
-        foreach (var package in Directory.EnumerateFiles(assets, "*.pkg"))
+        foreach (var package in GameContentDirectories.Files(assets, "*.pkg"))
         {
             IPackageArchive archive;
             try
