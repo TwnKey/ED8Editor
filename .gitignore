@@ -13,3 +13,4 @@ tmp-inspect/*
 *.obj
 *.zip
 publish/*
+publish-release.bat
