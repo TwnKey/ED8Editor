@@ -9,7 +9,23 @@ namespace ED8Editor.Decompiler;
 /// </summary>
 public sealed class ScriptEditorDocument : IDisposable
 {
+    /// <summary>How many edits can be taken back.</summary>
+    private const int UndoDepth = 10;
+
     private IntPtr document;
+
+    /// <summary>
+    /// The script as it was before each of the last few edits.
+    ///
+    /// Whole snapshots rather than a log of reversible operations. The edits are
+    /// made by the native engine, which offers no inverse for any of them — an undo
+    /// built by inverting each edit here would have to reimplement all of them
+    /// backwards and would be wrong in exactly the cases that matter, the ones that
+    /// move or renumber things. Serialising costs a few hundred kilobytes per step
+    /// and cannot be wrong: what comes back is the file that was there.
+    /// </summary>
+    private readonly List<byte[]> undoStack = new();
+    private readonly List<byte[]> redoStack = new();
 
     private ScriptEditorDocument(IntPtr document, string sourcePath)
     {
@@ -21,6 +37,77 @@ public sealed class ScriptEditorDocument : IDisposable
     public string? SavedPath { get; private set; }
     public bool IsDirty { get; private set; }
     public DecompiledScript Snapshot => ScriptDecompiler.Build(Handle);
+
+    public bool CanUndo => undoStack.Count > 0;
+    public bool CanRedo => redoStack.Count > 0;
+
+    /// <summary>
+    /// Records where the script stands, so the edit about to be made can be taken
+    /// back. Called before an edit, not after: what is wanted afterwards is the
+    /// state before.
+    /// </summary>
+    public void Checkpoint()
+    {
+        undoStack.Add(Serialize());
+        if (undoStack.Count > UndoDepth) undoStack.RemoveAt(0);
+        // A new edit is a new future: what was undone is no longer ahead.
+        redoStack.Clear();
+    }
+
+    /// <summary>Takes back the last edit. False when there is nothing to take back.</summary>
+    public bool Undo()
+    {
+        if (undoStack.Count == 0) return false;
+        var previous = undoStack[^1];
+        undoStack.RemoveAt(undoStack.Count - 1);
+        redoStack.Add(Serialize());
+        if (redoStack.Count > UndoDepth) redoStack.RemoveAt(0);
+        Restore(previous);
+        return true;
+    }
+
+    /// <summary>Puts back what the last undo took away.</summary>
+    public bool Redo()
+    {
+        if (redoStack.Count == 0) return false;
+        var next = redoStack[^1];
+        redoStack.RemoveAt(redoStack.Count - 1);
+        undoStack.Add(Serialize());
+        if (undoStack.Count > UndoDepth) undoStack.RemoveAt(0);
+        Restore(next);
+        return true;
+    }
+
+    /// <summary>The whole script as bytes, exactly as saving would write them.</summary>
+    private byte[] Serialize()
+    {
+        var pointer = NativeMethods.cs1i_serialize(Handle, out var length);
+        if (pointer == IntPtr.Zero || length <= 0)
+        {
+            throw new InvalidOperationException("The native engine could not serialize the script.");
+        }
+        var bytes = new byte[length];
+        Marshal.Copy(pointer, bytes, 0, length);
+        return bytes;
+    }
+
+    /// <summary>
+    /// Puts the script back to a recorded state by reopening it from those bytes.
+    /// The old handle is closed only once the new one exists, so a refusal leaves
+    /// the document as it was rather than without one.
+    /// </summary>
+    private void Restore(byte[] bytes)
+    {
+        var handle = NativeMethods.cs1i_open(bytes, bytes.Length, Path.GetFileName(SourcePath));
+        if (handle == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("The native engine could not reopen the script.");
+        }
+        var previous = document;
+        document = handle;
+        if (previous != IntPtr.Zero) NativeMethods.cs1i_close(previous);
+        IsDirty = true;
+    }
 
     public static ScriptEditorDocument Open(string path, string? instructionsJsonPath = null)
     {

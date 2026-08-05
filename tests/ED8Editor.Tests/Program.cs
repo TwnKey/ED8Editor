@@ -1058,6 +1058,9 @@ var tests = new (string Name, Action Run)[]
     ("keeps what a map was authored from, so it can be opened again", RemembersMapAuthoring),
     ("feeds a native shader's constants from their own names", FeedsNativeShaderConstants),
     ("writes a script condition the way a person reads one", WritesReadableConditions),
+    ("reads a condition into an editable tree and back", RoundTripsConditionTree),
+    ("reads joined and arithmetic conditions the builder shows", ReadsComposedConditions),
+    ("reads instruction presets, and survives a bad file", ReadsInstructionPresets),
 };
 
 var failures = 0;
@@ -2168,6 +2171,168 @@ static void WritesAuthoredModelFixups()
 /// brackets only where they change the meaning — and each side of a branch states
 /// the test it is actually taken under.
 /// </summary>
+/// <summary>
+/// A condition read into a tree and written back gives the same stack program, and
+/// one the tree cannot represent says so instead of being half-read.
+/// </summary>
+/// <summary>
+/// The shapes the condition builder has to show: a bare flag test, a comparison
+/// against a sum, and several tests joined — each read into a tree and written back
+/// as the same program.
+/// </summary>
+/// <summary>
+/// Presets are read from the file beside the instruction definitions, and a file
+/// that is missing or malformed costs the presets, not the editor.
+/// </summary>
+static void ReadsInstructionPresets()
+{
+    var directory = Path.Combine(Path.GetTempPath(), $"ed8-presets-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var definitions = Path.Combine(directory, "instructions.json");
+        File.WriteAllText(definitions, "[]");
+        var presets = Path.Combine(directory, ScriptInstructionPresets.FileName);
+
+        // Nothing beside the definitions: no presets, no complaint.
+        Equal(0, ScriptInstructionPresets.Load(definitions).Count);
+
+        File.WriteAllText(presets, """
+            [
+              {
+                "name": "Zoom, turn and scale",
+                "category": "Camera",
+                "description": "the three the camera is always given together",
+                "steps": [
+                  { "instruction": "CAM_SET_FOV", "values": { "0": "60" } },
+                  { "instruction": "CAM_SET_ANGLE" },
+                  { "instruction": "CAM_SET_SCALE" }
+                ]
+              },
+              { "name": "no steps", "category": "Broken", "steps": [] },
+              { "name": "", "category": "Broken", "steps": [ { "instruction": "X" } ] }
+            ]
+            """);
+
+        var read = ScriptInstructionPresets.Load(definitions);
+        // The two that could not be inserted are not offered: one has nothing to
+        // insert, the other cannot be picked.
+        Equal(1, read.Count);
+        Equal("Zoom, turn and scale", read[0].Name);
+        Equal("Camera", read[0].Category);
+        Equal(3, read[0].Steps.Count);
+        Equal("CAM_SET_FOV", read[0].Steps[0].Instruction);
+        Equal("60", read[0].Steps[0].Values!["0"]);
+        // A step with no values is a step that starts as the engine creates it.
+        Equal(true, read[0].Steps[1].Values is null);
+
+        // A file with a stray brace costs the presets and nothing else.
+        File.WriteAllText(presets, "[ { \"name\": ");
+        Equal(0, ScriptInstructionPresets.Load(definitions).Count);
+    }
+    finally
+    {
+        try { Directory.Delete(directory, true); } catch (IOException) { }
+    }
+}
+
+static void ReadsComposedConditions()
+{
+    static ExprElement Push(int value) => new(0x00, "push", $"push {value}", value, null);
+    static ExprElement Flag(int index) => new(0x1e, "flag", $"flag[{index}]", index, null);
+    static ExprElement Work(int index) => new(0x20, "work", $"work[{index}]", index, null);
+    static ExprElement Op(int subOp) => new(subOp, "op", "op", 0, null);
+    static ExprElement End() => new(0x01, "end", "end", 0, null);
+
+    static void SameProgram(ExprElement[] program)
+    {
+        var tree = ScriptExpressionTree.Parse(program)
+            ?? throw new InvalidOperationException("The condition did not read as a tree.");
+        var written = ScriptExpressionTree.Flatten(tree);
+        Equal(program.Length, written.Count);
+        for (var at = 0; at < program.Length; at++)
+        {
+            Equal(program[at].SubOp, written[at].SubOp);
+            Equal(program[at].Value, written[at].Value);
+        }
+    }
+
+    // A flag tested on its own: no operator at all, which is the commonest condition
+    // in these scripts and the one the old builder could not express.
+    var bare = new[] { Flag(4107), End() };
+    SameProgram(bare);
+    Equal("flag[4107] is set", ScriptExpressionText.Describe(bare, taken: true));
+
+    // Its opposite, as the engine writes it.
+    var cleared = new[] { Flag(4107), Op(0x08), End() };
+    SameProgram(cleared);
+    Equal("not flag[4107]", ScriptExpressionText.Format(cleared));
+
+    // Arithmetic inside an operand: one value that happens to be a sum.
+    var sum = new[] { Work(5), Push(2), Op(0x0c), Push(10), Op(0x05), End() };
+    SameProgram(sum);
+    Equal("work[5] + 2 > 10", ScriptExpressionText.Format(sum));
+    var sumTree = (ScriptExpressionNode.Binary)ScriptExpressionTree.Parse(sum)!;
+    Equal(0x05, sumTree.SubOp);
+    Equal(0x0c, ((ScriptExpressionNode.Binary)sumTree.Left).SubOp);
+
+    // Two tests joined, built left to right — which is how the builder unwinds them.
+    var joined = new[]
+    {
+        Flag(1), Work(5), Push(4), Op(0x02), Op(0x09), End(),
+    };
+    SameProgram(joined);
+    Equal("flag[1] and work[5] = 4", ScriptExpressionText.Format(joined));
+    var joinedTree = (ScriptExpressionNode.Binary)ScriptExpressionTree.Parse(joined)!;
+    Equal(0x09, joinedTree.SubOp);
+    Equal(ScriptOperandKind.Flag, ((ScriptExpressionNode.Operand)joinedTree.Left).Kind);
+    Equal(0x02, ((ScriptExpressionNode.Binary)joinedTree.Right).SubOp);
+
+    // Three of them, so the left-to-right unwinding is exercised past one step.
+    SameProgram(new[]
+    {
+        Flag(1), Work(5), Push(4), Op(0x02), Op(0x09), Flag(2), Op(0x09), End(),
+    });
+}
+
+static void RoundTripsConditionTree()
+{
+    static ExprElement Push(int value) => new(0x00, "push", $"push {value}", value, null);
+    static ExprElement Work(int index) => new(0x20, "work", $"work[{index}]", index, null);
+    static ExprElement Op(int subOp) => new(subOp, "op", "op", 0, null);
+    static ExprElement End() => new(0x01, "end", "end", 0, null);
+
+    var program = new[] { Work(5), Push(4), Op(0x02), End() };
+    var tree = ScriptExpressionTree.Parse(program)
+        ?? throw new InvalidOperationException("The condition did not read as a tree.");
+
+    // It is a test between an operand and a number, not a list of stack steps —
+    // which is the whole point: an editor over this cannot put an operator where a
+    // variable goes.
+    var comparison = (ScriptExpressionNode.Binary)tree;
+    Equal(0x02, comparison.SubOp);
+    Equal(ScriptOperandKind.Work, ((ScriptExpressionNode.Operand)comparison.Left).Kind);
+    Equal(5, ((ScriptExpressionNode.Operand)comparison.Left).Value);
+    Equal(ScriptOperandKind.Number, ((ScriptExpressionNode.Operand)comparison.Right).Kind);
+    Equal(4, ((ScriptExpressionNode.Operand)comparison.Right).Value);
+
+    var written = ScriptExpressionTree.Flatten(tree);
+    Equal(program.Length, written.Count);
+    for (var at = 0; at < program.Length; at++)
+    {
+        Equal(program[at].SubOp, written[at].SubOp);
+        Equal(program[at].Value, written[at].Value);
+    }
+    // And it still reads the same way to a person.
+    Equal("work[5] = 4", ScriptExpressionText.Format(written));
+
+    // A program that does not resolve to one value is refused rather than
+    // half-read: rewriting a condition nobody understood is how a scene breaks.
+    Equal(true, ScriptExpressionTree.Parse(new[] { Work(1), Op(0x02), End() }) is null);
+    Equal(true, ScriptExpressionTree.Parse(new[] { Work(1), Push(2), End() }) is null);
+    Equal(true, ScriptExpressionTree.Parse(Array.Empty<ExprElement>()) is null);
+}
+
 static void WritesReadableConditions()
 {
     static ExprElement Push(int value) => new(0x00, "push", $"push {value}", value, null);

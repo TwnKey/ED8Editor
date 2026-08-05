@@ -170,6 +170,9 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
 
     /// <summary>What was added last, offered again first: edits come in runs.</summary>
     private string? lastInsertedInstruction;
+
+    /// <summary>The canvas menu currently or most recently shown.</summary>
+    private ContextMenuStrip? flowMenu;
     private int? selectedInstructionIndex;
     private readonly SortedSet<int> selectedInstructionIndices = new();
     private bool suppressInstructionSelected;
@@ -497,6 +500,15 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
         });
         menu.Items.Add(fileMenu);
         var editMenu = new ToolStripMenuItem("Edit");
+        editMenu.DropDownItems.Add(new ToolStripMenuItem("Undo", null, (_, _) => Undo())
+        {
+            ShortcutKeys = Keys.Control | Keys.Z,
+        });
+        editMenu.DropDownItems.Add(new ToolStripMenuItem("Redo", null, (_, _) => Redo())
+        {
+            ShortcutKeys = Keys.Control | Keys.Y,
+        });
+        editMenu.DropDownItems.Add(new ToolStripSeparator());
         editMenu.DropDownItems.Add(new ToolStripMenuItem(
             "Copy selected blocks", null, (_, _) => CopySelectedInstructions())
         {
@@ -1274,7 +1286,13 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
             { Enabled = document is { InstructionClipboardCount: > 0 } });
         }
 
-        menu.Closed += (_, _) => menu.Dispose();
+        // Kept, not disposed on close. A ContextMenuStrip is still being used by
+        // WinForms after it raises Closed — the click that dismissed it is still
+        // being routed — so disposing it there pulls the object out from under the
+        // message that is closing it, and the window goes down. The previous menu is
+        // released when the next one replaces it, and the last one with the window.
+        flowMenu?.Dispose();
+        flowMenu = menu;
         menu.Show(blocks, context.Location);
     }
 
@@ -1371,7 +1389,10 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
             else
                 values.Add($"jump -> unresolved 0x{jump.TargetOffset:X}");
         }
-        return values.Count == 0 ? "No arguments" : string.Join("   |   ", values);
+        // A block with no operands says so by having no second line. Writing "No
+        // arguments" under the title spends a line of every RETURN in the scene to
+        // report an absence the empty space already reports.
+        return values.Count == 0 ? string.Empty : string.Join("   |   ", values);
     }
 
     /// <summary>Selection raised by the canvas, which knows indices, not models.</summary>
@@ -1576,6 +1597,14 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
                 Padding = new Padding(6),
             });
         }
+        // One palette for every field, applied once over the built dialog.
+        //
+        // The fields are made in a dozen places and each carried whatever colours it
+        // was given, so a text box could end up light-on-white or dark-on-dark
+        // depending on which branch had built it. Reading a value is the whole point
+        // of the dialog, and a value that cannot be read is worse than one that is
+        // not offered.
+        StyleFields(fields);
         editor.Controls.Add(fields);
         editor.FormClosed += (_, _) =>
         {
@@ -1583,6 +1612,35 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
         };
         activeInstructionEditor = editor;
         editor.Show(this);
+    }
+
+    /// <summary>Gives every editable field the same readable colours.</summary>
+    private static void StyleFields(Control root)
+    {
+        foreach (Control child in root.Controls)
+        {
+            switch (child)
+            {
+                case TextBoxBase or ComboBox or NumericUpDown or ListBox:
+                    child.BackColor = Color.FromArgb(24, 24, 28);
+                    child.ForeColor = Color.Gainsboro;
+                    break;
+                case CheckBox or RadioButton or Label:
+                    child.ForeColor = Color.Gainsboro;
+                    break;
+                case DataGridView grid:
+                    grid.BackgroundColor = Color.FromArgb(24, 24, 28);
+                    grid.DefaultCellStyle.BackColor = Color.FromArgb(24, 24, 28);
+                    grid.DefaultCellStyle.ForeColor = Color.Gainsboro;
+                    grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(72, 82, 101);
+                    grid.DefaultCellStyle.SelectionForeColor = Color.White;
+                    grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(45, 46, 52);
+                    grid.ColumnHeadersDefaultCellStyle.ForeColor = Color.Gainsboro;
+                    grid.EnableHeadersVisualStyles = false;
+                    break;
+            }
+            if (child.HasChildren) StyleFields(child);
+        }
     }
 
     private void SetSelectedInstructionToolsEnabled(int index, int instructionCount)
@@ -2000,17 +2058,40 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
                 if (jump.TargetInstructionIndex == -2 && selectedFunction.FunctionIndex == function.Index)
                     choices.Insert(0, new JumpChoice($"Raw address 0x{jump.TargetOffset:X} (unresolved)", int.MinValue));
                 target.DataSource = choices;
-                if (selectedFunction.FunctionIndex == jump.TargetFunctionIndex)
-                {
-                    target.SelectedItem = choices.FirstOrDefault(value =>
-                        value.InstructionIndex == jump.TargetInstructionIndex) ?? choices[0];
-                }
+                if (selectedFunction.FunctionIndex != jump.TargetFunctionIndex) return;
+                // Where this jump actually goes, selected. An unresolved jump has no
+                // instruction to point at, so it selects the entry that says so
+                // rather than falling to the top of the list and reading as though
+                // the jump were already aimed somewhere.
+                target.SelectedItem = choices.FirstOrDefault(value =>
+                        value.InstructionIndex == jump.TargetInstructionIndex)
+                    ?? choices.FirstOrDefault(value => value.InstructionIndex == int.MinValue)
+                    ?? choices[0];
             }
             targetFunction.SelectedIndexChanged += (_, _) => PopulateTargets();
-            targetFunction.SelectedItem = functionChoices.FirstOrDefault(value =>
-                value.FunctionIndex == jump.TargetFunctionIndex)
-                ?? functionChoices.First(value => value.FunctionIndex == function.Index);
-            PopulateTargets();
+
+            // The function this jump names, or a plain statement that it names none.
+            // Quietly falling back to the current function showed "func_0" and an
+            // empty target beside a jump that had a perfectly good one, and gave no
+            // way to tell that apart from a jump genuinely aimed at func_0.
+            var named = functionChoices.FirstOrDefault(value =>
+                value.FunctionIndex == jump.TargetFunctionIndex);
+            if (named is null)
+            {
+                row.Controls.Add(new Label
+                {
+                    AutoSize = true,
+                    ForeColor = Color.Goldenrod,
+                    Padding = new Padding(0, 6, 6, 0),
+                    Text = $"target function {jump.TargetFunctionIndex} is not in this file:",
+                });
+                named = functionChoices.First(value => value.FunctionIndex == function.Index);
+            }
+            // Assigning the selection raises the handler, which fills the targets.
+            // Calling it again afterwards rebuilt the list and lost what it had just
+            // chosen whenever the two disagreed.
+            targetFunction.SelectedItem = named;
+            if (targetFunction.SelectedItem is not FunctionChoice) PopulateTargets();
             var apply = new Button { AutoSize = true, Text = "Apply" };
             apply.Click += (_, _) =>
             {
@@ -2302,9 +2383,33 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
             }
             document!.ReplaceExpression(function.Index, instruction.Index, argument.Index, tokens);
         }, instruction.Index);
+        // The readable way in, beside the raw one. The grid stays: it can express
+        // anything the stack can, which the builder cannot yet, and taking it away
+        // before the builder covers those cases would leave those conditions with no
+        // way to be edited at all.
+        var build = new Button { AutoSize = true, Text = "Condition builder…" };
+        build.Click += (_, _) =>
+        {
+            using var builder = new ExpressionBuilderForm(argument.Expression);
+            if (builder.ShowDialog(this) != DialogResult.OK
+                || builder.Result is not { } written)
+            {
+                return;
+            }
+            RunEdit(
+                () => document!.ReplaceExpression(
+                    function.Index,
+                    instruction.Index,
+                    argument.Index,
+                    written
+                        .Select(value => new ScriptExpressionToken(value.SubOp, value.Value))
+                        .ToArray()),
+                instruction.Index);
+        };
         tools.Controls.Add(moveUp);
         tools.Controls.Add(moveDown);
         tools.Controls.Add(apply);
+        tools.Controls.Add(build);
         group.Controls.Add(grid);
         group.Controls.Add(tools);
         return group;
@@ -2377,8 +2482,62 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
         document!.SetInteger(selectedFunctionIndex, instruction, argument.Index, unchecked((int)integer));
     }
 
+    /// <summary>
+    /// Takes back the last edit and shows the script as it was.
+    ///
+    /// The state is restored whole, so what comes back is not an approximation of
+    /// the previous script but the previous script. Everything downstream — the
+    /// scene list, the canvas, the inspector — is rebuilt from it, as it is after
+    /// any other edit.
+    /// </summary>
+    private void Undo()
+    {
+        if (document is null) return;
+        try
+        {
+            if (!document.Undo())
+            {
+                statusLabel.Text = "Nothing to undo.";
+                return;
+            }
+            activeInstructionEditor?.Close();
+            RefreshDocument(selectedFunctionIndex, selectedInstructionIndex);
+            statusLabel.Text = "Undone.";
+        }
+        catch (InvalidOperationException failure)
+        {
+            statusLabel.Text = "Undo failed: " + failure.Message;
+        }
+    }
+
+    private void Redo()
+    {
+        if (document is null) return;
+        try
+        {
+            if (!document.Redo())
+            {
+                statusLabel.Text = "Nothing to redo.";
+                return;
+            }
+            activeInstructionEditor?.Close();
+            RefreshDocument(selectedFunctionIndex, selectedInstructionIndex);
+            statusLabel.Text = "Redone.";
+        }
+        catch (InvalidOperationException failure)
+        {
+            statusLabel.Text = "Redo failed: " + failure.Message;
+        }
+    }
+
     private bool RunEdit(Action edit, int? selectedInstruction)
     {
+        // Where the script stands before the edit, so it can be taken back. Every
+        // edit in this window goes through here, which is what makes ten steps of
+        // undo a property of the editor rather than of the few actions someone
+        // remembered to wire it into.
+        document?.Checkpoint();
+
         try
         {
             edit();
@@ -2631,15 +2790,86 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
             statusLabel.Text = "No instruction definitions are loaded, so none can be added.";
             return;
         }
-        using var picker = new InstructionPickerForm(names, lastInsertedInstruction);
-        if (picker.ShowDialog(this) != DialogResult.OK || picker.Chosen is not { } name) return;
+        using var picker = new InstructionPickerForm(
+            names,
+            lastInsertedInstruction,
+            ScriptInstructionPresets.Load(instructionDefinitionsPath));
+        if (picker.ShowDialog(this) != DialogResult.OK) return;
+        if (picker.ChosenPreset is { } preset)
+        {
+            InsertPreset(preset, position);
+            return;
+        }
+        if (picker.Chosen is not { } name) return;
         lastInsertedInstruction = name;
         var function = script!.Functions[selectedFunctionIndex];
         // "At the end" means the end of what actually runs: appending after the
         // closing RETURN would produce unreachable code, which the flow view then
         // stacks apart from the scene.
         var insertion = position ?? LastExecutableIndex(function);
-        RunEdit(() => document.InsertInstruction(selectedFunctionIndex, insertion, name), insertion);
+        if (!RunEdit(
+                () => document.InsertInstruction(selectedFunctionIndex, insertion, name),
+                insertion))
+        {
+            return;
+        }
+        // Straight into its operands. An instruction is inserted in order to be
+        // given values; making that a second, separate action meant every insertion
+        // was two gestures and a hunt for the block that had just appeared.
+        OpenInsertedInstruction(insertion);
+    }
+
+    /// <summary>
+    /// Inserts a whole run of instructions, in order, as one edit.
+    ///
+    /// One edit, so one step of undo: a preset that half-applied and had to be taken
+    /// back a command at a time would be worse than typing the commands out.
+    /// </summary>
+    private void InsertPreset(ScriptPreset preset, int? position)
+    {
+        if (document is null || script is null || selectedFunctionIndex < 0) return;
+        var function = script.Functions[selectedFunctionIndex];
+        var insertion = position ?? LastExecutableIndex(function);
+        var failed = new List<string>();
+        if (!RunEdit(
+                () =>
+                {
+                    var at = insertion;
+                    foreach (var step in preset.Steps)
+                    {
+                        try
+                        {
+                            document.InsertInstruction(selectedFunctionIndex, at, step.Instruction);
+                            at++;
+                        }
+                        catch (Exception exception) when (exception is ArgumentException
+                            or InvalidOperationException)
+                        {
+                            // A preset naming an instruction this build does not have
+                            // inserts the rest and says which one it skipped, rather
+                            // than losing the whole run to one stale name.
+                            failed.Add(step.Instruction);
+                        }
+                    }
+                },
+                insertion))
+        {
+            return;
+        }
+        statusLabel.Text = failed.Count == 0
+            ? $"Inserted '{preset.Name}' — {preset.Steps.Count} instruction(s)."
+            : $"Inserted '{preset.Name}' — {preset.Steps.Count - failed.Count} of"
+                + $" {preset.Steps.Count}; this build has no {string.Join(", ", failed)}.";
+        OpenInsertedInstruction(insertion);
+    }
+
+    /// <summary>Opens the editor on an instruction that has just been put in.</summary>
+    private void OpenInsertedInstruction(int insertion)
+    {
+        if (script is null || selectedFunctionIndex < 0) return;
+        var written = script.Functions[selectedFunctionIndex];
+        if (insertion < 0 || insertion >= written.Instructions.Count) return;
+        BeginInvoke(() => OpenInstructionEditor(written, written.Instructions[insertion]));
     }
 
     /// <summary>
@@ -2697,6 +2927,11 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
         var insertion = selected + 1;
         try
         {
+            // Pasting is the one edit that does not go through RunEdit — it has its
+            // own selection handling afterwards — so it has to record where the
+            // script stood itself. Without this it was the single action in the
+            // window that could not be taken back.
+            document.Checkpoint();
             var count = document.PasteInstructions(selectedFunctionIndex, insertion);
             RefreshDocument(selectedFunctionIndex, selectedInstruction: null);
             var pasted = Enumerable.Range(insertion, count).ToArray();

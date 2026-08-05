@@ -73,6 +73,17 @@ internal sealed class ScriptFlowPanel : Panel
     private Point? panOrigin;
     private Point panScrollOrigin;
 
+    /// <summary>
+    /// Where the right button went down, and how far it has been dragged since.
+    ///
+    /// The right button does two things, told apart by whether it moved: pressed and
+    /// released on the spot it asks for the menu, dragged it draws a box and takes
+    /// what the box covers. The left button is left alone for panning, which is what
+    /// it is for on a canvas this size.
+    /// </summary>
+    private Point? bandOrigin;
+    private Rectangle? band;
+
     public ScriptFlowPanel()
     {
         AutoScroll = true;
@@ -319,6 +330,33 @@ internal sealed class ScriptFlowPanel : Panel
         RecomputeActivePath();
     }
 
+    /// <summary>
+    /// Takes every block the box covers, the way a file manager does.
+    ///
+    /// Touching is enough — a box has to swallow a block whole otherwise, which on a
+    /// canvas of three-hundred-pixel blocks means drawing a box bigger than the
+    /// screen to select two of them.
+    /// </summary>
+    private void SelectWithin(Rectangle box)
+    {
+        var graphBox = new Rectangle(
+            box.Left - AutoScrollPosition.X,
+            box.Top - AutoScrollPosition.Y,
+            box.Width,
+            box.Height);
+        selectedInstructions.Clear();
+        foreach (var node in nodes.Values)
+        {
+            if (node.IsAnchor || !node.Bounds.IntersectsWith(graphBox)) continue;
+            selectedInstructions.Add(node.Instruction);
+        }
+        selectedInstruction = selectedInstructions.Count == 0
+            ? null
+            : selectedInstructions.Min();
+        InstructionSelectionChanged?.Invoke(
+            selectedInstructions.OrderBy(value => value).ToArray(), selectedInstruction);
+    }
+
     /// <summary>Says what the pointer was over, so a menu can offer what fits it.</summary>
     private void RaiseContext(Point location)
     {
@@ -468,6 +506,7 @@ internal sealed class ScriptFlowPanel : Panel
             using var marker = new Pen(Color.DeepSkyBlue, 4f);
             graphics.DrawLine(marker, marked.Left, y, marked.Right, y);
         }
+        DrawBand(graphics);
     }
 
     /// <summary>Graph coordinates to the coordinates GDI+ is handed.</summary>
@@ -491,14 +530,24 @@ internal sealed class ScriptFlowPanel : Panel
         return new Point(Math.Clamp(x, -limit, limit), Math.Clamp(y, -limit, limit));
     }
 
+    /// <summary>
+    /// How tall a block is: its title, and room for its operands when it has any.
+    ///
+    /// An instruction with nothing to show under its title is drawn as the title
+    /// alone. Reserving the body anyway gave every RETURN and every bare command a
+    /// panel of empty background, and a scene is mostly those.
+    /// </summary>
     private static int MeasureBlockHeight(FlowNode node)
-        => Math.Max(
+    {
+        if (node.Summary.Length == 0) return HeaderHeight;
+        return Math.Max(
             64,
             HeaderHeight + BlockPadding * 2 + TextRenderer.MeasureText(
                 node.Summary,
                 SummaryFont,
                 new Size(NodeWidth - BlockPadding * 2, int.MaxValue),
                 TextFormatFlags.WordBreak | TextFormatFlags.NoPadding).Height);
+    }
 
     private void DrawNode(Graphics graphics, FlowNode node)
     {
@@ -534,8 +583,13 @@ internal sealed class ScriptFlowPanel : Panel
             : selected ? NodeSelected
             : dimmed ? NodeDimmed
             : NodeNormal;
-        using (var fill = new SolidBrush(background))
+        // No body to fill when there is nothing to put in it: the coloured title is
+        // the whole block.
+        if (node.Summary.Length != 0)
+        {
+            using var fill = new SolidBrush(background);
             graphics.FillRectangle(fill, bounds);
+        }
         var headerColor = dimmed ? Blend(node.HeaderColor, NodeDimmed, 0.55f) : node.HeaderColor;
         using (var fill = new SolidBrush(headerColor))
             graphics.FillRectangle(fill, bounds.Left, bounds.Top, bounds.Width, HeaderHeight);
@@ -583,6 +637,16 @@ internal sealed class ScriptFlowPanel : Panel
         graphics.DrawLines(pen, path);
         DrawArrowHead(graphics, color, path[^2], path[^1], width);
         if (!dimmed && edge.Label.Length > 0) DrawEdgeLabel(graphics, edge, path, color);
+    }
+
+    /// <summary>The selection box, while it is being drawn.</summary>
+    private void DrawBand(Graphics graphics)
+    {
+        if (band is not { } box) return;
+        using var fill = new SolidBrush(Color.FromArgb(48, 90, 160, 230));
+        using var edge = new Pen(Color.FromArgb(200, 120, 190, 245), 1.4f);
+        graphics.FillRectangle(fill, box);
+        graphics.DrawRectangle(edge, box.X, box.Y, box.Width, box.Height);
     }
 
     /// <summary>The line an edge is drawn along, in canvas coordinates.</summary>
@@ -722,7 +786,9 @@ internal sealed class ScriptFlowPanel : Panel
         if (eventArgs.Button == MouseButtons.Right)
         {
             Focus();
-            RaiseContext(eventArgs.Location);
+            bandOrigin = eventArgs.Location;
+            band = null;
+            Capture = true;
             return;
         }
         if (eventArgs.Button != MouseButtons.Left) return;
@@ -807,6 +873,22 @@ internal sealed class ScriptFlowPanel : Panel
             }
             return;
         }
+        if (bandOrigin is { } start && eventArgs.Button == MouseButtons.Right)
+        {
+            var slack = SystemInformation.DragSize;
+            if (band is not null
+                || Math.Abs(eventArgs.X - start.X) >= Math.Max(2, slack.Width / 2)
+                || Math.Abs(eventArgs.Y - start.Y) >= Math.Max(2, slack.Height / 2))
+            {
+                band = Rectangle.FromLTRB(
+                    Math.Min(start.X, eventArgs.X),
+                    Math.Min(start.Y, eventArgs.Y),
+                    Math.Max(start.X, eventArgs.X),
+                    Math.Max(start.Y, eventArgs.Y));
+                Invalidate();
+            }
+            return;
+        }
         if (panOrigin is not { } origin || eventArgs.Button != MouseButtons.Left) return;
         AutoScrollPosition = new Point(
             Math.Max(0, panScrollOrigin.X - (eventArgs.X - origin.X)),
@@ -819,6 +901,17 @@ internal sealed class ScriptFlowPanel : Panel
         base.OnMouseUp(eventArgs);
         blockDragOrigin = null;
         blockDragInstruction = null;
+        if (eventArgs.Button == MouseButtons.Right && bandOrigin is { } pressed)
+        {
+            var drawn = band;
+            bandOrigin = null;
+            band = null;
+            Capture = false;
+            if (drawn is { } box) SelectWithin(box);
+            else RaiseContext(pressed);
+            Invalidate();
+            return;
+        }
         if (eventArgs.Button != MouseButtons.Left || panOrigin is null) return;
         panOrigin = null;
         Capture = false;
@@ -1405,13 +1498,19 @@ internal sealed class ScriptFlowPanel : Panel
         // in, so a track taken at an endpoint is taken for every edge touching it —
         // otherwise the two run down the same line out of the same block and only
         // part company further down.
-        var atEndpoint = new Dictionary<int, HashSet<int>>();
-        HashSet<int> Taken(int endpoint)
+        // Kept apart by which side of the block they use. An edge leaves by the
+        // bottom and arrives by the top, so an arrival and a departure have nothing
+        // to dispute — counting them together made a plain chain alternate between
+        // the middle of one block and the side of the next, for no reason a reader
+        // could see.
+        var leaving = new Dictionary<int, HashSet<int>>();
+        var landing = new Dictionary<int, HashSet<int>>();
+        static HashSet<int> At(Dictionary<int, HashSet<int>> map, int endpoint)
         {
-            if (!atEndpoint.TryGetValue(endpoint, out var lanes))
+            if (!map.TryGetValue(endpoint, out var lanes))
             {
                 lanes = new HashSet<int>();
-                atEndpoint.Add(endpoint, lanes);
+                map.Add(endpoint, lanes);
             }
             return lanes;
         }
@@ -1427,12 +1526,14 @@ internal sealed class ScriptFlowPanel : Panel
                          .ThenBy(edge => edge.To))
             {
                 var span = HorizontalSpan(edge);
-                var reserved = Taken(edge.From).Concat(Taken(edge.To)).ToHashSet();
+                var reserved = At(leaving, edge.From)
+                    .Concat(At(landing, edge.To))
+                    .ToHashSet();
                 var lane = FreeLane(span, placed, reserved);
                 edgeLanes[edge] = lane;
                 placed.Add((span, lane));
-                Taken(edge.From).Add(lane);
-                Taken(edge.To).Add(lane);
+                At(leaving, edge.From).Add(lane);
+                At(landing, edge.To).Add(lane);
             }
         }
     }

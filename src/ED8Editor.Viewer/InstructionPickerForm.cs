@@ -1,3 +1,5 @@
+using ED8Editor.Application;
+
 namespace ED8Editor.Viewer;
 
 /// <summary>
@@ -43,13 +45,31 @@ internal sealed class InstructionPickerForm : Form
     private readonly IReadOnlyList<string> all;
     private IReadOnlyList<string> shown = Array.Empty<string>();
 
+    private readonly ListBox presets = new()
+    {
+        Dock = DockStyle.Fill,
+        IntegralHeight = false,
+    };
+
+    private readonly IReadOnlyList<ScriptPreset> available;
+
     /// <summary>The instruction chosen, or null if the author backed out.</summary>
     public string? Chosen { get; private set; }
 
-    public InstructionPickerForm(IReadOnlyList<string> names, string? initial = null)
+    /// <summary>
+    /// The run of instructions chosen, when a preset was picked instead of a single
+    /// instruction. The two are exclusive: one of them is null.
+    /// </summary>
+    public ScriptPreset? ChosenPreset { get; private set; }
+
+    public InstructionPickerForm(
+        IReadOnlyList<string> names,
+        string? initial = null,
+        IReadOnlyList<ScriptPreset>? presets = null)
     {
         ArgumentNullException.ThrowIfNull(names);
         all = names;
+        available = presets ?? Array.Empty<ScriptPreset>();
 
         Text = "Add an instruction";
         Width = 820;
@@ -81,7 +101,42 @@ internal sealed class InstructionPickerForm : Form
         split.Panel2.Controls.Add(listGroup);
         WinFormsLayout.SetInitialSplitterDistance(split, 230);
 
-        Controls.Add(split);
+        // Runs of instructions that go together, when there are any. Inserting a
+        // camera move is three commands; asking for them one at a time is where the
+        // tedium is.
+        var pages = new TabControl { Dock = DockStyle.Fill };
+        var singleTab = new TabPage("One instruction") { Padding = new Padding(6) };
+        singleTab.Controls.Add(split);
+        pages.TabPages.Add(singleTab);
+        if (available.Count != 0)
+        {
+            var presetTab = new TabPage($"Presets ({available.Count})")
+            {
+                Padding = new Padding(6),
+            };
+            presetTab.Controls.Add(this.presets);
+            pages.TabPages.Add(presetTab);
+            foreach (var preset in available
+                         .OrderBy(value => value.Category, StringComparer.OrdinalIgnoreCase)
+                         .ThenBy(value => value.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                this.presets.Items.Add(preset);
+            }
+            this.presets.DisplayMember = string.Empty;
+            this.presets.Format += (_, eventArgs) =>
+            {
+                if (eventArgs.ListItem is not ScriptPreset one) return;
+                eventArgs.Value = $"{one.Category,-12} {one.Name}"
+                    + $"   ({one.Steps.Count} instruction(s))"
+                    + (string.IsNullOrWhiteSpace(one.Description)
+                        ? string.Empty
+                        : "   — " + one.Description);
+            };
+            this.presets.DoubleClick += (_, _) => Accept();
+            if (this.presets.Items.Count != 0) this.presets.SelectedIndex = 0;
+        }
+
+        Controls.Add(pages);
         Controls.Add(tools);
         Controls.Add(status);
         AcceptButton = ok;
@@ -142,8 +197,22 @@ internal sealed class InstructionPickerForm : Form
 
     private void Accept()
     {
-        if (list.SelectedItem is not string name) return;
-        Chosen = name;
+        // Whichever page is in front decides what is being inserted, so the two can
+        // never both be answered.
+        if (presets.Visible && presets.SelectedItem is ScriptPreset preset)
+        {
+            ChosenPreset = preset;
+            Chosen = null;
+        }
+        else if (list.SelectedItem is string name)
+        {
+            Chosen = name;
+            ChosenPreset = null;
+        }
+        else
+        {
+            return;
+        }
         DialogResult = DialogResult.OK;
         Close();
     }
