@@ -54,14 +54,6 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
         Dock = DockStyle.Fill,
         BackColor = Background,
     };
-    private readonly Label rightHeader = new()
-    {
-        Dock = DockStyle.Top,
-        Height = 30,
-        TextAlign = ContentAlignment.MiddleLeft,
-        Font = new Font("Segoe UI", 10f, FontStyle.Bold),
-        Padding = new Padding(8, 0, 0, 0),
-    };
     /// <summary>
     /// Conditions met along the active path: each line shows the condition read by the
     /// function and the branch taken. Double-click flips to the other branch (the path
@@ -75,11 +67,19 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
         ForeColor = Color.Gainsboro,
         Font = new Font("Consolas", 8.5f),
     };
-    private readonly GroupBox flagContextGroup = new()
+    /// <summary>
+    /// The conditions the active path runs under, with no heading over them.
+    ///
+    /// A list of conditions under a label reading "Active path conditions" spends a
+    /// line of a panel that is already short on them to say what the list already
+    /// shows. What the heading did carry — that double-clicking takes the other
+    /// branch — is on the list itself, where it is read at the moment it is useful.
+    /// </summary>
+    private readonly Panel flagContextGroup = new()
     {
         Dock = DockStyle.Bottom,
-        Height = 104,
-        Text = "Active path conditions (double-click = other branch)",
+        Height = 88,
+        Padding = new Padding(0, 4, 0, 0),
     };
     private readonly ToolStrip editorTools = new() { GripStyle = ToolStripGripStyle.Hidden };
     private readonly ToolStripButton playFunctionButton = new("▶ Play scene")
@@ -106,19 +106,25 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
         Width = 190,
         TextAlign = ContentAlignment.MiddleLeft,
     };
-    private readonly ToolStripComboBox instructionTypes = new()
+    /// <summary>
+    /// Which scene the canvas is showing, at the top where it is being looked at.
+    ///
+    /// The toolbar used to carry an opcode picker: a list of instruction names that
+    /// only mattered at the moment of adding one, sitting permanently above a canvas
+    /// whose most-asked question is "which function am I in". Adding an instruction
+    /// asks for its kind when it is asked for; this says where you are all the time.
+    /// </summary>
+    private readonly ToolStripComboBox functionSelector = new()
     {
-        AutoSize = false,
-        Width = 230,
-        DropDownStyle = ComboBoxStyle.DropDown,
-        AutoCompleteMode = AutoCompleteMode.SuggestAppend,
-        AutoCompleteSource = AutoCompleteSource.ListItems,
+        DropDownStyle = ComboBoxStyle.DropDownList,
+        Width = 260,
+        ToolTipText = "The scene being shown",
     };
+
     private readonly ToolStripButton addInstructionButton = new("Add at end");
     private readonly ToolStripButton addAfterButton = new("Insert after");
     private readonly ToolStripButton moveUpButton = new("Move up");
     private readonly ToolStripButton moveDownButton = new("Move down");
-    private readonly ToolStripButton deleteInstructionButton = new("Delete");
     private readonly ToolStripButton copyInstructionsButton = new("Copy")
     {
         ToolTipText = "Copy the selected instruction blocks (Ctrl+C)",
@@ -160,6 +166,10 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
     private ScriptEditorDocument? document;
     private DecompiledScript? script;
     private int selectedFunctionIndex = -1;
+    private bool syncingFunctionSelector;
+
+    /// <summary>What was added last, offered again first: edits come in runs.</summary>
+    private string? lastInsertedInstruction;
     private int? selectedInstructionIndex;
     private readonly SortedSet<int> selectedInstructionIndices = new();
     private bool suppressInstructionSelected;
@@ -200,6 +210,7 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
         blocks.InstructionSelectionChanged += SelectDrawnInstructions;
         blocks.InstructionActivated += index => ActivateDrawnInstruction(index);
         blocks.JumpEditRequested += (instruction, argument) => OpenJumpEditor(instruction, argument);
+        blocks.ContextRequested += ShowFlowMenu;
         Deactivate += (_, _) => ReleaseViewportKeys();
     }
 
@@ -498,14 +509,13 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
         });
         menu.Items.Add(editMenu);
 
-        editorTools.Items.Add(new ToolStripLabel("Instruction:"));
-        editorTools.Items.Add(instructionTypes);
-        editorTools.Items.Add(addInstructionButton);
+        editorTools.Items.Add(new ToolStripLabel("Scene:"));
+        editorTools.Items.Add(functionSelector);
         editorTools.Items.Add(new ToolStripSeparator());
+        editorTools.Items.Add(addInstructionButton);
         editorTools.Items.Add(addAfterButton);
         editorTools.Items.Add(moveUpButton);
         editorTools.Items.Add(moveDownButton);
-        editorTools.Items.Add(deleteInstructionButton);
         editorTools.Items.Add(copyInstructionsButton);
         editorTools.Items.Add(pasteInstructionsButton);
         editorTools.Items.Add(placeFieldMonsterButton);
@@ -534,13 +544,19 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
         {
             if (selectedInstructionIndex is { } index) MoveInstruction(index, index + 1);
         };
-        deleteInstructionButton.Click += (_, _) =>
-        {
-            RemoveSelectedInstructions();
-        };
         copyInstructionsButton.Click += (_, _) => CopySelectedInstructions();
         pasteInstructionsButton.Click += (_, _) => PasteInstructionsAfterSelection();
         placeFieldMonsterButton.Click += (_, _) => BeginFieldMonsterPlacement();
+        functionSelector.SelectedIndexChanged += (_, _) =>
+        {
+            if (syncingFunctionSelector) return;
+            if (functionSelector.SelectedIndex < 0
+                || functionSelector.SelectedIndex >= scenesList.Items.Count)
+            {
+                return;
+            }
+            scenesList.SelectedIndex = functionSelector.SelectedIndex;
+        };
         blockSearch.KeyDown += (_, eventArgs) =>
         {
             if (eventArgs.KeyCode != Keys.Enter) return;
@@ -603,7 +619,6 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
         rightPanel.Controls.Add(blocks);
         rightPanel.Controls.Add(flagContextGroup);
         rightPanel.Controls.Add(navigatorButton);
-        rightPanel.Controls.Add(rightHeader);
         navigationSplit.Panel2.Controls.Add(rightPanel);
 
         Controls.Add(navigationSplit);
@@ -710,7 +725,6 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
         document = loadedDocument;
         script = loadedScript;
         Text = $"CS1 Script Editor — {script.SceneName}";
-        PopulateInstructionTypes();
         RefreshDocument(selectedFunction: null, selectedInstruction: null);
     }
 
@@ -1051,13 +1065,6 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
         }
     }
 
-    private void PopulateInstructionTypes()
-    {
-        instructionTypes.Items.Clear();
-        foreach (var name in ScriptEditorDocument.GetInstructionNames(instructionDefinitionsPath)) instructionTypes.Items.Add(name);
-        if (instructionTypes.Items.Count > 0) instructionTypes.SelectedIndex = 0;
-    }
-
     private void RefreshDocument(int? selectedFunction, int? selectedInstruction)
     {
         if (document is null) return;
@@ -1093,11 +1100,24 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
             scenesList.Items.Add($"{function.Name}  ({function.Instructions.Count})");
         }
         scenesList.EndUpdate();
+        functionSelector.ComboBox!.BeginUpdate();
+        functionSelector.Items.Clear();
+        foreach (var function in codeFunctions)
+        {
+            functionSelector.Items.Add($"{function.Name}  ({function.Instructions.Count})");
+        }
+        functionSelector.ComboBox.EndUpdate();
         var listIndex = codeFunctions.FindIndex(function => function.Index == desiredFunction);
         if (listIndex < 0)
             listIndex = codeFunctions.FindIndex(function => function.Instructions.Any(instruction => instruction.Jumps.Count > 0));
         if (listIndex < 0 && codeFunctions.Count > 0) listIndex = 0;
         scenesList.SelectedIndex = listIndex;
+        if (listIndex >= 0 && listIndex < functionSelector.Items.Count)
+        {
+            syncingFunctionSelector = true;
+            functionSelector.SelectedIndex = listIndex;
+            syncingFunctionSelector = false;
+        }
         if (listIndex >= 0) ShowSelectedScene();
     }
 
@@ -1145,7 +1165,6 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
             blocks.ClearSelection();
             blocks.Controls.Clear();
             blockByIndex.Clear();
-            rightHeader.Text = $"Scene: {function.Name} — {function.Instructions.Count} instructions";
             var newBlocks = new List<ScriptFlowBlock>(function.Instructions.Count);
             foreach (var instruction in function.Instructions)
             {
@@ -1181,24 +1200,99 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
             $"#{ForkInstruction,-4} {(TakenTrue ? "TRUE " : "FALSE")} {Condition}";
     }
 
+    /// <summary>
+    /// The menu for whatever was right-clicked on the canvas.
+    ///
+    /// Built for the thing under the pointer rather than shown whole and greyed:
+    /// a block offers copy and delete, an arrow offers to put an instruction at the
+    /// step it stands for, and an empty function offers its first instruction —
+    /// which used to be impossible to add, since every path in went through
+    /// selecting a block that was not there.
+    /// </summary>
+    private void ShowFlowMenu(ScriptFlowPanel.FlowContext context)
+    {
+        if (script is null || selectedFunctionIndex < 0) return;
+        var function = script.Functions[selectedFunctionIndex];
+        var menu = new ContextMenuStrip();
+
+        if (context.Instruction is { } instruction)
+        {
+            var many = context.Selection.Count > 1;
+            menu.Items.Add(new ToolStripMenuItem(
+                many ? $"Copy {context.Selection.Count} blocks" : "Copy block",
+                null,
+                (_, _) => CopySelectedInstructions())
+            { ShortcutKeyDisplayString = "Ctrl+C" });
+            menu.Items.Add(new ToolStripMenuItem(
+                "Paste after this",
+                null,
+                (_, _) => PasteInstructionsAfterSelection())
+            {
+                ShortcutKeyDisplayString = "Ctrl+V",
+                Enabled = document is { InstructionClipboardCount: > 0 },
+            });
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(new ToolStripMenuItem(
+                "Insert before this…", null, (_, _) => InsertInstruction(instruction)));
+            menu.Items.Add(new ToolStripMenuItem(
+                "Insert after this…", null, (_, _) => InsertInstruction(instruction + 1)));
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(new ToolStripMenuItem(
+                many ? $"Delete {context.Selection.Count} blocks" : "Delete block",
+                null,
+                (_, _) => RemoveSelectedInstructions()));
+        }
+        else if (context.EdgeFrom is { } from)
+        {
+            // An arrow is the step between two instructions, so "here" is after the
+            // one it leaves — whether it stands for a jump or for plain succession.
+            var to = context.EdgeTo;
+            var where = to is { } target && target > from ? target : from + 1;
+            menu.Items.Add(new ToolStripMenuItem(
+                to is { } named
+                    ? $"Insert an instruction here (between {from} and {named})…"
+                    : "Insert an instruction here…",
+                null,
+                (_, _) => InsertInstruction(Math.Max(0, where))));
+        }
+        else if (function.Instructions.Count == 0
+            || function.Instructions.All(value => value.Opcode is 0 or 1))
+        {
+            menu.Items.Add(new ToolStripMenuItem(
+                "Add the first instruction…", null, (_, _) => InsertInstruction(position: null)));
+        }
+        else
+        {
+            menu.Items.Add(new ToolStripMenuItem(
+                "Add an instruction at the end…",
+                null,
+                (_, _) => InsertInstruction(position: null)));
+            menu.Items.Add(new ToolStripMenuItem(
+                "Paste at the end",
+                null,
+                (_, _) => PasteInstructionsAfterSelection())
+            { Enabled = document is { InstructionClipboardCount: > 0 } });
+        }
+
+        menu.Closed += (_, _) => menu.Dispose();
+        menu.Show(blocks, context.Location);
+    }
+
     private void RefreshFlagContext(IReadOnlyList<ScriptFlowPanel.BranchDecision> decisions)
     {
         flagContextList.BeginUpdate();
         flagContextList.Items.Clear();
         foreach (var decision in decisions)
         {
-            // the label already reads "TRUE · <condition>": keep only the condition
+            // The edge already carries the condition that side is taken under,
+            // written out as words: "if flag[256] is set", "if work[5] != 4".
             var condition = decision.Label;
-            var separator = condition.IndexOf('·');
-            if (separator >= 0) condition = condition[(separator + 1)..].Trim();
+            if (condition.StartsWith("if ", StringComparison.Ordinal)) condition = condition[3..];
             flagContextList.Items.Add(new FlagContextEntry(
                 decision.ForkInstruction, decision.TakenTrue,
                 condition.Length == 0 ? "condition" : condition));
         }
         flagContextList.EndUpdate();
-        flagContextGroup.Text = decisions.Count == 0
-            ? "Active path conditions — none (linear flow)"
-            : $"Active path conditions — {decisions.Count} (double-click = other branch)";
     }
 
     private void FindNextBlock()
@@ -1498,7 +1592,6 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
         moveUpButton.Enabled = selectedInstructionIndices.Count == 1 && selected && index > 0;
         moveDownButton.Enabled = selectedInstructionIndices.Count == 1
             && selected && index + 1 < instructionCount;
-        deleteInstructionButton.Enabled = selected;
         copyInstructionsButton.Enabled = selectedInstructionIndices.Count > 0;
         pasteInstructionsButton.Enabled = selected
             && document is { InstructionClipboardCount: > 0 };
@@ -2521,11 +2614,26 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
             .ToArray();
     }
 
+    /// <summary>
+    /// Puts a new instruction in, asking which one at the moment it is asked for.
+    ///
+    /// The kind used to come from a drop-down in the toolbar, which meant choosing
+    /// it long before deciding where it went and scrolling a few hundred names to
+    /// do so. It is a searchable, grouped list now, and it opens where the
+    /// instruction is going rather than above the whole canvas.
+    /// </summary>
     private void InsertInstruction(int? position)
     {
         if (document is null || selectedFunctionIndex < 0) return;
-        var name = instructionTypes.Text.Trim();
-        if (name.Length == 0) return;
+        var names = ScriptEditorDocument.GetInstructionNames(instructionDefinitionsPath);
+        if (names.Count == 0)
+        {
+            statusLabel.Text = "No instruction definitions are loaded, so none can be added.";
+            return;
+        }
+        using var picker = new InstructionPickerForm(names, lastInsertedInstruction);
+        if (picker.ShowDialog(this) != DialogResult.OK || picker.Chosen is not { } name) return;
+        lastInsertedInstruction = name;
         var function = script!.Functions[selectedFunctionIndex];
         // "At the end" means the end of what actually runs: appending after the
         // closing RETURN would produce unreachable code, which the flow view then
@@ -2659,11 +2767,11 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
         blocks.SuspendLayout();
         blocks.Controls.Clear();
         blockByIndex.Clear();
-        rightHeader.Text = $"Table: {function.Name} — {table.Kind}" +
+        statusLabel.Text = $"Table: {function.Name} — {table.Kind}" +
             (table.IsStale ? "  (stale/malformed)" : string.Empty);
         if (CreateMonstersTableReader.TryRead(table, out var monsters) && monsters is not null)
         {
-            rightHeader.Text += $" — map {monsters.MapAsset}, {monsters.Encounters.Count} encounters";
+            statusLabel.Text += $" — map {monsters.MapAsset}, {monsters.Encounters.Count} encounters";
             var monsterGrid = new DataGridView
             {
                 Width = Math.Max(400, blocks.ClientSize.Width - 40),
@@ -2742,7 +2850,6 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
 
     private void SetInstructionToolsEnabled(bool enabled)
     {
-        instructionTypes.Enabled = enabled;
         addInstructionButton.Enabled = enabled;
         placeFieldMonsterButton.Enabled = enabled
             && script is not null
@@ -3196,8 +3303,7 @@ public sealed class ScriptEditorForm : Form, IProjectDocumentEditor
         Control? focused = ActiveControl;
         while (focused is ContainerControl container && container.ActiveControl is not null)
             focused = container.ActiveControl;
-        return instructionTypes.ComboBox.ContainsFocus
-            || focused is TextBoxBase or ComboBox or DataGridView;
+        return focused is TextBoxBase or ComboBox or DataGridView;
     }
 
     private static bool IsPotentialViewportKey(Keys key) => key is Keys.Z or Keys.W

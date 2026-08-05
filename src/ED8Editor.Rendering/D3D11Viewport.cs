@@ -1042,11 +1042,32 @@ public sealed class D3D11Viewport : IDisposable
         var positionAttribute = positionBuffer.Attributes.First(value => value.Semantic == VertexSemantic.Position);
         if (!TryMapFormat(positionAttribute.SourceFormat, out var positionFormat)) return;
 
+        var material = primitive.MaterialIndex >= 0 && primitive.MaterialIndex < model.Materials.Count
+            ? model.Materials[primitive.MaterialIndex]
+            : null;
+        var context = graphics.Context;
+
+        // Which way the triangles face and how they blend belongs to the material,
+        // and it has to be set before anything is drawn with it — including with the
+        // asset's own shader. Setting it afterwards left the native path drawing
+        // under whatever the previous draw happened to leave behind: a ground plane
+        // culled the wrong way is invisible, and a surface blended as though it were
+        // an effect is a slab of colour that changes with the order things are drawn
+        // in, which is to say with the angle of the camera.
+        context.OMSetBlendState(
+            material?.Source.RenderPassState is { } passState ? GetBlendState(passState) : null,
+            new Color4(0f, 0f, 0f, 0f),
+            uint.MaxValue);
+        context.RSSetState(material?.Source.RenderPassState?.RasterizerState is { } rasterizerState
+            ? GetRasterizerState(rasterizerState)
+            : rasterizer);
+
         // What the asset itself says it is drawn with, first. The viewport's own
         // shaders remain as the answer for anything that cannot be: a mesh missing a
         // stream the program reads, a permutation nothing selects. Which is which is
         // in NativeShaderRefusals rather than invisible.
-        if (DrawWithOwnShader(model, primitive, world, topology, materialDiffuse, materialEmission))
+        if (DrawWithOwnShader(
+                model, primitive, world, topology, materialDiffuse, materialEmission, selected))
         {
             return;
         }
@@ -1066,9 +1087,6 @@ public sealed class D3D11Viewport : IDisposable
         var normalFormat = Format.Unknown;
         var hasNormal = normalBuffer is not null && normalAttribute is not null
             && TryMapFormat(normalAttribute.SourceFormat, out normalFormat);
-        var material = primitive.MaterialIndex >= 0 && primitive.MaterialIndex < model.Materials.Count
-            ? model.Materials[primitive.MaterialIndex]
-            : null;
         D3D11MaterialTextureOverride? textureOverride = null;
         if (material is not null
             && TryReadGameMaterialId(material.Source, out var gameMaterialId))
@@ -1120,14 +1138,6 @@ public sealed class D3D11Viewport : IDisposable
             worldViewProjection, normalMatrix, material, hasNormal, selected, preview,
             materialDiffuse, materialEmission, facialMultiUvOverride);
 
-        var context = graphics.Context;
-        context.OMSetBlendState(
-            material?.Source.RenderPassState is { } passState ? GetBlendState(passState) : null,
-            new Color4(0f, 0f, 0f, 0f),
-            uint.MaxValue);
-        context.RSSetState(material?.Source.RenderPassState?.RasterizerState is { } rasterizerState
-            ? GetRasterizerState(rasterizerState)
-            : rasterizer);
         context.PSSetShaderResource(1, hasMultiUv ? multiUvTextureView! : null!);
         if (skinned)
         {
@@ -1274,7 +1284,8 @@ public sealed class D3D11Viewport : IDisposable
         Matrix4x4 world,
         Vortice.Direct3D.PrimitiveTopology topology,
         Vector4 materialDiffuse,
-        Vector3 materialEmission)
+        Vector3 materialEmission,
+        bool selected)
     {
         if (primitive.MaterialIndex < 0 || primitive.MaterialIndex >= model.Materials.Count)
         {
@@ -1282,6 +1293,24 @@ public sealed class D3D11Viewport : IDisposable
         }
         var material = model.Materials[primitive.MaterialIndex];
         if (material.Source.EffectProgram is null) return false;
+
+        // Selection is shown by tinting, and the tint lives in the viewport's own
+        // shaders — the asset's shader knows nothing about being picked. Drawing a
+        // selected block natively left clicking an object with no visible effect at
+        // all, which reads as "selection is broken".
+        if (selected) return false;
+
+        // A skinned mesh follows its skeleton through a bone palette this path does
+        // not fill. Drawn with the asset's own program and no palette, every vertex
+        // is transformed by a zero matrix and the mesh becomes a sheet across the
+        // scene. The viewport's own skinned shaders draw it correctly, so it is
+        // handed back to them rather than drawn wrongly with the right shader.
+        if (primitive.SkinBones is { Count: > 0 })
+        {
+            nativeRefusals[material.Source.Name] =
+                "it is skinned, and the bone palette is not supplied on this path";
+            return false;
+        }
 
         // One program per material and per stream layout: the same material on two
         // meshes laid out differently needs two input layouts, and nothing else
@@ -1304,7 +1333,10 @@ public sealed class D3D11Viewport : IDisposable
                 return false;
             }
             effect = D3D11NativeEffect.Create(
-                graphics.Device, permutation, (semantic, index) => Stream(primitive, semantic, index),
+                graphics.Device,
+                permutation,
+                (semantic, index) => Stream(primitive, semantic, index),
+                material.Source,
                 out var reason);
             if (effect is null)
             {
@@ -1337,7 +1369,8 @@ public sealed class D3D11Viewport : IDisposable
                 lighting.AmbientColor.Z, 1f),
             (float)(DateTime.UtcNow.TimeOfDay.TotalSeconds % 1000.0),
             materialDiffuse == default ? Vector4.One : materialDiffuse,
-            materialEmission);
+            materialEmission,
+            new Vector2(width, height));
 
         var context = graphics.Context;
         effect.Bind(
@@ -1367,6 +1400,14 @@ public sealed class D3D11Viewport : IDisposable
             primitive.IndexElementSize == 2 ? Format.R16_UInt : Format.R32_UInt,
             0);
         context.DrawIndexed(primitive.IndexCount, 0, 0);
+
+        // Give the viewport its own constants back. They are bound once per frame,
+        // not once per draw, so a native draw that put its own buffer in slot 0 left
+        // every later draw of that frame reading the wrong constants — matrices and
+        // all — which shows up as surfaces that come and go with the order things
+        // happen to be drawn in.
+        context.VSSetConstantBuffer(0, perDrawBuffer);
+        context.PSSetConstantBuffer(0, perDrawBuffer);
         nativeDraws++;
         return true;
     }

@@ -18,10 +18,16 @@ public sealed record D3D11ShaderSignatureParameter(
     RegisterComponentType ComponentType,
     RegisterComponentMaskFlags UsageMask);
 
+/// <param name="Used">
+/// Whether the stage actually reads it. A vertex and a pixel program can share one
+/// constant buffer, so its variable list is not the list of what either of them
+/// looks at.
+/// </param>
 public sealed record D3D11ShaderVariable(
     string Name,
     int Offset,
-    int Size);
+    int Size,
+    bool Used = true);
 
 public sealed record D3D11ShaderConstantBuffer(
     string Name,
@@ -86,7 +92,8 @@ public sealed class D3D11ShaderProgramInspector
                         return new D3D11ShaderVariable(
                             variableDescription.Name,
                             variableDescription.StartOffset,
-                            variableDescription.Size);
+                            variableDescription.Size,
+                            variableDescription.Flags.HasFlag(ShaderVariableFlags.Used));
                     }).ToArray());
             })
             .ToArray();

@@ -25,7 +25,17 @@ public sealed record D3D11EffectFrame(
     Vector4 AmbientColor,
     float Time,
     Vector4 MaterialDiffuse = default,
-    Vector3 MaterialEmission = default);
+    Vector3 MaterialEmission = default,
+    Vector2 ViewportSize = default)
+{
+    /// <summary>The near plane the projection was built with.</summary>
+    public float NearPlane => Projection.M33 == 0f ? 0.1f : -Projection.M43 / Projection.M33;
+
+    /// <summary>The far plane the projection was built with.</summary>
+    public float FarPlane => Projection.M33 is 0f or 1f
+        ? 1000f
+        : Projection.M33 * NearPlane / (Projection.M33 - 1f);
+}
 
 /// <summary>
 /// One of the game's own compiled shaders, ready to draw with.
@@ -102,10 +112,17 @@ public sealed class D3D11NativeEffect : IDisposable
     /// offset and format. A program asking for a stream the mesh has not got cannot
     /// be used on it, and that is a fact about the pair rather than about either.
     /// </param>
+    /// <param name="material">
+    /// What the thing being drawn supplies. Needed here rather than only at draw
+    /// time: a vertex program reading a constant nobody fills is a program that
+    /// computes positions from nothing, and that has to be known before it is used
+    /// rather than seen afterwards.
+    /// </param>
     public static D3D11NativeEffect? Create(
         ID3D11Device device,
         CpuShaderPermutation permutation,
         Func<VertexSemantic, int, (int Slot, int Offset, Format Format)?> streamOf,
+        CpuMaterial? material,
         out string? reason)
     {
         ArgumentNullException.ThrowIfNull(device);
@@ -167,6 +184,34 @@ public sealed class D3D11NativeEffect : IDisposable
                 permutation.FragmentProgram, D3D11ShaderStage.Fragment);
             var vertexGlobals = Globals(vertexProgram);
             var pixelGlobals = Globals(pixelProgram);
+
+            // A vertex program that reads a constant nothing supplies computes its
+            // positions partly from zero. Sometimes that is harmless; when the zero
+            // is a plane distance, a screen size or a vector about to be normalised,
+            // the result is a NaN, and a vertex at NaN is drawn at infinity — the
+            // sheets of colour stretching across the scene, changing shade with the
+            // camera because their attributes are interpolated across a triangle
+            // that reaches past the horizon.
+            //
+            // Only what the program actually reads counts: the two stages share one
+            // constant buffer here, so half of it belongs to the pixel shader, where
+            // a missing value costs a wrong colour rather than a wrong position.
+            var starved = vertexGlobals is null
+                ? Array.Empty<string>()
+                : vertexGlobals.Variables
+                    .Where(value => value.Used)
+                    .Where(value => !Supplied(value.Name, material))
+                    .Select(value => value.Name)
+                    .ToArray();
+            if (starved.Length != 0)
+            {
+                layout.Dispose();
+                pixel.Dispose();
+                vertex.Dispose();
+                reason = "its vertex program reads " + string.Join(", ", starved)
+                    + ", which nothing supplies";
+                return null;
+            }
 
             return new D3D11NativeEffect(
                 vertex,
@@ -350,6 +395,33 @@ public sealed class D3D11NativeEffect : IDisposable
                     frame.MaterialEmission.Z, 0f,
                 };
 
+            // The camera's planes and the size of what is being drawn into.
+            //
+            // Their component order is NOT established — nothing read from the game
+            // says which slot holds what. What IS established is that zero is wrong:
+            // a shader dividing by a plane distance or by a viewport width gets a
+            // NaN from it, and a vertex whose position is NaN is drawn at infinity.
+            // That is the sheet of geometry stretching across the scene, and it is a
+            // worse answer than an order that may need correcting.
+            case "scene_cameraNearFarParameters":
+                var near = frame.NearPlane;
+                var far = frame.FarPlane;
+                var depth = MathF.Max(0.0001f, far - near);
+                return new[] { near, far, depth, 1f / depth };
+            case "scene_viewportSizeParameters":
+                var width = frame.ViewportSize.X <= 0f ? 1f : frame.ViewportSize.X;
+                var height = frame.ViewportSize.Y <= 0f ? 1f : frame.ViewportSize.Y;
+                return new[] { width, height, 1f / width, 1f / height };
+
+            // The fog's range. Same caveat as the camera planes: the component order
+            // is not established, and zero is. A range of zero is a division by the
+            // distance between two identical distances, which is where the vertex
+            // programs of the map shaders get their NaN. The distances here put the
+            // fog far enough away to have no effect, which is the neutral answer for
+            // an editor that is not trying to reproduce weather.
+            case "scene_FogRangeParameters":
+                return new[] { 100000f, 200000f, 100000f, 1f / 100000f };
+
             // Scene-wide factors nothing else supplies. Their value is not read from
             // the game — but zero is provably not it: a factor that scales a term
             // erases it, and these two scale the main light and the texture
@@ -451,6 +523,21 @@ public sealed class D3D11NativeEffect : IDisposable
             ? Vector3.Normalize(Vector3.TransformNormal(value, inverse))
             : Vector3.Transform(value, inverse);
         return new[] { moved.X, moved.Y, moved.Z, w };
+    }
+
+    /// <summary>Whether anything at all fills a constant of this name.</summary>
+    private static bool Supplied(string name, CpuMaterial? material)
+    {
+        if (material?.SourceParameters.ContainsKey(name) == true) return true;
+        if (material?.SourceIntParameters?.ContainsKey(name) == true) return true;
+        if (name is "PhyreContextSwitches" or "PhyreMaterialSwitches") return true;
+        // Measured against a frame, since what the engine feeds depends only on the
+        // name and not on the values in it.
+        return EngineValue(
+            name,
+            new D3D11EffectFrame(
+                Matrix4x4.Identity, Matrix4x4.Identity, Matrix4x4.Identity,
+                Vector3.Zero, Vector3.UnitY, Vector4.One, Vector4.One, 0f)) is not null;
     }
 
     private static float[] Direction(Vector3 from)

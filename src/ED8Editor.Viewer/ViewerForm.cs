@@ -95,7 +95,7 @@ public sealed class ViewerForm : Form
         AutoSize = true,
         AutoSizeMode = AutoSizeMode.GrowAndShrink,
         ColumnCount = 1,
-        RowCount = 3,
+        RowCount = 2,
         Margin = Padding.Empty,
         Padding = Padding.Empty,
     };
@@ -487,7 +487,14 @@ public sealed class ViewerForm : Form
         assetPanel.Controls.Add(rightPanelTabs);
         BuildMainMenu();
         openFileTabs.SelectedIndexChanged += (_, _) => SelectOpenFileTab();
+        // Docking order is the reverse of this list, so what is added later claims
+        // its edge first. The gizmo bar belongs to the viewport and is added before
+        // the side panels: they run the full height of the window and the bar sits
+        // over the viewport alone, rather than stretching across the top of
+        // everything and taking a strip of height from panels that have no use for
+        // camera controls.
         Controls.Add(viewportHost);
+        Controls.Add(gizmoToolStrip);
         Controls.Add(assetPanelSplitter);
         Controls.Add(assetPanel);
         Controls.Add(scenePanel);
@@ -516,13 +523,11 @@ public sealed class ViewerForm : Form
         topChrome.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         topChrome.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         topChrome.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        topChrome.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         mainMenu.Dock = DockStyle.Fill;
         openFileTabs.Dock = DockStyle.Fill;
-        gizmoToolStrip.Dock = DockStyle.Fill;
+        gizmoToolStrip.Dock = DockStyle.Top;
         topChrome.Controls.Add(mainMenu, 0, 0);
         topChrome.Controls.Add(openFileTabs, 0, 1);
-        topChrome.Controls.Add(gizmoToolStrip, 0, 2);
         Controls.Add(topChrome);
         MainMenuStrip = mainMenu;
         translateToolButton.Click += (_, _) => SetGizmoMode(GizmoMode.Translate);

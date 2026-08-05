@@ -60,6 +60,13 @@ internal sealed class ScriptFlowPanel : Panel
     private DecompiledFunction? currentFunction;
     private IReadOnlyList<GraphEdge> edges = Array.Empty<GraphEdge>();
     private readonly Dictionary<GraphEdge, int> edgeLanes = new();
+
+    /// <summary>Edges routed down the right-hand margin, and which channel each has.</summary>
+    private readonly Dictionary<GraphEdge, int> sideLanes = new();
+
+    /// <summary>Which arrival a margin-routed edge is, among those reaching its target.</summary>
+    private readonly Dictionary<GraphEdge, int> sideArrivals = new();
+    private int sideLaneCount;
     private int? selectedInstruction;
     private GraphEdge? selectedEdge;
     private DropTarget? dropTarget;
@@ -98,6 +105,9 @@ internal sealed class ScriptFlowPanel : Panel
     public event Action<int, int>? MoveRequested;
 
     public event Action<int, int>? JumpEditRequested;
+
+    /// <summary>The canvas was right-clicked, and what was under the pointer.</summary>
+    public event Action<FlowContext>? ContextRequested;
 
     /// <summary>The active path changed: branch points and the branch taken at each.</summary>
     public event Action<IReadOnlyList<BranchDecision>>? ActivePathChanged;
@@ -148,6 +158,7 @@ internal sealed class ScriptFlowPanel : Panel
         selectedEdge = null;
         LayoutGraph(function);
         AssignEdgeLanes();
+        WidenForChannels();
         RecomputeActivePath();
         Invalidate();
     }
@@ -289,6 +300,56 @@ internal sealed class ScriptFlowPanel : Panel
             branchChoice[edge.From] = edge.To;
         RecomputeActivePath();
         Invalidate();
+    }
+
+    /// <summary>
+    /// Reroutes the active path so that it reaches this instruction.
+    ///
+    /// Every branch point on the way is set to the side that leads here; the ones
+    /// past it keep whatever they were, so choosing a block deep in one branch does
+    /// not silently rearrange the rest of the function.
+    /// </summary>
+    private void RouteThroughNode(int instruction)
+    {
+        var successors = BuildSuccessorMap();
+        var route = new List<(int Fork, int Successor)>();
+        var entry = nodes.ContainsKey(StartKey) ? StartKey : 0;
+        if (!TryFindRoute(entry, instruction, successors, new HashSet<int>(), route)) return;
+        foreach (var step in route) branchChoice[step.Fork] = step.Successor;
+        RecomputeActivePath();
+    }
+
+    /// <summary>Says what the pointer was over, so a menu can offer what fits it.</summary>
+    private void RaiseContext(Point location)
+    {
+        if (ContextRequested is null) return;
+        var node = HitTestNode(location);
+        var edge = node is null ? HitTestEdge(GraphPoint(location)) : null;
+        if (node is { IsAnchor: false })
+        {
+            selectedEdge = null;
+            if (!selectedInstructions.Contains(node.Instruction))
+            {
+                selectedInstructions.Clear();
+                selectedInstructions.Add(node.Instruction);
+                selectedInstruction = node.Instruction;
+                InstructionSelectionChanged?.Invoke(
+                    selectedInstructions.OrderBy(value => value).ToArray(), selectedInstruction);
+            }
+            Invalidate();
+        }
+        else if (edge is not null)
+        {
+            selectedEdge = edge;
+            Invalidate();
+        }
+
+        ContextRequested.Invoke(new FlowContext(
+            location,
+            node is { IsAnchor: false } ? node.Instruction : null,
+            edge?.From,
+            edge?.To,
+            selectedInstructions.OrderBy(value => value).ToArray()));
     }
 
     private static bool TryFindRoute(
@@ -518,44 +579,96 @@ internal sealed class ScriptFlowPanel : Panel
         var width = isSelected ? 5f : edge.Kind == EdgeKind.Sequential ? 2.6f : 3.6f;
         using var pen = new Pen(color, width) { StartCap = LineCap.Round, EndCap = LineCap.Round };
         if (edge.Kind == EdgeKind.Unconditional) pen.DashStyle = DashStyle.Dash;
-        var path = Array.ConvertAll(
-            GetEdgePath(source, target, edgeLanes.GetValueOrDefault(edge)), ToView);
+        var path = Array.ConvertAll(GetEdgePath(edge), ToView);
         graphics.DrawLines(pen, path);
         DrawArrowHead(graphics, color, path[^2], path[^1], width);
         if (!dimmed && edge.Label.Length > 0) DrawEdgeLabel(graphics, edge, path, color);
     }
 
-    private static Point[] GetEdgePath(FlowNode source, FlowNode target, int lane = 0)
+    /// <summary>The line an edge is drawn along, in canvas coordinates.</summary>
+    private Point[] GetEdgePath(GraphEdge edge)
+    {
+        var source = nodes[edge.From];
+        var target = nodes[edge.To];
+        if (sideLanes.TryGetValue(edge, out var channel))
+        {
+            return SidePath(source, target, channel, sideArrivals.GetValueOrDefault(edge));
+        }
+        return StraightPath(source, target, edgeLanes.GetValueOrDefault(edge));
+    }
+
+    private static Point[] StraightPath(FlowNode source, FlowNode target, int lane)
     {
         // Fan the departures and the arrivals across the width of a block so two
         // edges leaving or reaching the same block stay distinguishable.
-        var spread = Math.Min(Grid, source.Width / 6);
+        var spread = Math.Max(Grid, Math.Min(Grid * 2, source.Width / 8));
         var sourceCenter = source.Left + source.Width / 2 + LaneOffset(lane) * spread;
         var targetCenter = target.Left + target.Width / 2 + LaneOffset(lane) * spread;
-        if (target.Top >= source.Bottom)
+        if (Math.Abs(sourceCenter - targetCenter) <= Grid / 2)
         {
-            if (Math.Abs(sourceCenter - targetCenter) <= Grid)
-                return new[] { new Point(sourceCenter, source.Bottom), new Point(targetCenter, target.Top) };
-            // Each edge of the band runs at its own height.
-            var gap = target.Top - source.Bottom;
-            var midY = source.Bottom + Math.Max(4, gap / 2 + LaneOffset(lane) * Math.Min(6, gap / 4));
             return new[]
             {
                 new Point(sourceCenter, source.Bottom),
-                new Point(sourceCenter, midY),
-                new Point(targetCenter, midY),
                 new Point(targetCenter, target.Top),
             };
         }
-
-        // upward edge (loop): route around the side, one lane per edge
-        var side = Math.Max(source.Right, target.Right) + Grid * 2 + lane * Grid;
+        // Each edge of the band crosses at its own height, far enough apart to be
+        // told from its neighbour at a glance rather than by following it.
+        var gap = Math.Max(1, target.Top - source.Bottom);
+        var step = Math.Max(6, Math.Min(14, gap / 3));
+        var midY = source.Bottom + Math.Clamp(gap / 2 + LaneOffset(lane) * step, 4, gap - 4);
         return new[]
         {
-            new Point(source.Right, source.Top + Math.Min(24, source.Height / 2)),
-            new Point(side, source.Top + Math.Min(24, source.Height / 2)),
-            new Point(side, target.Top + Math.Min(24, target.Height / 2)),
-            new Point(target.Right, target.Top + Math.Min(24, target.Height / 2)),
+            new Point(sourceCenter, source.Bottom),
+            new Point(sourceCenter, midY),
+            new Point(targetCenter, midY),
+            new Point(targetCenter, target.Top),
+        };
+    }
+
+    /// <summary>
+    /// An edge sent down the right-hand margin: out of the source's side, along its
+    /// own channel, and back into the target's side.
+    ///
+    /// A jump over several rows drawn straight goes through everything between its
+    /// two ends. Down the margin it goes past them, which is what it does.
+    /// </summary>
+    private Point[] SidePath(FlowNode source, FlowNode target, int channel, int arrival)
+    {
+        // The channel sits just past the two blocks it joins, not past the whole
+        // graph. A scene thirty thousand pixels wide had every long arrow run out to
+        // its far right and back, so a jump between two neighbours crossed everything
+        // there is — and every such arrow shared the same return line.
+        var channelX = Math.Max(source.Right, target.Right) + Grid * 2 + channel * (Grid + 4);
+        // Leave at a height of this arrow's own: blocks of one row all sit at the
+        // same height, so arrows leaving them for the margin ran side by side along
+        // one line until they reached their channels.
+        var middle = source.Top + Math.Min(24, source.Height / 2);
+        var room = Math.Max(0, source.Height / 2 - 4);
+        var exit = middle + Math.Clamp(LaneOffset(channel) * 7, -room, room);
+
+        // Arrive over the top of the target rather than into its side. Arrows
+        // converging on one block reached it at the same height and along the same
+        // line however far apart they had travelled; coming down onto it, each takes
+        // its own approach height and its own column.
+        var approach = target.Top - Math.Max(10, RowGap / 2) - arrival * 7;
+        // Come down inside the block, spread across its width and wrapping round
+        // rather than piling up at its edge. Letting the fan run free put the last
+        // leg a thousand pixels clear of what it lands on; clamping it instead put
+        // every deep channel on the same column, which is the pile-up again.
+        // A wide block has room for a dozen distinct approaches; a branch pivot is
+        // twenty-six pixels across and has room for three. Both get as many as they
+        // have room for, rather than one formula that gives the narrow one none.
+        var columns = Math.Max(3, target.Width / Grid - 1);
+        var inset = Math.Max(3, target.Width / (columns + 1));
+        var landing = target.Left + inset + arrival % columns * inset;
+        return new[]
+        {
+            new Point(source.Right, exit),
+            new Point(channelX, exit),
+            new Point(channelX, approach),
+            new Point(landing, approach),
+            new Point(landing, target.Top),
         };
     }
 
@@ -605,7 +718,14 @@ internal sealed class ScriptFlowPanel : Panel
     protected override void OnMouseDown(MouseEventArgs eventArgs)
     {
         base.OnMouseDown(eventArgs);
-        if (eventArgs.Button != MouseButtons.Left || GetChildAtPoint(eventArgs.Location) is not null) return;
+        if (GetChildAtPoint(eventArgs.Location) is not null) return;
+        if (eventArgs.Button == MouseButtons.Right)
+        {
+            Focus();
+            RaiseContext(eventArgs.Location);
+            return;
+        }
+        if (eventArgs.Button != MouseButtons.Left) return;
         Focus();
         if (HitTestNode(eventArgs.Location) is { } node)
         {
@@ -638,6 +758,11 @@ internal sealed class ScriptFlowPanel : Panel
                     selectedInstructions.Clear();
                     selectedInstructions.Add(node.Instruction);
                     selectedInstruction = node.Instruction;
+                    // A block on a branch the path does not take is dimmed, and
+                    // clicking it means "show me this one" — so the path is routed
+                    // through it and the branches it excludes dim in its place.
+                    // Reading a branch used to mean finding one of its arrows first.
+                    if (!IsActive(node.Instruction)) RouteThroughNode(node.Instruction);
                 }
                 InstructionSelectionChanged?.Invoke(
                     selectedInstructions.OrderBy(value => value).ToArray(),
@@ -733,7 +858,7 @@ internal sealed class ScriptFlowPanel : Panel
         foreach (var edge in edges.Reverse())
         {
             if (!nodes.TryGetValue(edge.From, out var source) || !nodes.TryGetValue(edge.To, out var target)) continue;
-            var path = GetEdgePath(source, target, edgeLanes.GetValueOrDefault(edge));
+            var path = GetEdgePath(edge);
             if (edge.Label.Length > 0)
             {
                 var label = edge.Label.Length > 42 ? edge.Label[..39] + "..." : edge.Label;
@@ -791,7 +916,6 @@ internal sealed class ScriptFlowPanel : Panel
             if (hiddenInstructions.Contains(index)) continue;   // stands for the arrow
             var instruction = function.Instructions[index];
             var conditional = instruction.Opcode == 5;
-            var condition = conditional ? FormatCondition(instruction) : string.Empty;
 
             foreach (var jump in instruction.Jumps.Where(value =>
                 value.TargetFunctionIndex == function.Index && value.TargetInstructionIndex >= 0))
@@ -802,7 +926,7 @@ internal sealed class ScriptFlowPanel : Panel
                     conditional ? EdgeKind.ConditionalFalse : EdgeKind.Unconditional,
                     index, jump.ArgumentIndex,
                     conditional ? index : -1,
-                    conditional ? $"FALSE · {condition}" : string.Empty);
+                    conditional ? "if " + FormatCondition(instruction, taken: false) : string.Empty);
             }
 
             // natural continuation; OP1 = RETURN, OP3 = unconditional jump (hidden)
@@ -814,18 +938,24 @@ internal sealed class ScriptFlowPanel : Panel
                 conditional ? EdgeKind.ConditionalTrue : EdgeKind.Sequential,
                 conditional ? index : -1, argument,
                 conditional ? index : -1,
-                conditional ? $"TRUE · {condition}" : string.Empty);
+                conditional ? "if " + FormatCondition(instruction, taken: true) : string.Empty);
         }
     }
 
-    private static string FormatCondition(DecompiledInstruction instruction)
+    /// <summary>
+    /// What has to hold for one side of a branch to be taken, in words.
+    ///
+    /// The engine keeps a condition as a stack program; showing it as one made the
+    /// commonest thing on this canvas the least readable thing on it. It is written
+    /// out here instead — see <see cref="ScriptExpressionText"/> — and each side of
+    /// the fork carries the condition that side is actually taken under, so the
+    /// false arrow states its own test rather than the one it is the opposite of.
+    /// </summary>
+    private static string FormatCondition(DecompiledInstruction instruction, bool taken)
     {
-        var expression = instruction.Arguments.FirstOrDefault(value => value.Kind == "expr")?.Expression;
-        if (expression is null || expression.Count == 0) return "condition";
-        var text = string.Join(" ", expression.Where(element => element.SubOp != 0x01)
-            .Select(element => !string.IsNullOrEmpty(element.NestedInstruction)
-                ? "call " + element.NestedInstruction
-                : element.Label));
+        var expression = instruction.Arguments
+            .FirstOrDefault(value => value.Kind == "expr")?.Expression;
+        var text = ScriptExpressionText.Describe(expression, taken);
         return text.Length == 0 ? "condition" : text;
     }
 
@@ -951,9 +1081,12 @@ internal sealed class ScriptFlowPanel : Panel
             bottom = Math.Max(bottom, location.Y + pair.Value.Height);
         }
 
-        // A loop arrow is routed around the right-hand side of the blocks it
-        // joins, so the canvas has to reach past the widest block for it.
-        if (edges.Any(edge => IsUpward(edge))) right += Grid * 2 + Grid;
+        // Margin-routed arrows run past the widest block, so the canvas has to
+        // reach past them too — one channel each, or they are drawn where nothing
+        // can be scrolled to.
+        var margin = edges.Count(edge =>
+            nodes.ContainsKey(edge.From) && nodes.ContainsKey(edge.To) && IsUpward(edge));
+        if (edges.Count != 0) right += Grid * 2 + (margin + 2) * (Grid + 4);
         AutoScrollMinSize = new Size(right + CanvasPadding, bottom + CanvasPadding);
         AutoScrollPosition = scroll;
     }
@@ -995,6 +1128,84 @@ internal sealed class ScriptFlowPanel : Panel
     /// them for one thread. Counted by the layout verification.
     /// </summary>
     internal static int StackedAmbiguities { get; set; }
+
+    /// <summary>Collected overlap descriptions, when a diagnostic asks for them.</summary>
+    internal static List<string>? OverlapReport { get; set; }
+
+    /// <summary>
+    /// How much of the canvas two arrows are drawn along the very same line.
+    ///
+    /// This is what "the arrows overlap" is, measured: two segments sharing a line
+    /// and covering the same stretch of it cannot be told apart, however clearly
+    /// each is drawn. Edges meeting at a block necessarily touch there, so only a
+    /// run longer than a block's corner counts.
+    /// </summary>
+    internal static int CountOverlappingEdges(DecompiledFunction function)
+    {
+        ArgumentNullException.ThrowIfNull(function);
+        using var panel = new ScriptFlowPanel { Size = new Size(1200, 900) };
+        var blocks = function.Instructions
+            .Where(value => value.Opcode != 5)
+            .Where(value => value.Opcode != 3 || !value.Jumps.Any(jump =>
+                jump.TargetFunctionIndex == function.Index && jump.TargetInstructionIndex >= 0))
+            .Select(value => new ScriptFlowBlock(
+                value.Index, $"#{value.Index} {value.Name}", "operands", Color.Gray))
+            .ToArray();
+        panel.SetGraph(blocks, function);
+
+        var paths = panel.edges
+            .Where(edge => panel.nodes.ContainsKey(edge.From) && panel.nodes.ContainsKey(edge.To))
+            .Select(panel.GetEdgePath)
+            .ToArray();
+        var drawn = panel.edges
+            .Where(edge => panel.nodes.ContainsKey(edge.From) && panel.nodes.ContainsKey(edge.To))
+            .ToArray();
+        var overlaps = 0;
+        for (var first = 0; first < paths.Length; first++)
+        for (var second = first + 1; second < paths.Length; second++)
+        {
+            if (!Overlap(paths[first], paths[second])) continue;
+            overlaps++;
+            if (OverlapReport is not null && OverlapReport.Count < 40)
+            {
+                OverlapReport.Add(
+                    $"{drawn[first].From}->{drawn[first].To}"
+                    + $" [{string.Join(" ", paths[first].Select(v => $"{v.X},{v.Y}"))}]"
+                    + $"  vs  {drawn[second].From}->{drawn[second].To}"
+                    + $" [{string.Join(" ", paths[second].Select(v => $"{v.X},{v.Y}"))}]");
+            }
+        }
+        return overlaps;
+
+        static bool Overlap(Point[] left, Point[] right)
+        {
+            for (var a = 0; a + 1 < left.Length; a++)
+            for (var b = 0; b + 1 < right.Length; b++)
+            {
+                if (Shared(left[a], left[a + 1], right[b], right[b + 1])) return true;
+            }
+            return false;
+        }
+
+        static bool Shared(Point a1, Point a2, Point b1, Point b2)
+        {
+            const int Tolerance = 2;
+            const int Meaningful = 24;
+            if (a1.X == a2.X && b1.X == b2.X && Math.Abs(a1.X - b1.X) <= Tolerance)
+            {
+                var top = Math.Max(Math.Min(a1.Y, a2.Y), Math.Min(b1.Y, b2.Y));
+                var bottom = Math.Min(Math.Max(a1.Y, a2.Y), Math.Max(b1.Y, b2.Y));
+                return bottom - top > Meaningful;
+            }
+            if (a1.Y == a2.Y && b1.Y == b2.Y && Math.Abs(a1.Y - b1.Y) <= Tolerance)
+            {
+                var left = Math.Max(Math.Min(a1.X, a2.X), Math.Min(b1.X, b2.X));
+                var right = Math.Min(Math.Max(a1.X, a2.X), Math.Max(b1.X, b2.X));
+                return right - left > Meaningful;
+            }
+            return false;
+        }
+    }
 
     /// <summary>Describes the placed graph, to diagnose an unreadable scene.</summary>
     internal static string DescribeLayout(DecompiledFunction function)
@@ -1138,26 +1349,173 @@ internal sealed class ScriptFlowPanel : Panel
     }
 
     /// <summary>
-    /// Gives each edge of a same gap between rows its own horizontal lane. Two
-    /// edges crossing the same band otherwise ran along the very same line, and
-    /// the reader could not tell which branch they belonged to.
+    /// Gives every edge a track of its own where it would otherwise be drawn over
+    /// another.
+    ///
+    /// Two things used to make arrows pile up. Edges were grouped into bands by a
+    /// coarse division of the canvas, so two that genuinely overlapped could land in
+    /// different bands and both take the middle; and an edge reaching a block several
+    /// rows down was drawn as a straight fall through everything in between — over
+    /// the blocks, and over every other arrow crossing the same space.
+    ///
+    /// So the long ones are sent down the margin instead, one channel each, and the
+    /// short ones are spaced by what they actually overlap rather than by which
+    /// bucket they fell in. Two edges share a track only when they cannot be
+    /// confused: when nothing they cover is in common.
     /// </summary>
     private void AssignEdgeLanes()
     {
         edgeLanes.Clear();
-        foreach (var band in edges
-                     .Where(edge => nodes.ContainsKey(edge.From) && nodes.ContainsKey(edge.To))
+        sideLanes.Clear();
+        sideArrivals.Clear();
+        sideLaneCount = 0;
+
+        var drawable = edges
+            .Where(edge => nodes.ContainsKey(edge.From) && nodes.ContainsKey(edge.To))
+            .ToArray();
+
+        // Down the margin: everything that climbs, and everything that falls past a
+        // row it does not stop at.
+        var side = drawable.Where(IsSideRouted).ToArray();
+        foreach (var edge in side
+                     .OrderBy(edge => SideSpan(edge).Top)
+                     .ThenBy(edge => SideSpan(edge).Bottom))
+        {
+            sideLanes[edge] = FreeLane(
+                SideSpan(edge),
+                side.Where(other => sideLanes.ContainsKey(other))
+                    .Select(other => (Span: SideSpan(other), Lane: sideLanes[other])));
+            sideLaneCount = Math.Max(sideLaneCount, sideLanes[edge] + 1);
+        }
+
+        // Arrows converging on one block are numbered among themselves. The channel
+        // they came down says nothing about where they should land: two edges with
+        // no vertical overlap share a channel quite properly, and used to come down
+        // on the same spot of the same block because of it.
+        foreach (var arriving in side.GroupBy(edge => edge.To))
+        {
+            var rank = 0;
+            foreach (var edge in arriving.OrderBy(edge => edge.From)) sideArrivals[edge] = rank++;
+        }
+
+        // Straight down: two edges crossing the same gap are told apart by where
+        // they run across it, so they only need different tracks when the stretches
+        // they cover overlap.
+        // Two edges leaving one block share its bottom edge whatever band they fall
+        // in, so a track taken at an endpoint is taken for every edge touching it —
+        // otherwise the two run down the same line out of the same block and only
+        // part company further down.
+        var atEndpoint = new Dictionary<int, HashSet<int>>();
+        HashSet<int> Taken(int endpoint)
+        {
+            if (!atEndpoint.TryGetValue(endpoint, out var lanes))
+            {
+                lanes = new HashSet<int>();
+                atEndpoint.Add(endpoint, lanes);
+            }
+            return lanes;
+        }
+
+        foreach (var band in drawable
+                     .Where(edge => !IsSideRouted(edge))
                      .GroupBy(edge => (nodes[edge.From].Bottom + nodes[edge.To].Top) / (Grid * 4)))
         {
-            var lane = 0;
+            var placed = new List<((int Top, int Bottom) Span, int Lane)>();
             foreach (var edge in band
                          .OrderBy(edge => nodes[edge.From].Left)
                          .ThenBy(edge => edge.From)
                          .ThenBy(edge => edge.To))
             {
-                edgeLanes[edge] = lane++;
+                var span = HorizontalSpan(edge);
+                var reserved = Taken(edge.From).Concat(Taken(edge.To)).ToHashSet();
+                var lane = FreeLane(span, placed, reserved);
+                edgeLanes[edge] = lane;
+                placed.Add((span, lane));
+                Taken(edge.From).Add(lane);
+                Taken(edge.To).Add(lane);
             }
         }
+    }
+
+    /// <summary>
+    /// Makes the canvas reach past the channels the margin-routed arrows use.
+    ///
+    /// The channels are placed once the blocks are, so the width the layout settled
+    /// on does not know about them; an arrow drawn past the edge of the scrollable
+    /// area is one nothing can be scrolled to.
+    /// </summary>
+    private void WidenForChannels()
+    {
+        if (nodes.Count == 0 || sideLanes.Count == 0) return;
+        var right = 0;
+        foreach (var pair in sideLanes)
+        {
+            if (!nodes.TryGetValue(pair.Key.From, out var source)) continue;
+            if (!nodes.TryGetValue(pair.Key.To, out var target)) continue;
+            right = Math.Max(
+                right,
+                Math.Max(source.Right, target.Right) + Grid * 2 + pair.Value * (Grid + 4));
+        }
+        if (right + CanvasPadding > AutoScrollMinSize.Width)
+        {
+            AutoScrollMinSize = new Size(right + CanvasPadding, AutoScrollMinSize.Height);
+        }
+    }
+
+    /// <summary>The lowest track no overlapping neighbour has already taken.</summary>
+    private static int FreeLane(
+        (int Top, int Bottom) span,
+        IEnumerable<((int Top, int Bottom) Span, int Lane)> placed,
+        IReadOnlySet<int>? reserved = null)
+    {
+        var taken = placed
+            .Where(other => other.Span.Top < span.Bottom && span.Top < other.Span.Bottom)
+            .Select(other => other.Lane)
+            .ToHashSet();
+        if (reserved is not null) taken.UnionWith(reserved);
+        var lane = 0;
+        while (taken.Contains(lane)) lane++;
+        return lane;
+    }
+
+    /// <summary>How far down the canvas a margin-routed edge reaches.</summary>
+    private (int Top, int Bottom) SideSpan(GraphEdge edge)
+    {
+        var source = nodes[edge.From];
+        var target = nodes[edge.To];
+        return (Math.Min(source.Top, target.Top), Math.Max(source.Bottom, target.Bottom));
+    }
+
+    /// <summary>How wide a straight edge's crossing is, in canvas coordinates.</summary>
+    private (int Top, int Bottom) HorizontalSpan(GraphEdge edge)
+    {
+        var source = nodes[edge.From];
+        var target = nodes[edge.To];
+        var from = source.Left + source.Width / 2;
+        var to = target.Left + target.Width / 2;
+        return (Math.Min(from, to) - Grid, Math.Max(from, to) + Grid);
+    }
+
+    /// <summary>
+    /// Whether an edge is drawn down the margin rather than straight.
+    ///
+    /// Anything climbing is, as it always was. So is anything falling past a block
+    /// it does not stop at: drawn straight, it crosses that block and every arrow
+    /// beside it, which is the pile-up this exists to end. Whether a row is in the
+    /// way is measured against where the blocks actually are, since rows nothing
+    /// occupies take no space at all.
+    /// </summary>
+    private bool IsSideRouted(GraphEdge edge)
+    {
+        if (IsUpward(edge)) return true;
+        var source = nodes[edge.From];
+        var target = nodes[edge.To];
+        foreach (var node in nodes.Values)
+        {
+            if (node.Instruction == edge.From || node.Instruction == edge.To) continue;
+            if (node.Top >= source.Bottom && node.Bottom <= target.Top) return true;
+        }
+        return false;
     }
 
     /// <summary>An edge drawn around the side rather than straight down.</summary>
@@ -1394,6 +1752,19 @@ internal sealed class ScriptFlowPanel : Panel
     /// <summary>Graph edge. <c>Fork</c> is the branch point it leaves (-1 otherwise).</summary>
     private sealed record GraphEdge(
         int From, int To, EdgeKind Kind, int Owner, int ArgumentIndex, int Fork, string Label);
+
+    /// <summary>
+    /// What the pointer was over when a menu was asked for.
+    ///
+    /// An arrow is as much a place as a block: it stands for the step between two
+    /// instructions, which is exactly where a new one goes.
+    /// </summary>
+    internal sealed record FlowContext(
+        Point Location,
+        int? Instruction,
+        int? EdgeFrom,
+        int? EdgeTo,
+        IReadOnlyList<int> Selection);
 
     /// <summary>Branch taken at a branch point of the active path.</summary>
     internal sealed record BranchDecision(int ForkInstruction, int TakenSuccessor, bool TakenTrue, string Label);

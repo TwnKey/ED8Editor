@@ -77,6 +77,22 @@ if (Array.IndexOf(args, "--matrix-packing") >= 0)
                     stage,
                     stageName == "VS" ? D3D11ShaderStage.Vertex : D3D11ShaderStage.Fragment);
                 Console.WriteLine($"  --- {stageName}");
+                if (stageName == "VS")
+                {
+                    var frame = new D3D11EffectFrame(
+                        Matrix4x4.Identity, Matrix4x4.Identity, Matrix4x4.Identity,
+                        Vector3.Zero, Vector3.UnitY, Vector4.One, Vector4.One, 0f);
+                    var starved = described.ConstantBuffers
+                        .SelectMany(cb => cb.Variables)
+                        .Where(v => v.Used)
+                        .Where(v => v.Name is not ("PhyreContextSwitches" or "PhyreMaterialSwitches"))
+                        .Where(v => D3D11NativeEffect.EngineValue(v.Name, frame) is null)
+                        .Select(v => v.Name)
+                        .ToArray();
+                    Console.WriteLine(
+                        $"    VS reads {described.ConstantBuffers.SelectMany(cb => cb.Variables).Count(v => v.Used)}"
+                        + $" constant(s); engine supplies none of: {string.Join(", ", starved)}");
+                }
                 foreach (var cb in described.ConstantBuffers)
                 {
                     Console.WriteLine(
@@ -1041,6 +1057,7 @@ var tests = new (string Name, Action Run)[]
     ("swaps a shipped material's shader in place, or refuses", RepointsShippedMaterialShader),
     ("keeps what a map was authored from, so it can be opened again", RemembersMapAuthoring),
     ("feeds a native shader's constants from their own names", FeedsNativeShaderConstants),
+    ("writes a script condition the way a person reads one", WritesReadableConditions),
 };
 
 var failures = 0;
@@ -2146,6 +2163,96 @@ static void WritesAuthoredModelFixups()
 /// A shader's constants are filled from what they are called, by the engine's own
 /// rule — and a name the rule does not recognise is left for the material.
 /// </summary>
+/// <summary>
+/// A condition stored as a stack program is written back in the usual order, with
+/// brackets only where they change the meaning — and each side of a branch states
+/// the test it is actually taken under.
+/// </summary>
+static void WritesReadableConditions()
+{
+    static ExprElement Push(int value) => new(0x00, "push", $"push {value}", value, null);
+    static ExprElement Flag(int index) => new(0x1e, "flag", $"flag[{index}]", index, null);
+    static ExprElement Work(int index) => new(0x20, "work", $"work[{index}]", index, null);
+    static ExprElement Op(int subOp, string label) => new(subOp, "op", label, 0, null);
+    static ExprElement End() => new(0x01, "end", "end", 0, null);
+
+    // The case that started this: work[5] push 4 == said everything and explained
+    // nothing. It reads with one equals sign, not two: there is no assignment here
+    // to tell comparison apart from.
+    Equal(
+        "work[5] = 4",
+        ScriptExpressionText.Format(new[] { Work(5), Push(4), Op(0x02, "=="), End() }));
+
+    // A bare flag test reads as a sentence on each side of the fork, because
+    // "flag[256]" on its own does not say what is being asked of it.
+    var flag = new[] { Flag(256), End() };
+    Equal("flag[256]", ScriptExpressionText.Format(flag));
+    Equal("flag[256] is set", ScriptExpressionText.Describe(flag, taken: true));
+    Equal("flag[256] is clear", ScriptExpressionText.Describe(flag, taken: false));
+
+    // The other side of a comparison is the opposite comparison, not a "not"
+    // wrapped around it.
+    var comparison = new[] { Work(5), Push(4), Op(0x02, "=="), End() };
+    Equal("work[5] ≠ 4", ScriptExpressionText.Describe(comparison, taken: false));
+    Equal("work[5] ≠ 4", ScriptExpressionText.FormatNegated(comparison));
+
+    // "== 0" is how the engine negates; negating a comparison flips it.
+    Equal(
+        "work[5] ≠ 4",
+        ScriptExpressionText.Format(
+            new[] { Work(5), Push(4), Op(0x02, "=="), Op(0x08, "==0"), End() }));
+    Equal(
+        "not flag[3]",
+        ScriptExpressionText.Format(new[] { Flag(3), Op(0x08, "==0"), End() }));
+
+    // Brackets where precedence needs them, and nowhere else.
+    Equal(
+        "1 + 2 * 3",
+        ScriptExpressionText.Format(new[]
+        {
+            Push(1), Push(2), Push(3), Op(0x10, "*"), Op(0x0c, "+"), End(),
+        }));
+    Equal(
+        "(1 + 2) * 3",
+        ScriptExpressionText.Format(new[]
+        {
+            Push(1), Push(2), Op(0x0c, "+"), Push(3), Op(0x10, "*"), End(),
+        }));
+    // Subtraction does not associate, so the right operand keeps its brackets.
+    Equal(
+        "1 - (2 - 3)",
+        ScriptExpressionText.Format(new[]
+        {
+            Push(1), Push(2), Push(3), Op(0x0d, "-"), Op(0x0d, "-"), End(),
+        }));
+
+    // A mask reads as one in hexadecimal and as nothing in decimal.
+    Equal(
+        "reg[2] & 0x400",
+        ScriptExpressionText.Format(new[]
+        {
+            new ExprElement(0x1f, "reg", "reg[2]", 2, null), Push(1024), Op(0x0a, "&"), End(),
+        }));
+
+    // An element nothing here knows keeps the decompiler's own name rather than
+    // being dropped, so one unknown step does not cost the whole expression.
+    Equal(
+        "work[9] = mystery",
+        ScriptExpressionText.Format(new[]
+        {
+            Work(9), new ExprElement(0x7f, "?", "mystery", 0, null), Op(0x02, "=="), End(),
+        }));
+
+    // A program that does not balance is shown as it is, rather than as a formula
+    // this did not actually understand.
+    Equal(
+        "work[1] ==",
+        ScriptExpressionText.Format(new[] { Work(1), Op(0x02, "=="), End() }));
+
+    Equal(string.Empty, ScriptExpressionText.Format(null));
+    Equal(string.Empty, ScriptExpressionText.Format(Array.Empty<ExprElement>()));
+}
+
 static void FeedsNativeShaderConstants()
 {
     var world = Matrix4x4.CreateRotationY(0.7f) * Matrix4x4.CreateTranslation(3f, 4f, 5f);

@@ -317,14 +317,21 @@ internal static class Program
                 };
             var clock = System.Diagnostics.Stopwatch.StartNew();
             ScriptFlowPanel.StackedAmbiguities = 0;
+            ScriptFlowPanel.OverlapReport = new List<string>();
+            var overlapping = 0;
             foreach (var target in targets)
+            {
                 ScriptFlowPanel.VerifyLayout(target, expectLoopArrow: false);
+                overlapping += ScriptFlowPanel.CountOverlappingEdges(target);
+            }
             Console.WriteLine(
                 $"PASS graph layout: {targets.Length} scene(s),"
                 + $" {targets.Sum(value => value.Instructions.Count)} instructions,"
                 + $" {clock.ElapsedMilliseconds} ms"
                 + $" (largest: {targets.Max(value => value.Instructions.Count)} instructions,"
-                + $" {ScriptFlowPanel.StackedAmbiguities} stacked-ambiguous pair(s))");
+                + $" {ScriptFlowPanel.StackedAmbiguities} stacked-ambiguous pair(s),"
+                + $" {overlapping} arrow pair(s) drawn along the same line)");
+            foreach (var line in ScriptFlowPanel.OverlapReport!) Console.WriteLine("  " + line);
             return;
         }
         if (args is ["--dump-entity-state", var stateScript, var stateFunction,
