@@ -1,11 +1,11 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net7.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <!-- What the updater compares a release against. Overridden by the release
          script; the default is what a build from a working tree reports. -->
-    <Version>0.1.0</Version>
+    <Version>0.0.1</Version>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\ED8Editor.Application\ED8Editor.Application.csproj" />
