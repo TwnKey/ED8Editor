@@ -16,4 +16,4 @@ publish/*
 publish-release.bat
 *.dll
 *.so
-*.dylib
+*.dylibartifacts/
