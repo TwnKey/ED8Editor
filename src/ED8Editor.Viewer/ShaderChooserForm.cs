@@ -11,12 +11,18 @@ namespace ED8Editor.Viewer;
 /// anyone can ship.
 /// </param>
 /// <param name="Custom">Whether the author wrote it, rather than the game.</param>
+/// <param name="SourcePath">
+/// The HLSL it was compiled from, when there was one. Kept so an editor can write
+/// down what a material was pointed at and compile it again later, rather than
+/// storing the megabytes the compile produced.
+/// </param>
 internal sealed record ShaderChoice(
     string AssetName,
     byte[] Cluster,
     IReadOnlyList<ShaderParameter> Parameters,
     IReadOnlyDictionary<string, string> Values,
-    bool Custom);
+    bool Custom,
+    string? SourcePath = null);
 
 /// <summary>
 /// Picks the shader a material draws with — one of the game's, or one written by
@@ -39,7 +45,7 @@ internal sealed class ShaderChooserForm : Form
     private readonly TextBox filter = new()
     {
         Dock = DockStyle.Top,
-        PlaceholderText = "Filtrer : hash, ou un commutateur (ALPHA_TESTING, DOUBLE_SIDED…)",
+        PlaceholderText = "Filter: a hash, or a switch (ALPHA_TESTING, DOUBLE_SIDED…)",
     };
 
     private readonly ListBox variants = new() { Dock = DockStyle.Fill, IntegralHeight = false };
@@ -88,20 +94,20 @@ internal sealed class ShaderChooserForm : Form
     {
         this.gameDirectory = gameDirectory;
 
-        Text = $"Shader pour « {materialName} »";
+        Text = $"Shader for '{materialName}'";
         Width = 1040;
         Height = 660;
         StartPosition = FormStartPosition.CenterParent;
 
-        values.Columns.Add("name", "Paramètre");
+        values.Columns.Add("name", "Parameter");
         values.Columns.Add("kind", "Type");
-        var value = new DataGridViewTextBoxColumn { Name = "value", HeaderText = "Valeur" };
+        var value = new DataGridViewTextBoxColumn { Name = "value", HeaderText = "Value" };
         values.Columns.Add(value);
         values.Columns["name"]!.ReadOnly = true;
         values.Columns["kind"]!.ReadOnly = true;
 
         // The game's own variants.
-        var gameTab = new TabPage("Variantes du jeu") { Padding = new Padding(6) };
+        var gameTab = new TabPage("The game's variants") { Padding = new Padding(6) };
         var gamePanel = new Panel { Dock = DockStyle.Fill };
         gamePanel.Controls.Add(variants);
         gamePanel.Controls.Add(filter);
@@ -110,9 +116,9 @@ internal sealed class ShaderChooserForm : Form
         sources.TabPages.Add(gameTab);
 
         // The author's own.
-        var mineTab = new TabPage("Mon HLSL") { Padding = new Padding(6) };
-        var choose = new Button { Text = "Choisir un fichier…", AutoSize = true, Dock = DockStyle.Top };
-        var compile = new Button { Text = "Compiler", AutoSize = true, Dock = DockStyle.Top };
+        var mineTab = new TabPage("My HLSL") { Padding = new Padding(6) };
+        var choose = new Button { Text = "Choose a file…", AutoSize = true, Dock = DockStyle.Top };
+        var compile = new Button { Text = "Compile", AutoSize = true, Dock = DockStyle.Top };
         choose.Click += (_, _) => ChooseHlsl();
         compile.Click += (_, _) => Compile();
         var minePanel = new Panel { Dock = DockStyle.Fill };
@@ -123,13 +129,13 @@ internal sealed class ShaderChooserForm : Form
         mineTab.Controls.Add(minePanel);
         sources.TabPages.Add(mineTab);
 
-        var ok = new Button { Text = "Utiliser ce shader", AutoSize = true };
-        var cancel = new Button { Text = "Annuler", AutoSize = true, DialogResult = DialogResult.Cancel };
+        var ok = new Button { Text = "Use this shader", AutoSize = true };
+        var cancel = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
         ok.Click += (_, _) => Accept();
         var tools = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true };
         tools.Controls.AddRange(new Control[] { ok, cancel });
 
-        var valuesGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Paramètres réglables" };
+        var valuesGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Settable parameters" };
         valuesGroup.Controls.Add(values);
 
         var split = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 520 };
@@ -148,13 +154,13 @@ internal sealed class ShaderChooserForm : Form
 
     private async Task LoadAsync()
     {
-        status.Text = "Lecture des variantes du jeu…";
+        status.Text = "Reading the game's variants…";
         var directory = gameDirectory;
         all = await Task.Run(() => ShaderVariantCatalog.Load(directory));
         if (IsDisposed) return;
         ApplyFilter();
-        status.Text = $"{all.Count} variantes. Les commutateurs d'une variante se lisent"
-            + " quand vous la sélectionnez.";
+        status.Text = $"{all.Count} variants. A variant's switches are read"
+            + " when you select it.";
     }
 
     private void ApplyFilter()
@@ -182,7 +188,7 @@ internal sealed class ShaderChooserForm : Form
         {
             var declared = ShaderVariantCatalog.Switches(variant);
             switches.Text = declared.Count == 0
-                ? "Cette variante ne déclare aucun commutateur."
+                ? "This variant declares no switch."
                 : string.Join(Environment.NewLine, declared);
             chosenCluster = ShaderVariantCatalog.Cluster(variant);
             chosenName = variant.AssetName;
@@ -199,13 +205,13 @@ internal sealed class ShaderChooserForm : Form
     {
         using var dialog = new OpenFileDialog
         {
-            Title = "Votre shader",
-            Filter = "HLSL (*.hlsl;*.fx;*.txt)|*.hlsl;*.fx;*.txt|Tous les fichiers (*.*)|*.*",
+            Title = "Your shader",
+            Filter = "HLSL (*.hlsl;*.fx;*.txt)|*.hlsl;*.fx;*.txt|All files (*.*)|*.*",
             CheckFileExists = true,
         };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         hlslPath.Text = dialog.FileName;
-        hlslReport.Text = "Compilez pour voir ce que le shader déclare.";
+        hlslReport.Text = "Compile to see what the shader declares.";
     }
 
     /// <summary>
@@ -218,7 +224,7 @@ internal sealed class ShaderChooserForm : Form
         if (hlslPath.Text.Length == 0)
         {
             MessageBox.Show(
-                this, "Choisissez d'abord un fichier.", Text,
+                this, "Choose a file first.", Text,
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
@@ -243,19 +249,20 @@ internal sealed class ShaderChooserForm : Form
                 .ToArray());
 
             hlslReport.Text =
-                $"Compilé : {compiled.Length} octets, {declared.Count} paramètre(s) déclaré(s)."
+                $"Compiled: {chosenCluster.Length} bytes,"
+                + $" {declared.Count} parameter(s) declared."
                 + Environment.NewLine
-                + "Il sera écrit sous le nom " + name + "." + Environment.NewLine
+                + "It will be written under the name " + name + "." + Environment.NewLine
                 + string.Join(Environment.NewLine, declared.Values
                     .Select(one => $"  {one.Name,-30} type {one.Semantic,3}  donnee {one.DataType,3}"));
-            status.Text = $"{name} compilé.";
+            status.Text = $"{name} compiled.";
         }
         catch (Exception failure)
         {
             chosenCluster = null;
             chosenName = string.Empty;
             hlslReport.Text = failure.Message;
-            status.Text = "La compilation a échoué.";
+            status.Text = "The compile failed.";
         }
         finally
         {
@@ -278,8 +285,8 @@ internal sealed class ShaderChooserForm : Form
             row.Tag = one;
         }
         var engine = declared.Count(one => !one.Settable);
-        status.Text = $"{values.Rows.Count} paramètre(s) réglable(s)"
-            + (engine == 0 ? "." : $", {engine} alimenté(s) par le moteur.");
+        status.Text = $"{values.Rows.Count} settable parameter(s)"
+            + (engine == 0 ? "." : $", {engine} fed by the engine.");
     }
 
     /// <summary>
@@ -299,7 +306,7 @@ internal sealed class ShaderChooserForm : Form
         if (chosenCluster is null || chosenName.Length == 0)
         {
             MessageBox.Show(
-                this, "Choisissez une variante, ou compilez votre HLSL.", Text,
+                this, "Choose a variant, or compile your HLSL.", Text,
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
@@ -309,7 +316,9 @@ internal sealed class ShaderChooserForm : Form
             if (row.Tag is not ShaderParameter parameter) continue;
             chosen[parameter.Name] = row.Cells["value"].Value?.ToString() ?? string.Empty;
         }
-        Choice = new ShaderChoice(chosenName, chosenCluster, parameters, chosen, chosenIsCustom);
+        Choice = new ShaderChoice(
+            chosenName, chosenCluster, parameters, chosen, chosenIsCustom,
+            chosenIsCustom && hlslPath.Text.Length != 0 ? hlslPath.Text : null);
         DialogResult = DialogResult.OK;
         Close();
     }

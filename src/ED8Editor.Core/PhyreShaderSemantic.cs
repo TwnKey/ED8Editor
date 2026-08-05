@@ -1,4 +1,4 @@
-namespace ED8Editor.Shaders.Forge;
+namespace ED8Editor.Core;
 
 /// <summary>
 /// Which engine parameter a shader declaration asks for, from the semantic it is
@@ -15,7 +15,7 @@ namespace ED8Editor.Shaders.Forge;
 /// The bytecode does not keep these semantics — D3D drops them for uniforms — so
 /// they are read from the HLSL source, which is where they are written.
 /// </summary>
-public static class Semantic
+public static class PhyreShaderSemantic
 {
     // PShaderParameter, by block: the scene at 0, the material at 64, the node at
     // 128 and the node context at 192.

@@ -360,6 +360,11 @@ public sealed class D3D11Viewport : IDisposable
     private Vector4 clearColor = new(0.035f, 0.045f, 0.065f, 1f);
     private ViewportLighting lighting = ViewportLighting.Neutral;
 
+    private ViewportCamera currentCamera = new(Matrix4x4.Identity, Matrix4x4.Identity);
+    private readonly Dictionary<string, D3D11NativeEffect?> nativeEffects = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> nativeRefusals = new(StringComparer.Ordinal);
+    private int nativeDraws;
+
     public D3D11Viewport(D3D11GraphicsDevice graphics, IntPtr windowHandle, int width, int height)
     {
         this.graphics = graphics ?? throw new ArgumentNullException(nameof(graphics));
@@ -580,6 +585,28 @@ public sealed class D3D11Viewport : IDisposable
         clearColor = Vector4.Clamp(color, Vector4.Zero, Vector4.One);
     }
 
+    /// <summary>
+    /// Why a material could not be drawn with its own shader, by material. Empty
+    /// means every material drew with its own.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> NativeShaderRefusals => nativeRefusals;
+
+    /// <summary>How many primitives the last frame drew with their own shader.</summary>
+    public int NativeShaderDraws => nativeDraws;
+
+    /// <summary>
+    /// The shader constants nothing supplied, across every program built so far.
+    ///
+    /// A surface drawn black is nearly always a term multiplied by one of these, so
+    /// naming them turns "it is black" into a list to work through.
+    /// </summary>
+    public IReadOnlyCollection<string> UnfilledShaderConstants => nativeEffects.Values
+        .Where(value => value is not null)
+        .SelectMany(value => value!.Unfilled)
+        .Distinct(StringComparer.Ordinal)
+        .OrderBy(value => value, StringComparer.Ordinal)
+        .ToArray();
+
     public void SetLighting(ViewportLighting value)
         => lighting = value ?? throw new ArgumentNullException(nameof(value));
 
@@ -594,6 +621,8 @@ public sealed class D3D11Viewport : IDisposable
             || bloomPipeline.GlowSourceRenderTarget is null) return;
 
         var context = graphics.Context;
+        currentCamera = camera;
+        nativeDraws = 0;
         context.OMSetBlendState(null, new Color4(0f, 0f, 0f, 0f), uint.MaxValue);
         context.OMSetDepthStencilState(null);
         context.OMSetRenderTargets(bloomPipeline.SceneRenderTarget, depthView);
@@ -715,6 +744,8 @@ public sealed class D3D11Viewport : IDisposable
     public void Dispose()
     {
         if (Interlocked.Exchange(ref disposeState, 1) != 0) return;
+        foreach (var effect in nativeEffects.Values) effect?.Dispose();
+        nativeEffects.Clear();
         if (graphics.Context.NativePointer != IntPtr.Zero)
             graphics.Context.ClearState();
         ReleaseTargets();
@@ -1011,6 +1042,15 @@ public sealed class D3D11Viewport : IDisposable
         var positionAttribute = positionBuffer.Attributes.First(value => value.Semantic == VertexSemantic.Position);
         if (!TryMapFormat(positionAttribute.SourceFormat, out var positionFormat)) return;
 
+        // What the asset itself says it is drawn with, first. The viewport's own
+        // shaders remain as the answer for anything that cannot be: a mesh missing a
+        // stream the program reads, a permutation nothing selects. Which is which is
+        // in NativeShaderRefusals rather than invisible.
+        if (DrawWithOwnShader(model, primitive, world, topology, materialDiffuse, materialEmission))
+        {
+            return;
+        }
+
         var textureView = primitive.MaterialIndex >= 0 && primitive.MaterialIndex < model.Materials.Count
             && model.Materials[primitive.MaterialIndex].Source.BaseColorTextureIndex is { } textureIndex
             && (uint)textureIndex < model.Textures.Count
@@ -1215,6 +1255,138 @@ public sealed class D3D11Viewport : IDisposable
         context.IASetPrimitiveTopology(topology);
         context.IASetIndexBuffer(primitive.IndexBuffer, primitive.IndexElementSize == 2 ? Format.R16_UInt : Format.R32_UInt, 0);
         context.DrawIndexed(primitive.IndexCount, 0, 0);
+    }
+
+    /// <summary>
+    /// Draws the primitive with the shader its own material names, if it can be.
+    ///
+    /// The permutation is chosen from the material's declared context switches by
+    /// the selector that already exists for it, the program is built from the
+    /// bytecode the effect carries, and its constants are filled by name. Nothing
+    /// here decides what a shader wants — it is all read off the shader.
+    ///
+    /// Returns false when any of that does not line up, having said why, and the
+    /// caller falls back to the viewport's own shaders.
+    /// </summary>
+    private bool DrawWithOwnShader(
+        D3D11ModelResources model,
+        D3D11PrimitiveResources primitive,
+        Matrix4x4 world,
+        Vortice.Direct3D.PrimitiveTopology topology,
+        Vector4 materialDiffuse,
+        Vector3 materialEmission)
+    {
+        if (primitive.MaterialIndex < 0 || primitive.MaterialIndex >= model.Materials.Count)
+        {
+            return false;
+        }
+        var material = model.Materials[primitive.MaterialIndex];
+        if (material.Source.EffectProgram is null) return false;
+
+        // One program per material and per stream layout: the same material on two
+        // meshes laid out differently needs two input layouts, and nothing else
+        // about it changes.
+        var key = material.Source.Name + "|" + (material.Source.EffectAssetName ?? "?")
+            + "|" + (material.Source.ResolvedRenderPassName ?? "?")
+            + "|" + string.Join(";", primitive.VertexBuffers.SelectMany((buffer, slot) =>
+                buffer.Attributes.Select(value =>
+                    $"{value.Semantic}{value.SemanticIndex}:{value.SourceFormat}:{value.Offset}:{slot}")));
+
+        if (!nativeEffects.TryGetValue(key, out var effect))
+        {
+            var selection = new D3D11ShaderPermutationSelector()
+                .Select(material.Source, D3D11ShaderContextPolicy.ViewerWithoutDynamicLights);
+            if (selection.Permutation is not { } permutation)
+            {
+                nativeRefusals[material.Source.Name] =
+                    selection.UnsupportedReason ?? "no permutation was selected";
+                nativeEffects[key] = null;
+                return false;
+            }
+            effect = D3D11NativeEffect.Create(
+                graphics.Device, permutation, (semantic, index) => Stream(primitive, semantic, index),
+                out var reason);
+            if (effect is null)
+            {
+                nativeRefusals[material.Source.Name] = reason ?? "the program could not be built";
+            }
+            else
+            {
+                nativeRefusals.Remove(material.Source.Name);
+            }
+            nativeEffects[key] = effect;
+        }
+        if (effect is null) return false;
+
+        var eye = Matrix4x4.Invert(currentCamera.View, out var inverseView)
+            ? new Vector3(inverseView.M41, inverseView.M42, inverseView.M43)
+            : Vector3.Zero;
+        var frame = new D3D11EffectFrame(
+            world,
+            currentCamera.View,
+            currentCamera.Projection,
+            eye,
+            // The engine hands a shader the direction the light travels; the
+            // viewport holds the direction towards it, which is its opposite.
+            -lighting.DirectionToLight,
+            new Vector4(
+                lighting.DirectColor.X, lighting.DirectColor.Y,
+                lighting.DirectColor.Z, 1f),
+            new Vector4(
+                lighting.AmbientColor.X, lighting.AmbientColor.Y,
+                lighting.AmbientColor.Z, 1f),
+            (float)(DateTime.UtcNow.TimeOfDay.TotalSeconds % 1000.0),
+            materialDiffuse == default ? Vector4.One : materialDiffuse,
+            materialEmission);
+
+        var context = graphics.Context;
+        effect.Bind(
+            context,
+            material.Source,
+            frame,
+            name => material.TextureBindings.TryGetValue(name, out var bound)
+                ? bound
+                : material.TextureBindings.TryGetValue(name + "Sampler", out var alias)
+                    ? alias
+                    : null,
+            sampler);
+
+        var slots = new List<ID3D11Buffer>();
+        var strides = new List<int>();
+        var offsets = new List<int>();
+        foreach (var buffer in primitive.VertexBuffers)
+        {
+            slots.Add(buffer.Buffer);
+            strides.Add(buffer.Stride);
+            offsets.Add(0);
+        }
+        context.IASetVertexBuffers(0, slots.ToArray(), strides.ToArray(), offsets.ToArray());
+        context.IASetPrimitiveTopology(topology);
+        context.IASetIndexBuffer(
+            primitive.IndexBuffer,
+            primitive.IndexElementSize == 2 ? Format.R16_UInt : Format.R32_UInt,
+            0);
+        context.DrawIndexed(primitive.IndexCount, 0, 0);
+        nativeDraws++;
+        return true;
+    }
+
+    /// <summary>Which buffer of the primitive carries a semantic, and where in it.</summary>
+    private static (int Slot, int Offset, Format Format)? Stream(
+        D3D11PrimitiveResources primitive,
+        VertexSemantic semantic,
+        int index)
+    {
+        for (var slot = 0; slot < primitive.VertexBuffers.Count; slot++)
+        {
+            foreach (var attribute in primitive.VertexBuffers[slot].Attributes)
+            {
+                if (attribute.Semantic != semantic || attribute.SemanticIndex != index) continue;
+                if (!TryMapFormat(attribute.SourceFormat, out var format)) return null;
+                return (slot, attribute.Offset, format);
+            }
+        }
+        return null;
     }
 
     private static bool TryReadGameMaterialId(CpuMaterial material, out int id)

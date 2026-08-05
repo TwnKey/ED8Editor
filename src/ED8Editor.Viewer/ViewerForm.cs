@@ -184,6 +184,51 @@ public sealed class ViewerForm : Form
     };
     private readonly TabControl rightPanelTabs = new() { Dock = DockStyle.Fill };
     private readonly TabPage assetsTab = new("Assets");
+
+    /// <summary>
+    /// What the selected object is, and what it is drawn with.
+    ///
+    /// Selecting something in the viewport or the outliner is how a creator says
+    /// which object they mean; until now that said nothing about how it looks. Its
+    /// materials, and the shader each one binds, belong here — the map's own model
+    /// as much as a prop's, since to this window they are both assets with
+    /// materials.
+    /// </summary>
+    private readonly TabPage objectTab = new("Object");
+
+    private readonly TextBox objectSummary = new()
+    {
+        Dock = DockStyle.Top,
+        Height = 96,
+        Multiline = true,
+        ReadOnly = true,
+        ScrollBars = ScrollBars.Vertical,
+        Font = new Font(FontFamily.GenericMonospace, 8.5f),
+    };
+
+    private readonly ListBox objectMaterials = new()
+    {
+        Dock = DockStyle.Fill,
+        IntegralHeight = false,
+    };
+
+    private readonly Button changeMaterialShader = new()
+    {
+        Text = "Change this material's shader…",
+        AutoSize = true,
+        Dock = DockStyle.Bottom,
+    };
+
+    private readonly Label objectStatus = new()
+    {
+        Dock = DockStyle.Bottom,
+        AutoSize = false,
+        Height = 34,
+        AutoEllipsis = true,
+    };
+
+    private string? objectAssetId;
+    private IReadOnlyList<MaterialBinding> objectBindings = Array.Empty<MaterialBinding>();
     private readonly TabPage opsTab = new("OPS");
     private readonly TabPage scriptsTab = new("Scripts");
     private readonly TreeView opsElementTree = new()
@@ -423,7 +468,20 @@ public sealed class ViewerForm : Form
         opsWorkspaceTabs.TabPages.Add(opsElementsPage);
         opsWorkspaceTabs.TabPages.Add(opsCreatePage);
         opsTab.Controls.Add(opsWorkspaceTabs);
+        var objectMaterialsGroup = new GroupBox
+        {
+            Dock = DockStyle.Fill,
+            Text = "Materials and shaders",
+        };
+        objectMaterialsGroup.Controls.Add(objectMaterials);
+        objectMaterialsGroup.Controls.Add(changeMaterialShader);
+        objectTab.Controls.Add(objectMaterialsGroup);
+        objectTab.Controls.Add(objectSummary);
+        objectTab.Controls.Add(objectStatus);
+        objectMaterials.DoubleClick += (_, _) => ChangeSelectedMaterialShader();
+        changeMaterialShader.Click += (_, _) => ChangeSelectedMaterialShader();
         rightPanelTabs.TabPages.Add(assetsTab);
+        rightPanelTabs.TabPages.Add(objectTab);
         rightPanelTabs.TabPages.Add(opsTab);
         rightPanelTabs.TabPages.Add(scriptsTab);
         assetPanel.Controls.Add(rightPanelTabs);
@@ -1438,7 +1496,7 @@ public sealed class ViewerForm : Form
         windows.DropDownItems.Add(new ToolStripMenuItem(
             "Quest editor…", null, (_, _) => ShowQuestEditor()));
         windows.DropDownItems.Add(new ToolStripMenuItem(
-            "Create a map…", null, (_, _) => ShowMapStudio()));
+            "Map editor…", null, (_, _) => ShowMapStudio()));
         windows.DropDownItems.Add(new ToolStripMenuItem(
             "Collision surfaces…", null, (_, _) => ShowNodeInformationEditor()));
         mainMenu.Items.Add(windows);
@@ -1446,6 +1504,7 @@ public sealed class ViewerForm : Form
         var options = new ToolStripMenuItem("Options");
         options.DropDownItems.Add(new ToolStripMenuItem(
             "Instruction definitions...", null, (_, _) => ConfigureInstructionDefinitions()));
+
         var navigation = new ToolStripMenuItem("Keyboard navigation");
         var azerty = new ToolStripMenuItem("AZERTY (ZQSD)")
         {
@@ -3829,7 +3888,7 @@ public sealed class ViewerForm : Form
         editor.ShowDialog(this);
     }
 
-    private void ShowMapStudio()
+    private void ShowMapStudio(string? openMap = null)
     {
         if (mapStudioWindow is { IsDisposed: false } opened)
         {
@@ -3848,7 +3907,19 @@ public sealed class ViewerForm : Form
                 MessageBoxIcon.Information);
             return;
         }
-        mapStudioWindow = new MapStudioForm(modProject);
+        if (session.Script.GameDataPath is not { } mapGameDataPath || graphics is null)
+        {
+            MessageBox.Show(
+                this,
+                "Le Map editor a besoin du dossier data du jeu et du rendu 3D, qui"
+                + " viennent avec un script ouvert.",
+                "Map editor",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+        mapStudioWindow = new MapStudioForm(
+            modProject, mapGameDataPath, projectLoader, graphics, openMap);
         mapStudioWindow.FormClosed += (_, _) => RefreshModProjectTab();
         mapStudioWindow.Show(this);
     }
@@ -4951,7 +5022,34 @@ public sealed class ViewerForm : Form
         {
             sceneOutliner.SelectedNode = node;
         }
+
+        // The map's own model is a prop like any other in this list, and it is the
+        // one thing here that was authored as a whole rather than placed. Opening it
+        // means opening what it was made from, which is the Map editor with every
+        // field as the author left it — not a camera move onto a mesh.
+        if (AuthoredMapOf(selected) is { } authored)
+        {
+            ShowMapStudio(authored);
+            return;
+        }
         FocusSelection();
+    }
+
+    /// <summary>
+    /// The map this element is the model of, when it is one this editor wrote.
+    ///
+    /// A map's package is called <c>M_&lt;name&gt;</c>, so the name is readable off
+    /// the asset — but being able to read it is not enough to claim the map was made
+    /// here. The settings file is what says that, and without it there is nothing to
+    /// reopen.
+    /// </summary>
+    private string? AuthoredMapOf(SceneElementSelection selected)
+    {
+        if (modProject is null || selected.Kind != SceneElementKind.Prop) return null;
+        if (document.FindProp(selected)?.AssetId is not { } assetId) return null;
+        if (!assetId.StartsWith("M_", StringComparison.OrdinalIgnoreCase)) return null;
+        var name = assetId[2..];
+        return MapAuthoringRecord.Load(modProject, name) is null ? null : name;
     }
 
     private void SyncOutlinerSelection()
@@ -7124,8 +7222,183 @@ public sealed class ViewerForm : Form
         }
     }
 
+    /// <summary>
+    /// Shows what the selection is and what it draws with.
+    ///
+    /// The materials come from the asset's own model cluster — the file the game
+    /// loads — rather than from anything the editor keeps beside it, so what is
+    /// listed is what is bound.
+    /// </summary>
+    private void RefreshObjectPanel()
+    {
+        objectMaterials.Items.Clear();
+        objectBindings = Array.Empty<MaterialBinding>();
+        objectAssetId = null;
+        changeMaterialShader.Enabled = false;
+
+        if (selection is not { } selected)
+        {
+            objectSummary.Text = "Nothing is selected.";
+            objectStatus.Text = string.Empty;
+            return;
+        }
+
+        var assetId = selected.Kind switch
+        {
+            SceneElementKind.Prop => document.FindProp(selected)?.AssetId,
+            SceneElementKind.ScriptCharacter => scriptMonsterInstances
+                .FirstOrDefault(value => value.Id == selected.SourceIndex)?.AssetId,
+            SceneElementKind.FieldMonster => fieldMonsterInstances
+                .FirstOrDefault(value => value.Id == selected.SourceIndex)?.AssetId,
+            _ => null,
+        };
+
+        var text = new System.Text.StringBuilder();
+        text.AppendLine($"{selected.Name}   [{selected.Kind}]   index {selected.SourceIndex}");
+        text.AppendLine(assetId is null ? "no asset" : $"asset: {assetId}");
+        if (selected.Kind == SceneElementKind.Prop
+            && document.FindProp(selected) is { } prop)
+        {
+            var placement = prop.Transform;
+            text.AppendLine(
+                $"position: {placement.Position.X:0.###},"
+                + $" {placement.Position.Y:0.###}, {placement.Position.Z:0.###}");
+            text.AppendLine(
+                $"scale: {placement.Scale.X:0.###},"
+                + $" {placement.Scale.Y:0.###}, {placement.Scale.Z:0.###}");
+        }
+
+        if (assetId is null || session.Script.GameDataPath is not { } dataPath)
+        {
+            objectSummary.Text = text.ToString();
+            objectStatus.Text = assetId is null
+                ? "This element has no model, so it has no materials."
+                : "The game's data folder is not known, so its materials cannot be read.";
+            return;
+        }
+
+        var resolved = MaterialShaderEditing.Resolve(dataPath, assetId);
+        if (resolved is null)
+        {
+            objectSummary.Text = text.ToString();
+            objectStatus.Text = $"{assetId}'s model could not be resolved.";
+            return;
+        }
+
+        objectAssetId = assetId;
+        objectBindings = MaterialShaderEditing.Bindings(resolved.Cluster);
+        foreach (var binding in objectBindings)
+        {
+            objectMaterials.Items.Add($"{binding.Material}   →   {binding.ShaderName}");
+        }
+        if (objectMaterials.Items.Count != 0) objectMaterials.SelectedIndex = 0;
+        changeMaterialShader.Enabled = objectBindings.Count != 0 && modProject is not null;
+
+        text.AppendLine($"package: {Path.GetFileName(resolved.PackagePath)}");
+
+        // Which of the shader's constants nothing supplied. A surface that draws
+        // black is nearly always a term multiplied by one of these, so naming them
+        // is the difference between a bug and a list to work through.
+        if (viewport?.UnfilledShaderConstants is { Count: > 0 } unfilled)
+        {
+            text.AppendLine();
+            text.AppendLine($"shader constants nothing supplies ({unfilled.Count}):");
+            text.AppendLine("  " + string.Join(", ", unfilled));
+        }
+        objectSummary.Text = text.ToString();
+        objectStatus.Text = objectBindings.Count == 0
+            ? "This model declares no material."
+            : modProject is null
+                ? $"{objectBindings.Count} material(s). Open a mod project to change a shader."
+                : $"{objectBindings.Count} material(s).";
+    }
+
+    /// <summary>
+    /// Points the selected material at another shader, in the asset's own package.
+    ///
+    /// The same chooser every other editor uses, and the same write: the model is
+    /// left alone and only the name it binds its shader by changes, so a prop keeps
+    /// its geometry and a character keeps its skinning.
+    /// </summary>
+    private void ChangeSelectedMaterialShader()
+    {
+        if (objectAssetId is not { } assetId) return;
+        if (objectMaterials.SelectedIndex < 0
+            || objectMaterials.SelectedIndex >= objectBindings.Count)
+        {
+            return;
+        }
+        if (modProject is null)
+        {
+            MessageBox.Show(
+                this,
+                "Changing a shader goes through a mod project, so the original is kept"
+                + " and the change can be undone. Open one.",
+                "Material shader",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+        if (session.Script.GameDataPath is not { } dataPath) return;
+
+        var material = objectBindings[objectMaterials.SelectedIndex].Material;
+        using var chooser = new ShaderChooserForm(modProject.GameDirectory, material);
+        if (chooser.ShowDialog(this) != DialogResult.OK || chooser.Choice is not { } choice) return;
+
+        try
+        {
+            Cursor = Cursors.WaitCursor;
+            if (MaterialShaderEditing.Resolve(dataPath, assetId) is not { } resolved)
+            {
+                throw new InvalidOperationException($"{assetId}'s model could not be resolved.");
+            }
+            var result = MaterialShaderEditing.Apply(
+                modProject,
+                resolved,
+                new Dictionary<string, ShaderAssignment>(StringComparer.Ordinal)
+                {
+                    [material] = AuthoredShaderBinding.For(
+                        material, choice.AssetName, choice.Cluster, choice.Values, choice.Custom),
+                });
+
+            if (result.PackagePath is null)
+            {
+                MessageBox.Show(
+                    this,
+                    string.Join(Environment.NewLine, result.Refused)
+                        + Environment.NewLine + Environment.NewLine
+                        + "Nothing was written.",
+                    "Material shader",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            RefreshObjectPanel();
+            objectStatus.Text = $"{material} → {choice.AssetName}"
+                + (result.AlsoChanged.Count == 0
+                    ? "."
+                    : $" — {string.Join(", ", result.AlsoChanged)} shared the same shader"
+                        + " and followed it.")
+                + " Reload the map to see it.";
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException or InvalidOperationException
+            or InvalidPhyreException or ArgumentException)
+        {
+            MessageBox.Show(
+                this, exception.Message, "Material shader",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            Cursor = Cursors.Default;
+        }
+    }
+
     private void RefreshElementProperties()
     {
+        RefreshObjectPanel();
         propertyGrid.Rows.Clear();
         var selected = selection;
         var attributeSet = selected is null ? null : document.FindElementAttributes(selected);

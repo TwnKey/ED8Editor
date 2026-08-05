@@ -96,10 +96,10 @@ public static class PhyreMaterialValues
                 continue;
             }
 
-            var numbers = Numbers(parameter, written);
             switch (parameter.TypeName)
             {
                 case "float":
+                    var numbers = Numbers(parameter, written);
                     for (var slot = 0; slot < numbers.Length; slot++)
                     {
                         BinaryPrimitives.WriteUInt32LittleEndian(

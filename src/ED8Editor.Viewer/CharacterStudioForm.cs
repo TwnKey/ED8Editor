@@ -6,6 +6,7 @@ using ED8Editor.Decompiler;
 using ED8Editor.Models;
 using ED8Editor.Packages;
 using ED8Editor.Phyre;
+using ED8Editor.Phyre.Authoring;
 using ED8Editor.Rendering;
 using ED8Editor.Scene;
 using System.Drawing.Imaging;
@@ -111,6 +112,34 @@ internal sealed class CharacterStudioForm : Form
         Text = "Create a new one from the selected…",
         AutoSize = true,
     };
+    private readonly ListBox materialList = new()
+    {
+        Dock = DockStyle.Fill,
+        IntegralHeight = false,
+    };
+
+    private readonly Button chooseShader = new()
+    {
+        Text = "Material shader…",
+        AutoSize = true,
+    };
+
+    private readonly Button writeShaders = new()
+    {
+        Text = "Write the shaders",
+        AutoSize = true,
+    };
+
+    /// <summary>
+    /// What the author pointed each of this asset's materials at. Kept until the
+    /// package is written, so every material lands in one write rather than one
+    /// each.
+    /// </summary>
+    private readonly Dictionary<string, ShaderAssignment> shaderAssignments =
+        new(StringComparer.Ordinal);
+
+    private IReadOnlyList<string> materialNames = Array.Empty<string>();
+
     private ImportedModelScene? importedScene;
     private IReadOnlyList<CpuAnimationClip> importedClips = Array.Empty<CpuAnimationClip>();
     private readonly Label status = new() { Dock = DockStyle.Bottom, Height = 24, AutoEllipsis = true };
@@ -234,6 +263,19 @@ internal sealed class CharacterStudioForm : Form
         var modelTab = new TabPage("Native model") { Padding = new Padding(4) };
         modelTab.Controls.Add(modelTree);
         inspectorTabs.TabPages.Add(modelTab);
+        var materialsTab = new TabPage("Materials") { Padding = new Padding(4) };
+        var materialsTools = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true };
+        materialsTools.Controls.Add(chooseShader);
+        materialsTools.Controls.Add(writeShaders);
+        var materialsPanel = new Panel { Dock = DockStyle.Fill };
+        materialsPanel.Controls.Add(materialList);
+        materialsPanel.Controls.Add(materialsTools);
+        materialsTab.Controls.Add(materialsPanel);
+        inspectorTabs.TabPages.Add(materialsTab);
+        materialList.DoubleClick += (_, _) => ChooseMaterialShader();
+        chooseShader.Click += (_, _) => ChooseMaterialShader();
+        writeShaders.Click += (_, _) => WriteMaterialShaders();
+
         var rigTab = new TabPage("Rig compatibility") { Padding = new Padding(4) };
         rigTab.Controls.Add(rigReport);
         inspectorTabs.TabPages.Add(rigTab);
@@ -550,6 +592,8 @@ internal sealed class CharacterStudioForm : Form
             return;
         }
         currentModel = model;
+        shaderAssignments.Clear();
+        ShowMaterials(entry);
         if (!resources.TryGetValue(entry.ModelAssetId, out var gpu))
         {
             gpu = new D3D11ModelUploader(graphics.Device).Upload(model);
@@ -567,6 +611,185 @@ internal sealed class CharacterStudioForm : Form
     }
 
     /// <summary>
+    /// The model's materials, and what each draws with. Read from the cluster
+    /// itself, which is what names them: a material is what a shader is bound to,
+    /// so a list built from anything else would name things the rebind cannot find.
+    /// </summary>
+    private void ShowMaterials(CharacterAuthoringEntry? entry)
+    {
+        materialNames = Array.Empty<string>();
+        materialList.Items.Clear();
+        if (entry is null) return;
+        try
+        {
+            if (CharacterRetargetPackage.ResolveModel(
+                    new GameAssetResolverFactory(),
+                    new PkgArchiveReader(),
+                    new AssetManifestReader(),
+                    gameDataPath,
+                    entry.ModelAssetId) is not { } resolved)
+            {
+                return;
+            }
+            var bound = PhyreMaterialTableReader.ReadAll(resolved.Cluster);
+            materialNames = bound.Keys.OrderBy(value => value, StringComparer.Ordinal).ToArray();
+            foreach (var name in materialNames)
+            {
+                var shader = shaderAssignments.TryGetValue(name, out var chosen)
+                    ? chosen.Label
+                    : Path.GetFileName(bound[name].ShaderAsset);
+                materialList.Items.Add($"{name}   →   {shader}");
+            }
+            if (materialList.Items.Count != 0) materialList.SelectedIndex = 0;
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException or InvalidPhyreException or ArgumentException)
+        {
+            materialList.Items.Add("Materials cannot be read: " + exception.Message);
+        }
+    }
+
+    /// <summary>
+    /// Points the selected material at a shader — one of the game's, or one the
+    /// author compiled here. The same window every other editor uses.
+    /// </summary>
+    private void ChooseMaterialShader()
+    {
+        if (materialList.SelectedIndex < 0 || materialList.SelectedIndex >= materialNames.Count)
+        {
+            MessageBox.Show(
+                this, "Choose a material first.", "Shader",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        var material = materialNames[materialList.SelectedIndex];
+        using var chooser = new ShaderChooserForm(
+            Path.GetDirectoryName(gameDataPath)!, material);
+        if (chooser.ShowDialog(this) != DialogResult.OK || chooser.Choice is not { } choice) return;
+
+        shaderAssignments[material] = AuthoredShaderBinding.For(
+            material, choice.AssetName, choice.Cluster, choice.Values, choice.Custom);
+        ShowMaterials(entries.SelectedItem as CharacterAuthoringEntry);
+        status.Text = $"{material} → {choice.AssetName}. Write the shaders to apply it.";
+    }
+
+    /// <summary>
+    /// Puts the chosen shaders into the asset's own package.
+    ///
+    /// A character's model is not rewritten here: its skinning, its segments and
+    /// its clips are what the rest of this window is careful not to disturb. So the
+    /// shader is changed the one way that leaves the model untouched — the name it
+    /// is bound by, replaced in place — and a shader that wants a different
+    /// material block is refused with its reason rather than forced.
+    /// </summary>
+    private void WriteMaterialShaders()
+    {
+        if (entries.SelectedItem is not CharacterAuthoringEntry entry) return;
+        if (shaderAssignments.Count == 0)
+        {
+            MessageBox.Show(
+                this, "No material has been given a shader.", "Write the shaders",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        try
+        {
+            Cursor = Cursors.WaitCursor;
+            if (CharacterRetargetPackage.ResolveModel(
+                    new GameAssetResolverFactory(),
+                    new PkgArchiveReader(),
+                    new AssetManifestReader(),
+                    gameDataPath,
+                    entry.ModelAssetId) is not { } resolved)
+            {
+                throw new InvalidOperationException(
+                    $"{entry.ModelAssetId} does not say where its model is.");
+            }
+
+            var cluster = resolved.Cluster;
+            var refused = new List<string>();
+            var alsoChanged = new List<string>();
+            foreach (var (material, assignment) in shaderAssignments)
+            {
+                var plan = PhyreEffectRebind.Plan(
+                    cluster, material, assignment.ShaderAsset, assignment.Cluster);
+                if (plan.Problems.Count != 0)
+                {
+                    refused.Add($"{material} → {Path.GetFileName(assignment.ShaderAsset)} : "
+                        + string.Join(" ", plan.Problems));
+                    continue;
+                }
+                cluster = PhyreEffectRebind.Repoint(
+                    cluster, material, assignment.ShaderAsset, assignment.Cluster);
+                alsoChanged.AddRange(plan.SharedWith);
+            }
+
+            if (refused.Count == shaderAssignments.Count)
+            {
+                MessageBox.Show(
+                    this,
+                    string.Join(Environment.NewLine + Environment.NewLine, refused)
+                        + Environment.NewLine + Environment.NewLine
+                        + "Nothing was written. A shader with a different interface needs"
+                        + " the model written again, which a skinned character does not"
+                        + " support here.",
+                    "Write the shaders",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            var written = AuthoredShaderPackage.With(
+                resolved.PackagePath,
+                shaderAssignments.Values
+                    .Select(value => (value.EntryName, value.Cluster))
+                    .DistinctBy(value => value.EntryName, StringComparer.OrdinalIgnoreCase)
+                    .ToArray(),
+                replaceModel: name => name.Equals(
+                    resolved.EntryName, StringComparison.OrdinalIgnoreCase)
+                        ? cluster
+                        : throw new InvalidOperationException(
+                            $"{resolved.PackagePath} holds a second model, {name}."));
+
+            var archive = new PkgArchiveReader().Read(resolved.PackagePath);
+            onSaving(resolved.PackagePath, true);
+            new PkgArchiveWriter().Write(
+                resolved.PackagePath, archive.Magic, written.ToArray());
+            onSaving(resolved.PackagePath, false);
+
+            models.Remove(entry.ModelAssetId);
+            if (resources.Remove(entry.ModelAssetId, out var stale)) stale.Dispose();
+            shaderAssignments.Clear();
+            ShowMaterials(entry);
+            status.Text = $"{entry.ModelAssetId}: shader(s) changed"
+                + (refused.Count == 0 ? string.Empty : $", {refused.Count} refused")
+                + (alsoChanged.Count == 0
+                    ? "."
+                    : $" — {string.Join(", ", alsoChanged.Distinct())} shared the"
+                        + " same shader and followed it.");
+            if (refused.Count != 0)
+            {
+                MessageBox.Show(
+                    this, string.Join(Environment.NewLine + Environment.NewLine, refused),
+                    "Shaders refused", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException or InvalidOperationException
+            or InvalidPhyreException or ArgumentException)
+        {
+            MessageBox.Show(
+                this, exception.Message, "Write the shaders",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            Cursor = Cursors.Default;
+        }
+    }
+
+    /// <summary>
     /// Puts the imported model onto the selected character, so it rides that
     /// character's own animations.
     ///
@@ -580,14 +803,14 @@ internal sealed class CharacterStudioForm : Form
         if (importedScene is not { } scene)
         {
             MessageBox.Show(
-                this, "Importez d'abord un modèle.", "Fit imported model",
+                this, "Import a model first.", "Fit imported model",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
         if (entries.SelectedItem is not CharacterAuthoringEntry entry)
         {
             MessageBox.Show(
-                this, "Choisissez le personnage à habiller.", "Fit imported model",
+                this, "Choose the character to dress.", "Fit imported model",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
@@ -619,7 +842,7 @@ internal sealed class CharacterStudioForm : Form
         {
             MessageBox.Show(
                 this,
-                $"Le paquet de {entry.ModelAssetId} n'a pas pu être résolu.",
+                $"{entry.ModelAssetId}'s package could not be resolved.",
                 "Fit imported model",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
@@ -629,8 +852,8 @@ internal sealed class CharacterStudioForm : Form
         {
             MessageBox.Show(
                 this,
-                $"{entry.ModelAssetId} n'a pas de squelette : il n'y a aucune animation"
-                    + " à laquelle raccrocher un modèle.",
+                $"{entry.ModelAssetId} has no skeleton, so there is no animation"
+                    + " for a model to be hung from.",
                 "Fit imported model",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
@@ -657,7 +880,7 @@ internal sealed class CharacterStudioForm : Form
         if (entries.SelectedItem is not CharacterAuthoringEntry entry)
         {
             MessageBox.Show(
-                this, "Choisissez d'abord celui à reprendre comme base.",
+                this, "Choose the one to take as a base first.",
                 "Create", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
@@ -665,8 +888,8 @@ internal sealed class CharacterStudioForm : Form
         {
             MessageBox.Show(
                 this,
-                "Créer passe par un projet de mod, qui suit les fichiers créés et sait"
-                    + " les retirer. Ouvrez-en un.",
+                "Creating goes through a mod project, which tracks the files it makes and can"
+                    + " remove them. Open one.",
                 "Create",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -676,9 +899,9 @@ internal sealed class CharacterStudioForm : Form
         var companions = CharacterCreation.Companions(
             modProject.GameDirectory, entry.ModelAssetId);
         var chosen = Prompt(
-            "Nom du nouvel asset",
-            $"Copié depuis {entry.ModelAssetId} et ses {companions.Count} paquet(s)."
-                + " Gardez la forme des noms du jeu.",
+            "Name of the new asset",
+            $"Copied from {entry.ModelAssetId} and its {companions.Count} package(s)."
+                + " Keep the shape of the game's own names.",
             Suggested(entry.ModelAssetId));
         if (chosen is null) return;
         chosen = chosen.Trim().ToUpperInvariant();
@@ -691,12 +914,12 @@ internal sealed class CharacterStudioForm : Form
                 modProject, entry.ModelAssetId, chosen, line => status.Text = line);
             MessageBox.Show(
                 this,
-                $"{made.AssetId} créé : {made.Written.Count} paquet(s),"
-                + $" {made.Symbols} symbole(s) renommé(s).\r\n\r\n"
-                + "Il charge déjà, avec le modèle et les animations de sa source. Ce qui"
-                + " reste pour que le jeu l'emploie est de le nommer dans ses tables —"
-                + " t_mons pour un ennemi, t_name pour un personnage — ce que cette"
-                + " fenêtre ne fait pas encore.",
+                $"{made.AssetId} created: {made.Written.Count} package(s),"
+                + $" {made.Symbols} symbol(s) renamed.\r\n\r\n"
+                + "It already loads, with its source's model and animations. What"
+                + " remains for the game to use it is naming it in its tables —"
+                + " t_mons for an enemy, t_name for a character — which this"
+                + " window does not do yet.",
                 "Create",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -774,14 +997,14 @@ internal sealed class CharacterStudioForm : Form
         if (importedScene is not { } scene || importedClips.Count == 0)
         {
             MessageBox.Show(
-                this, "Importez d'abord un modèle qui porte des animations.",
+                this, "Import a model that carries animations first.",
                 "Imported animations", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
         if (entries.SelectedItem is not CharacterAuthoringEntry entry)
         {
             MessageBox.Show(
-                this, "Choisissez le personnage à animer.",
+                this, "Choose the character to animate.",
                 "Imported animations", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
@@ -808,8 +1031,8 @@ internal sealed class CharacterStudioForm : Form
         {
             MessageBox.Show(
                 this,
-                $"{entry.ModelAssetId} ne déclare aucun emplacement d'animation, donc il n'y"
-                    + " a rien que le jeu saurait jouer.",
+                $"{entry.ModelAssetId} declares no animation slot, so there is"
+                    + " nothing the game would know how to play.",
                 "Imported animations",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);

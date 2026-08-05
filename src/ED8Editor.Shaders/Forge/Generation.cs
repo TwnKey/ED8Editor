@@ -59,16 +59,16 @@ public static class Generation
         string name, IReadOnlyDictionary<string, string> declarations, byte fallback)
     {
         declarations.TryGetValue(name, out var semantic);
-        var found = Semantic.Of(name, semantic);
-        return found is null or Semantic.Unknown ? fallback : found.Value;
+        var found = PhyreShaderSemantic.Of(name, semantic);
+        return found is null or PhyreShaderSemantic.Unknown ? fallback : found.Value;
     }
 
     /// <summary>The material parameter a binding falls back to.</summary>
     public static byte ResourceFallback(Reflection.Binding one) => one.Type switch
     {
         // A texture, by its dimension: 4 is 2D, 8 is 3D and 9 a cube.
-        2 => one.Dimension switch { 8 => Semantic.Texture3D, 9 => Semantic.TextureCube, _ => Semantic.Texture2D },
-        _ => Semantic.Sampler,
+        2 => one.Dimension switch { 8 => PhyreShaderSemantic.Texture3D, 9 => PhyreShaderSemantic.TextureCube, _ => PhyreShaderSemantic.Texture2D },
+        _ => PhyreShaderSemantic.Sampler,
     };
 
     /// <summary>
@@ -136,7 +136,7 @@ public static class Generation
             if (engineFed.Contains(one.Name)) continue;
             var (dataType, size) = Shape(one);
             yield return new Parameter(
-                one.Name, SemanticOf(one.Name, declarations, Semantic.Constant),
+                one.Name, SemanticOf(one.Name, declarations, PhyreShaderSemantic.Constant),
                 dataType, size, 0, one.Offset);
         }
 
@@ -294,9 +294,9 @@ public static class Generation
         // name gets, and writing them down would turn every material parameter of
         // every effect into an entry.
         foreach (var one in found
-                     .Where(value => value.Value is not (Semantic.Constant or Semantic.Color
-                         or Semantic.Texture2D or Semantic.Texture3D or Semantic.TextureCube
-                         or Semantic.Sampler))
+                     .Where(value => value.Value is not (PhyreShaderSemantic.Constant or PhyreShaderSemantic.Color
+                         or PhyreShaderSemantic.Texture2D or PhyreShaderSemantic.Texture3D or PhyreShaderSemantic.TextureCube
+                         or PhyreShaderSemantic.Sampler))
                      .OrderBy(value => value.Value))
         {
             Console.WriteLine($"        [\"{one.Key}\"] = {one.Value},");
@@ -352,7 +352,7 @@ public static class Generation
         {
             // The name without its index, which is what the engine hashes.
             var name = key[..^1];
-            var ours = Semantic.Hash(name);
+            var ours = PhyreShaderSemantic.Hash(name);
             if (ours != one.Hash) wrong++;
             Console.WriteLine($"  {key,-18} hachage 0x{one.Hash:X4}  calcule 0x{ours:X4}"
                 + $"  {(ours == one.Hash ? "" : "DIFFERE ")}donnee {one.DataType}  index {one.Index}");

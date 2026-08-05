@@ -15,6 +15,107 @@ using ED8Editor.Decompiler;
 using ED8Editor.Models;
 using ED8Editor.Phyre.Authoring;
 
+// How a shipped effect packs the matrices it declares, read from the compiled
+// program itself. It settles whether a constant buffer wants rows or columns,
+// which is the difference between a model drawn and a model gone.
+//
+//   --matrix-packing <package.pkg>
+// What a shipped model's materials actually supply, so a constant the native
+// renderer leaves at zero can be told from one the material fills.
+//
+//   --material-fill <package.pkg>
+if (Array.IndexOf(args, "--material-fill") >= 0)
+{
+    var package = new PkgArchiveReader().Read(
+        args[Array.IndexOf(args, "--material-fill") + 1]);
+    var modelEntry = package.Entries.First(value =>
+        value.Name.EndsWith(".dae.phyre", StringComparison.OrdinalIgnoreCase));
+    var read = new PhyreD3D11ModelReader().Read("probe", package.ReadEntry(modelEntry));
+    foreach (var material in read.Materials.Take(4))
+    {
+        Console.WriteLine($"{material.Name}  effect={material.EffectAssetName}");
+        foreach (var pair in material.SourceParameters.OrderBy(v => v.Key, StringComparer.Ordinal))
+        {
+            Console.WriteLine(
+                $"   f {pair.Key,-38} {string.Join(", ", pair.Value.Select(v => v.ToString("0.###")))}");
+        }
+        foreach (var pair in (material.SourceIntParameters
+                     ?? new Dictionary<string, uint>()).OrderBy(v => v.Key, StringComparer.Ordinal))
+        {
+            Console.WriteLine($"   i {pair.Key,-38} 0x{pair.Value:X8}");
+        }
+        foreach (var pair in material.SourceTextureReferences.OrderBy(v => v.Key, StringComparer.Ordinal))
+        {
+            Console.WriteLine($"   t {pair.Key,-38} {pair.Value}");
+        }
+    }
+    return 0;
+}
+
+if (Array.IndexOf(args, "--matrix-packing") >= 0)
+{
+    var package = new PkgArchiveReader().Read(
+        args[Array.IndexOf(args, "--matrix-packing") + 1]);
+    foreach (var entry in package.Entries)
+    {
+        if (!entry.Name.Contains(".fx#", StringComparison.OrdinalIgnoreCase)) continue;
+        if (!entry.Name.EndsWith(".phyre", StringComparison.OrdinalIgnoreCase)) continue;
+        var metadata = new PhyreEffectRenderPassReader().ReadMetadata(package.ReadEntry(entry));
+        if (metadata.Program is not { } program) continue;
+        Console.WriteLine(entry.Name);
+        foreach (var (passName, pass) in program.SceneRenderPasses)
+        {
+            var permutation = pass.Permutations.FirstOrDefault();
+            if (permutation is null) continue;
+            foreach (var (stageName, stage) in new[]
+                     {
+                         ("VS", permutation.VertexProgram),
+                         ("PS", permutation.FragmentProgram),
+                     })
+            {
+                var described = new D3D11ShaderProgramInspector().Inspect(
+                    stage,
+                    stageName == "VS" ? D3D11ShaderStage.Vertex : D3D11ShaderStage.Fragment);
+                Console.WriteLine($"  --- {stageName}");
+                foreach (var cb in described.ConstantBuffers)
+                {
+                    Console.WriteLine(
+                        $"    cbuffer {cb.Name,-16} bind b{cb.BindPoint} size {cb.Size}"
+                        + $" vars {cb.Variables.Count}");
+                }
+                foreach (var resource in described.Resources)
+                {
+                    Console.WriteLine(
+                        $"    {resource.Type,-16} {resource.Name,-32} bind {resource.BindPoint}");
+                }
+            }
+            using var reflection = Vortice.D3DCompiler.Compiler
+                .Reflect<Vortice.Direct3D11.Shader.ID3D11ShaderReflection>(
+                    permutation.VertexProgram.Bytecode);
+            foreach (var buffer in reflection.ConstantBuffers)
+            {
+                foreach (var variable in buffer.Variables)
+                {
+                    var type = variable.VariableType.Description;
+                    var name = variable.Description.Name;
+                    var fed = D3D11NativeEffect.EngineValue(
+                        name,
+                        new D3D11EffectFrame(
+                            Matrix4x4.Identity, Matrix4x4.Identity, Matrix4x4.Identity,
+                            Vector3.Zero, Vector3.UnitY, Vector4.One, Vector4.One, 0f));
+                    Console.WriteLine(
+                        $"  {name,-40} {type.Class,-14}"
+                        + $" +{variable.Description.StartOffset,-5} {variable.Description.Size,-4}"
+                        + (fed is null ? " -" : $" engine[{fed.Length}]"));
+                }
+            }
+            break;
+        }
+        break;
+    }
+    return 0;
+}
+
 if (args.Length is 2 or 3 && args[0] == "--script-summary")
 {
     var path = args[1];
@@ -935,6 +1036,11 @@ var tests = new (string Name, Action Run)[]
     ("writes AssetProcessor objects against the CS1 runtime class registry", WritesCs1RuntimeAuthoringAbi),
     ("authors a material from an effect's declared ABI", AuthorsMaterialFromEffectAbi),
     ("writes engine-compatible authored string and material fixups", WritesAuthoredModelFixups),
+    ("sets a material's declared parameters from typed values", SetsMaterialParameterValues),
+    ("binds each material to the shader the author assigned it", BindsAuthoredShadersPerMaterial),
+    ("swaps a shipped material's shader in place, or refuses", RepointsShippedMaterialShader),
+    ("keeps what a map was authored from, so it can be opened again", RemembersMapAuthoring),
+    ("feeds a native shader's constants from their own names", FeedsNativeShaderConstants),
 };
 
 var failures = 0;
@@ -2022,6 +2128,291 @@ static void WritesAuthoredModelFixups()
     Equal(0x80000064u, gameMaterials.SourceOffsetOrMember);
     Equal(1u, gameMaterials.Count);
     Equal(4u, metadata.InstanceGroups[Group("PMeshInstance")].ArraysSize);
+}
+
+/// <summary>
+/// A parameter block is filled at the offsets the block itself states, and a value
+/// that does not fit the parameter stops rather than being truncated into it.
+/// </summary>
+/// <summary>
+/// A shipped model's material is pointed at another shader without the model being
+/// rewritten — and a shader whose interface does not fit is refused instead.
+/// </summary>
+/// <summary>
+/// A map's settings survive being written and read back, so reopening one brings
+/// the form back rather than an empty one.
+/// </summary>
+/// <summary>
+/// A shader's constants are filled from what they are called, by the engine's own
+/// rule — and a name the rule does not recognise is left for the material.
+/// </summary>
+static void FeedsNativeShaderConstants()
+{
+    var world = Matrix4x4.CreateRotationY(0.7f) * Matrix4x4.CreateTranslation(3f, 4f, 5f);
+    var view = Matrix4x4.CreateLookAt(new Vector3(0, 2, -10), Vector3.Zero, Vector3.UnitY);
+    var projection = Matrix4x4.CreatePerspectiveFieldOfView(1f, 1.5f, 0.1f, 500f);
+    var frame = new D3D11EffectFrame(
+        world, view, projection,
+        new Vector3(0, 2, -10),
+        new Vector3(0, -1, 0),
+        new Vector4(0.7f, 0.7f, 0.7f, 1f),
+        new Vector4(0.4f, 0.4f, 0.4f, 1f),
+        12.5f);
+
+    static void SameMatrix(Matrix4x4 expected, float[]? actual)
+    {
+        if (actual is null) throw new InvalidOperationException("Nothing was supplied.");
+        Equal(16, actual.Length);
+        // Column-major, as a constant buffer holds a matrix the shader did not
+        // declare row_major — which the game's shaders never do.
+        var wanted = new[]
+        {
+            expected.M11, expected.M21, expected.M31, expected.M41,
+            expected.M12, expected.M22, expected.M32, expected.M42,
+            expected.M13, expected.M23, expected.M33, expected.M43,
+            expected.M14, expected.M24, expected.M34, expected.M44,
+        };
+        for (var at = 0; at < 16; at++) Near(wanted[at], actual[at], 0.0001f);
+    }
+
+    SameMatrix(world, D3D11NativeEffect.EngineValue("World", frame));
+    SameMatrix(world * view, D3D11NativeEffect.EngineValue("WorldView", frame));
+    SameMatrix(
+        world * view * projection,
+        D3D11NativeEffect.EngineValue("WorldViewProjection", frame));
+    SameMatrix(view * projection, D3D11NativeEffect.EngineValue("ViewProjection", frame));
+    SameMatrix(projection, D3D11NativeEffect.EngineValue("Projection", frame));
+
+    // The names the engine finds by searching rather than by an exact table.
+    var lightDirection = D3D11NativeEffect.EngineValue("LightDirWS", frame);
+    if (lightDirection is null) throw new InvalidOperationException("No light direction.");
+    Near(-1f, lightDirection[1]);
+    var lightColour = D3D11NativeEffect.EngineValue("LightColorIntensity", frame);
+    if (lightColour is null) throw new InvalidOperationException("No light colour.");
+    Near(0.7f, lightColour[0]);
+
+    Near(12.5f, D3D11NativeEffect.EngineValue("Time", frame)![0]);
+    Near(0.4f, D3D11NativeEffect.EngineValue("GlobalAmbientColor", frame)![0]);
+
+    // A uniform the author invented is the material's to fill, not the engine's —
+    // which is exactly what makes a shader with its own parameters usable.
+    Equal(true, D3D11NativeEffect.EngineValue("MyOwnTint", frame) is null);
+    Equal(true, D3D11NativeEffect.EngineValue("PhyreMaterialSwitches", frame) is null);
+}
+
+static void RemembersMapAuthoring()
+{
+    var directory = Path.Combine(Path.GetTempPath(), $"ed8-map-record-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var project = ModProject.Create(
+            Path.Combine(directory, "mod.ed8proj"), directory, "record");
+        Equal(0, MapAuthoringRecord.Authored(project).Count);
+        Equal(true, MapAuthoringRecord.Load(project, "z9100") is null);
+
+        var record = new MapAuthoringRecord(
+            "z9100",
+            "New Area",
+            6,
+            "O_S00SKY02",
+            @"C:\models\arena.glb",
+            new Dictionary<string, string> { ["3"] = "CK00", ["7"] = "CS01" },
+            new Dictionary<string, MapShaderRecord>(StringComparer.Ordinal)
+            {
+                ["S_ground"] = new(
+                    "ed8.fx#77F8C6B2524D1A0A4D01C2D0E8AE5B47",
+                    null,
+                    new Dictionary<string, string> { ["Tint"] = "1 0.5 0" }),
+                ["S_glass"] = new(
+                    "ed8.fx#MINE",
+                    @"C:\shaders\glass.hlsl",
+                    new Dictionary<string, string>()),
+            });
+        record.Save(project);
+
+        Equal(1, MapAuthoringRecord.Authored(project).Count);
+        Equal("z9100", MapAuthoringRecord.Authored(project)[0]);
+
+        var read = MapAuthoringRecord.Load(project, "z9100")
+            ?? throw new InvalidOperationException("The record did not come back.");
+        Equal(record.DisplayName, read.DisplayName);
+        Equal(record.PlaceKind, read.PlaceKind);
+        Equal(record.Skybox, read.Skybox);
+        Equal(record.ModelPath, read.ModelPath);
+        Equal(2, read.CollisionNodes.Count);
+        Equal("CK00", read.CollisionNodes["3"]);
+        Equal("CS01", read.CollisionNodes["7"]);
+        Equal(2, read.MaterialShaders.Count);
+        // The author's own shader is remembered by where its source is, not by the
+        // megabytes compiling it produced.
+        Equal(@"C:\shaders\glass.hlsl", read.MaterialShaders["S_glass"].HlslPath!);
+        Equal(true, read.MaterialShaders["S_ground"].HlslPath is null);
+        Equal("1 0.5 0", read.MaterialShaders["S_ground"].Values["Tint"]);
+
+        // Reading it by the name it was saved under is case-insensitive, since a
+        // map is named z9100 in one place and Z9100 in another.
+        Equal(true, MapAuthoringRecord.Load(project, "Z9100") is not null);
+    }
+    finally
+    {
+        try { Directory.Delete(directory, true); } catch (IOException) { }
+    }
+}
+
+static void RepointsShippedMaterialShader()
+{
+    var assets = @"C:\Program Files (x86)\Steam\steamapps\common\Trails of Cold Steel\data\asset\D3D11";
+    var packagePath = Path.Combine(assets, "C_EQU021.pkg");
+    if (!File.Exists(packagePath)) return;
+
+    var reader = new PkgArchiveReader();
+    var package = reader.Read(packagePath);
+    var cluster = package.ReadEntry(package.Entries.Single(value =>
+        value.Name.EndsWith(".dae.phyre", StringComparison.OrdinalIgnoreCase))).ToArray();
+
+    // Another variant of the same source, shipped elsewhere, whose material
+    // interface is the one C_EQU021's block already fills.
+    const string fitting = "shaders/ed8.fx#77F8C6B2524D1A0A4D01C2D0E8AE5B47";
+    var holder = reader.Read(Path.Combine(assets, "C_EQU013.pkg"));
+    var effect = holder.ReadEntry(holder.Entries.Single(value =>
+        value.Name.Equals(
+            "ed8.fx#77F8C6B2524D1A0A4D01C2D0E8AE5B47.phyre",
+            StringComparison.OrdinalIgnoreCase))).ToArray();
+
+    var before = PhyreMaterialTableReader.ReadAll(cluster);
+    var plan = PhyreEffectRebind.Plan(cluster, "S_model", fitting, effect);
+    Equal(0, plan.Problems.Count);
+    Equal(before["S_model"].ShaderAsset, plan.Current);
+
+    var written = PhyreEffectRebind.Repoint(cluster, "S_model", fitting, effect);
+    // Nothing moved: a cluster addresses itself by offset, so the swap is a name
+    // of the same length written where the old one was.
+    Equal(cluster.Length, written.Length);
+    var after = PhyreMaterialTableReader.ReadAll(written);
+    Equal(fitting, after["S_model"].ShaderAsset);
+    // Every material that shared the old name changed with it, and no other did.
+    foreach (var (name, table) in after)
+    {
+        var was = before[name].ShaderAsset;
+        Equal(was == plan.Current ? fitting : was, table.ShaderAsset);
+    }
+
+    // Its own shader is not a change.
+    Equal(1, PhyreEffectRebind.Plan(cluster, "S_model", plan.Current, effect).Problems.Count);
+
+    // A name of another length would move everything written after it, which is
+    // exactly what a model that is not rewritten cannot survive.
+    var longer = PhyreEffectRebind.Plan(cluster, "S_model", fitting + "X", effect);
+    Equal(1, longer.Problems.Count);
+    Throws<InvalidDataException>(() =>
+        PhyreEffectRebind.Repoint(cluster, "S_model", fitting + "X", effect));
+
+    // A material the model does not have is said so rather than guessed at.
+    Equal(1, PhyreEffectRebind.Plan(cluster, "no_such_material", fitting, effect).Problems.Count);
+}
+
+static void SetsMaterialParameterValues()
+{
+    // Three slots, laid out as a shader's block lays them out: a colour of three
+    // floats, an integer, and a texture whose image is named through an import.
+    var names = Encoding.ASCII.GetBytes("Tint\0Switches\0DiffuseMap\0");
+    var table = new PhyreMaterialTable(
+        "shaders/test.fx#0",
+        60,
+        3,
+        new byte[48],
+        new[]
+        {
+            new PhyreMaterialChild("float", 0, 0, 3),
+            new PhyreMaterialChild("PUInt32", 16, 0, 1),
+            new PhyreMaterialChild("PShaderParameterCaptureBufferTexture2D", 32, 0, 1),
+        },
+        Array.Empty<ReadOnlyMemory<byte>>(),
+        Array.Empty<ReadOnlyMemory<byte>>(),
+        Array.Empty<PhyreMaterialPointer>(),
+        names,
+        new[]
+        {
+            new PhyreMaterialArray(0, 0, 0, 0),
+            new PhyreMaterialArray(1, 0, 0, 5),
+            new PhyreMaterialArray(2, 0, 0, 14),
+        },
+        new[] { new PhyreMaterialImport(null, 0x80000000u | 44, "map/images/old.dds") });
+
+    Equal(3, PhyreMaterialValues.Parameters(table).Count);
+    Equal("DiffuseMap", PhyreMaterialValues.Parameters(table)[2].Name);
+
+    var filled = PhyreMaterialValues.WithValues(table, new Dictionary<string, string>
+    {
+        ["Tint"] = "0.25 0.5 1",
+        ["Switches"] = "0xCD07EC00",
+        ["DiffuseMap"] = "chr/images/mine.dds",
+        // A parameter this block does not declare: the author typed it against
+        // another shader, and it is no reason to refuse the ones that do fit.
+        ["NotHere"] = "3",
+    });
+
+    var bytes = filled.ParameterBufferObject.Span;
+    Near(0.25f, BitConverter.ToSingle(bytes[..4]));
+    Near(0.5f, BitConverter.ToSingle(bytes[4..8]));
+    Near(1f, BitConverter.ToSingle(bytes[8..12]));
+    Equal(0xCD07EC00u, BinaryPrimitives.ReadUInt32LittleEndian(bytes[16..20]));
+    // The original is untouched: a block is replaced, never edited underneath a
+    // caller that still holds it.
+    Equal(0u, BinaryPrimitives.ReadUInt32LittleEndian(table.ParameterBufferObject.Span[16..20]));
+
+    Equal(1, filled.Imports.Count);
+    Equal("chr/images/mine.dds", filled.Imports[0].Asset);
+    Equal(0x80000000u | 44, filled.Imports[0].Source);
+
+    // Three numbers were declared; two are not "close enough".
+    Throws<InvalidDataException>(() => PhyreMaterialValues.WithValues(
+        table, new Dictionary<string, string> { ["Tint"] = "1 0" }));
+    Throws<InvalidDataException>(() => PhyreMaterialValues.WithValues(
+        table, new Dictionary<string, string> { ["Tint"] = "1 0 rouge" }));
+}
+
+/// <summary>
+/// Each material gets the block of the shader it was assigned, the ones left alone
+/// keep what they had, and every assigned effect travels with them.
+/// </summary>
+static void BindsAuthoredShadersPerMaterial()
+{
+    var packagePath =
+        @"C:\Users\Administrator\Desktop\my-mod.files\original\data\asset\D3D11\O_T10LIG03.pkg";
+    if (!File.Exists(packagePath)) return;
+    var archive = new PkgArchiveReader().Read(packagePath);
+    var entryName = "ed8.fx#D506953A7385090896B925A6E8DE8286.phyre";
+    var effect = archive.ReadEntry(archive.Entries.Single(value =>
+        value.Name.Equals(entryName, StringComparison.OrdinalIgnoreCase))).ToArray();
+
+    var kept = PhyreMaterialTableReader.Minimal("shaders/kept.fx#0");
+    var assignment = AuthoredShaderBinding.For(
+        "painted",
+        "ed8.fx#D506953A7385090896B925A6E8DE8286",
+        effect,
+        new Dictionary<string, string>(),
+        custom: false);
+    Equal("shaders/ed8.fx#D506953A7385090896B925A6E8DE8286", assignment.ShaderAsset);
+    Equal(entryName, assignment.EntryName);
+
+    var (binding, shaders) = AuthoredShaderBinding.Build(
+        new[] { "plain", "painted" },
+        new Dictionary<string, ShaderAssignment> { ["painted"] = assignment },
+        kept,
+        "map/images/test-neutral.dds");
+
+    Equal(2, binding.PerMaterial!.Count);
+    // The unassigned slot keeps the block it had, not the one its neighbour got.
+    Equal("shaders/kept.fx#0", binding.PerMaterial[0]!.ShaderAsset);
+    Equal(assignment.ShaderAsset, binding.PerMaterial[1]!.ShaderAsset);
+    Equal(624u, binding.PerMaterial[1]!.ParameterBufferSize);
+    // The model names an assigned shader, and the package carries its file.
+    Equal(assignment.ShaderAsset, binding.ShaderAsset);
+    Equal(1, shaders.Count);
+    Equal(entryName, shaders[0].Name);
+    Equal(effect.Length, shaders[0].Data.Length);
 }
 
 static void AuthorsMaterialFromEffectAbi()

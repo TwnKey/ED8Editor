@@ -155,6 +155,7 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
         var buffer = cluster.GetGroupObjectsData(bufferGroupIndex).Span;
         var definitionCount = ReadUInt32(buffer, 0x08, cluster.Metadata.IsBigEndian);
         var parameters = new Dictionary<string, float[]>(StringComparer.Ordinal);
+        var integers = new Dictionary<string, uint>(StringComparer.Ordinal);
         var textures = new Dictionary<string, string>(StringComparer.Ordinal);
         if (definitionCount == 0)
         {
@@ -201,6 +202,13 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
                 }
                 parameters[name] = values;
             }
+            else if (parameterType == 64 && dataType == 8 && size >= sizeof(uint))
+            {
+                // A whole-number constant, most often the switch word that selects
+                // which of the shader's branches run. Without it every switch reads
+                // zero and a shader that tests them draws nothing.
+                integers[name] = ReadUInt32(buffer, location, cluster.Metadata.IsBigEndian);
+            }
             else if (parameterType == 66)
             {
                 var texturePointer = cluster.Fixups.Pointers.SingleOrDefault(value =>
@@ -232,7 +240,8 @@ public sealed class PhyreD3D11ModelReader : IPhyreModelReader
             textures,
             new Dictionary<string, int>(StringComparer.Ordinal),
             renderPassType,
-            effectAssetName);
+            effectAssetName,
+            SourceIntParameters: integers);
     }
 
     private static string? ReadRenderPassType(

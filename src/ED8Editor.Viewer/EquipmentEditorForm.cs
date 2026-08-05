@@ -54,7 +54,7 @@ internal sealed class EquipmentEditorForm : Form
     private readonly TextBox filter = new()
     {
         Dock = DockStyle.Top,
-        PlaceholderText = "Filtrer : nom d'asset, point d'accroche, personnage…",
+        PlaceholderText = "Filter: asset name, attach point, character…",
     };
 
     private readonly ListBox list = new() { Dock = DockStyle.Fill, IntegralHeight = false };
@@ -68,7 +68,26 @@ internal sealed class EquipmentEditorForm : Form
     };
 
     private readonly ListBox files = new() { Dock = DockStyle.Fill, IntegralHeight = false };
+    private readonly ListBox materialList = new()
+    {
+        Dock = DockStyle.Fill,
+        IntegralHeight = false,
+    };
+
     private readonly Label status = new() { Dock = DockStyle.Bottom, AutoSize = true };
+
+    /// <summary>
+    /// What the author pointed each material at, by equipment and then by material.
+    ///
+    /// Held here rather than written on the spot: a shader assignment only means
+    /// something once the package is written, and writing the package is one action
+    /// that carries the model, the effects and every material at once.
+    /// </summary>
+    private readonly Dictionary<string, Dictionary<string, ShaderAssignment>> assignments =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private IReadOnlyList<(string Material, string Shader, IReadOnlyList<string> Textures)>
+        materials = Array.Empty<(string, string, IReadOnlyList<string>)>();
 
     private IReadOnlyList<EquipmentEntry> all = Array.Empty<EquipmentEntry>();
     private IReadOnlyList<EquipmentEntry> shown = Array.Empty<EquipmentEntry>();
@@ -86,19 +105,21 @@ internal sealed class EquipmentEditorForm : Form
         this.graphics = graphics;
         this.loader = loader;
 
-        Text = "Équipements";
+        Text = "Equipment";
         Width = 1100;
         Height = 700;
         StartPosition = FormStartPosition.CenterParent;
 
-        var replaceFile = new Button { AutoSize = true, Text = "Remplacer ce fichier…" };
-        var replaceModel = new Button { AutoSize = true, Text = "Remplacer le modèle…" };
-        var shader = new Button { AutoSize = true, Text = "Shader d'un matériau…" };
+        var replaceFile = new Button { AutoSize = true, Text = "Replace this file…" };
+        var replaceModel = new Button { AutoSize = true, Text = "Replace the model…" };
+        var shader = new Button { AutoSize = true, Text = "Material shader…" };
         shader.Click += (_, _) => ChooseShader();
-        var importModel = new Button { AutoSize = true, Text = "Importer un modèle 3D…" };
-        var add = new Button { AutoSize = true, Text = "Ajouter un équipement…" };
-        var extract = new Button { AutoSize = true, Text = "Extraire…" };
-        var reload = new Button { AutoSize = true, Text = "Recharger" };
+        var applyShaders = new Button { AutoSize = true, Text = "Write the shaders" };
+        applyShaders.Click += (_, _) => WriteShaders();
+        var importModel = new Button { AutoSize = true, Text = "Import a 3D model…" };
+        var add = new Button { AutoSize = true, Text = "Add equipment…" };
+        var extract = new Button { AutoSize = true, Text = "Extract…" };
+        var reload = new Button { AutoSize = true, Text = "Reload" };
         importModel.Click += (_, _) => ImportModel();
         add.Click += (_, _) => AddEquipment();
         replaceFile.Click += (_, _) => Replace(files.SelectedItem as string);
@@ -111,17 +132,33 @@ internal sealed class EquipmentEditorForm : Form
         var tools = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true };
         tools.Controls.AddRange(new Control[]
         {
-            importModel, shader, add, replaceModel, replaceFile, extract, reload,
+            importModel, shader, applyShaders, add, replaceModel, replaceFile,
+            extract, reload,
         });
 
         var left = new Panel { Dock = DockStyle.Fill };
         left.Controls.Add(list);
         left.Controls.Add(filter);
 
-        var filesGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Fichiers du paquet" };
+        var filesGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Package files" };
         filesGroup.Controls.Add(files);
-        var detailsGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Matériaux et usages" };
-        detailsGroup.Controls.Add(details);
+        var detailsGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Materials and uses" };
+        var detailsSplit = new SplitContainer
+        {
+            Dock = DockStyle.Fill,
+            Orientation = Orientation.Horizontal,
+            SplitterDistance = 150,
+        };
+        var materialsGroup = new GroupBox
+        {
+            Dock = DockStyle.Fill,
+            Text = "Materials — double-click to choose the shader",
+        };
+        materialsGroup.Controls.Add(materialList);
+        detailsSplit.Panel1.Controls.Add(materialsGroup);
+        detailsSplit.Panel2.Controls.Add(details);
+        detailsGroup.Controls.Add(detailsSplit);
+        materialList.DoubleClick += (_, _) => ChooseShader();
 
         var right = new SplitContainer
         {
@@ -132,7 +169,7 @@ internal sealed class EquipmentEditorForm : Form
         right.Panel1.Controls.Add(filesGroup);
         right.Panel2.Controls.Add(detailsGroup);
 
-        var previewGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Aperçu" };
+        var previewGroup = new GroupBox { Dock = DockStyle.Fill, Text = "Preview" };
         previewGroup.Controls.Add(previewHost);
 
         var middle = new SplitContainer
@@ -197,9 +234,9 @@ internal sealed class EquipmentEditorForm : Form
         all = EquipmentCatalog.Load(gameDirectory);
         ApplyFilter();
         status.Text = all.Count == 0
-            ? $"Aucun paquet C_EQU trouvé dans {EquipmentCatalog.AssetDirectory(gameDirectory)}."
-            : $"{all.Count} équipements, {all.Count(one => one.Uses.Count != 0)} portés par"
-                + " au moins un personnage.";
+            ? $"No C_EQU package found in {EquipmentCatalog.AssetDirectory(gameDirectory)}."
+            : $"{all.Count} pieces of equipment, {all.Count(one => one.Uses.Count != 0)} worn by"
+                + " at least one character.";
     }
 
     private void ApplyFilter()
@@ -223,6 +260,8 @@ internal sealed class EquipmentEditorForm : Form
         if (Selected() is not { } one)
         {
             details.Text = string.Empty;
+            materials = Array.Empty<(string, string, IReadOnlyList<string>)>();
+            ShowMaterials(null);
             return;
         }
 
@@ -244,11 +283,11 @@ internal sealed class EquipmentEditorForm : Form
 
         if (one.Uses.Count == 0)
         {
-            text.AppendLine("Aucun personnage ne le porte dans t_attach.");
+            text.AppendLine("No character wears it in t_attach.");
         }
         else
         {
-            text.AppendLine($"Porté par ({one.Uses.Count}) :");
+            text.AppendLine($"Worn by ({one.Uses.Count}):");
             foreach (var use in one.Uses)
             {
                 text.AppendLine($"   personnage {use.Wearer,-7} {use.Kind,-10}"
@@ -257,14 +296,15 @@ internal sealed class EquipmentEditorForm : Form
         }
         text.AppendLine();
 
-        var materials = EquipmentCatalog.Materials(one.PackagePath);
+        materials = EquipmentCatalog.Materials(one.PackagePath);
+        ShowMaterials(one);
         if (materials.Count == 0)
         {
-            text.AppendLine("Matériaux illisibles depuis ce paquet.");
+            text.AppendLine("Materials cannot be read from this package.");
         }
         else
         {
-            text.AppendLine($"Matériaux ({materials.Count}) :");
+            text.AppendLine($"Materials ({materials.Count}):");
             foreach (var (material, shader, textures) in materials)
             {
                 text.AppendLine($"   {material}");
@@ -365,7 +405,7 @@ internal sealed class EquipmentEditorForm : Form
         }
         catch (Exception failure)
         {
-            status.Text = $"Aperçu impossible : {failure.Message}";
+            status.Text = $"Preview impossible : {failure.Message}";
         }
     }
 
@@ -392,9 +432,9 @@ internal sealed class EquipmentEditorForm : Form
         {
             MessageBox.Show(
                 this,
-                "Écrire un modèle passe par un projet de mod, pour que l'original soit"
-                    + " gardé et le changement réversible. Ouvrez-en un.",
-                "Importer un modèle",
+                "Writing a model goes through a mod project, so the original is"
+                    + " kept and the change can be undone. Open one.",
+                "Import a model",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
             return;
@@ -403,9 +443,9 @@ internal sealed class EquipmentEditorForm : Form
         {
             MessageBox.Show(
                 this,
-                $"{one.Asset} ne dit pas sous quel chemin son modèle répond :"
-                    + " impossible d'en écrire un à sa place.",
-                "Importer un modèle",
+                $"{one.Asset} does not state the path its model answers to,"
+                    + " so none can be written in its place.",
+                "Import a model",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
             return;
@@ -413,10 +453,10 @@ internal sealed class EquipmentEditorForm : Form
 
         using var dialog = new OpenFileDialog
         {
-            Title = $"Modèle à écrire dans {one.Asset}",
+            Title = $"Model to write into {one.Asset}",
             CheckFileExists = true,
-            Filter = "Modèles 3D (*.glb;*.gltf;*.fbx;*.dae;*.obj)|*.glb;*.gltf;*.fbx;*.dae;*.obj"
-                + "|Tous les fichiers (*.*)|*.*",
+            Filter = "3D models (*.glb;*.gltf;*.fbx;*.dae;*.obj)|*.glb;*.gltf;*.fbx;*.dae;*.obj"
+                + "|All files (*.*)|*.*",
         };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
@@ -431,16 +471,19 @@ internal sealed class EquipmentEditorForm : Form
                 imported.Model,
                 say: line => status.Text = line,
                 assetFolder: paths.Folder,
-                assetName: paths.Name);
+                assetName: paths.Name,
+                shaderAssignments: assignments.TryGetValue(one.Asset, out var chosen)
+                    ? chosen
+                    : null);
             Forget(one.Asset);
             Reload();
-            status.Text = $"{Path.GetFileName(dialog.FileName)} écrit dans {one.Asset}"
+            status.Text = $"{Path.GetFileName(dialog.FileName)} written into {one.Asset}"
                 + $" sous {paths.Folder}/{paths.Name}.dae.";
         }
         catch (Exception failure)
         {
             MessageBox.Show(
-                this, failure.Message, "Importer un modèle",
+                this, failure.Message, "Import a model",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
         finally
@@ -465,17 +508,17 @@ internal sealed class EquipmentEditorForm : Form
         {
             MessageBox.Show(
                 this,
-                "Ajouter un équipement passe par un projet de mod, qui suit le fichier créé.",
-                "Ajouter un équipement",
+                "Adding equipment goes through a mod project, which tracks the file it creates.",
+                "Add equipment",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
             return;
         }
 
         var chosen = Prompt(
-            "Nom du nouvel équipement",
-            $"Copié depuis {from.Asset}. Le jeu lit le nom du paquet, alors gardez la"
-                + " forme des siens.",
+            "Name of the new equipment",
+            $"Copied from {from.Asset}. The game reads the package name, so keep the"
+                + " shape of its own.",
             NextFreeName());
         if (chosen is null) return;
         chosen = chosen.Trim().ToUpperInvariant();
@@ -485,7 +528,7 @@ internal sealed class EquipmentEditorForm : Form
         if (File.Exists(target))
         {
             MessageBox.Show(
-                this, $"{chosen} existe déjà.", "Ajouter un équipement",
+                this, $"{chosen} already exists.", "Add equipment",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
@@ -498,13 +541,13 @@ internal sealed class EquipmentEditorForm : Form
             var at = shown.ToList().FindIndex(one =>
                 one.Asset.Equals(chosen, StringComparison.OrdinalIgnoreCase));
             if (at >= 0) list.SelectedIndex = at;
-            status.Text = $"{chosen} créé depuis {from.Asset}. Son modèle répond encore sous"
-                + " le chemin du paquet copié : importez-en un, puis nommez-le dans t_attach.";
+            status.Text = $"{chosen} created from {from.Asset}. Its model still answers under"
+                + " the copied package's path: import one, then name it in t_attach.";
         }
         catch (Exception failure)
         {
             MessageBox.Show(
-                this, failure.Message, "Ajouter un équipement",
+                this, failure.Message, "Add equipment",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
@@ -550,76 +593,220 @@ internal sealed class EquipmentEditorForm : Form
     }
 
     /// <summary>
-    /// Points one of the equipment's materials at a shader — one of the game's, or
-    /// one compiled from the author's own HLSL on the spot.
+    /// Points the selected material at a shader — one of the game's, or one
+    /// compiled from the author's own HLSL a moment ago.
     ///
-    /// A custom shader is written into the package under its own name, so what the
-    /// game loads is the author's code rather than a copy of somebody else's.
+    /// The choice is remembered, not written: what a material draws with only
+    /// becomes real when the package is written, and the package is written in one
+    /// go — the model, every effect it needs and every material's constant block
+    /// together — so there is no state in which half of it has landed.
     /// </summary>
     private void ChooseShader()
     {
         if (Selected() is not { } one) return;
-        var materials = EquipmentCatalog.Materials(one.PackagePath);
-        if (materials.Count == 0)
+        if (materialList.SelectedIndex < 0 || materialList.SelectedIndex >= materials.Count)
         {
             MessageBox.Show(
-                this, "Ce paquet ne déclare aucun matériau.", "Shader",
+                this, "Choose a material from the list first.", "Shader",
                 MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
 
-        var material = materials[0];
-        if (materials.Count > 1)
-        {
-            var chosen = Prompt(
-                "Quel matériau",
-                "Ce modèle en a plusieurs — nommez celui à changer :",
-                materials[0].Material);
-            if (chosen is null) return;
-            var found = materials.FirstOrDefault(value =>
-                value.Material.Equals(chosen.Trim(), StringComparison.OrdinalIgnoreCase));
-            if (found.Material is null) return;
-            material = found;
-        }
-
-        var directory = Path.GetDirectoryName(
-            Path.GetDirectoryName(Path.GetDirectoryName(one.PackagePath)))!;
-        using var chooser = new ShaderChooserForm(
-            Path.GetDirectoryName(directory)!, material.Material);
+        var material = materials[materialList.SelectedIndex].Material;
+        using var chooser = new ShaderChooserForm(gameDirectory, material);
         if (chooser.ShowDialog(this) != DialogResult.OK || chooser.Choice is not { } choice) return;
 
-        if (choice.Cluster is null)
+        if (!assignments.TryGetValue(one.Asset, out var forAsset))
         {
-            status.Text = $"{material.Material} : {choice.AssetName} choisi."
-                + " Le lier au matériau reste à faire.";
+            forAsset = new Dictionary<string, ShaderAssignment>(StringComparer.Ordinal);
+            assignments[one.Asset] = forAsset;
+        }
+        forAsset[material] = AuthoredShaderBinding.For(
+            material, choice.AssetName, choice.Cluster, choice.Values, choice.Custom);
+
+        ShowMaterials(one);
+        status.Text = $"{material} → {choice.AssetName}."
+            + " Write the shaders, or import a model: either writes the package"
+            + " with every assignment at once.";
+    }
+
+    /// <summary>
+    /// Writes the package with the shaders the author assigned.
+    ///
+    /// Two ways, and the gentler one first. A model names its shader once, in a
+    /// string of a fixed length, so a shader whose interface matches can be put in
+    /// its place without the model being touched at all — nothing moves, and the
+    /// geometry the game ships is the geometry it keeps. When the shader wants a
+    /// different material block that is not possible, and the model is written
+    /// again from its own geometry instead, which has no such restriction and is
+    /// asked for rather than done quietly.
+    /// </summary>
+    private void WriteShaders()
+    {
+        if (Selected() is not { } one) return;
+        if (!assignments.TryGetValue(one.Asset, out var forAsset) || forAsset.Count == 0)
+        {
+            MessageBox.Show(
+                this, "No material has been given a shader.", "Write the shaders",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        if (project is null)
+        {
+            MessageBox.Show(
+                this,
+                "Writing a package goes through a mod project, so the original is"
+                    + " kept and the change can be undone. Open one.",
+                "Write the shaders",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
             return;
         }
 
         try
         {
-            // The author's own effect, written into the package beside the model.
-            var entryName = choice.AssetName + ".phyre";
+            Cursor = Cursors.WaitCursor;
             var archive = new PkgArchiveReader().Read(one.PackagePath);
-            var rebuilt = archive.Entries
-                .Where(entry => !entry.Name.Equals(entryName, StringComparison.OrdinalIgnoreCase))
-                .Select(entry => (entry.Name, Data: archive.ReadEntry(entry).ToArray()))
-                .Append((entryName, choice.Cluster))
-                .ToArray();
+            var modelEntry = archive.Entries.FirstOrDefault(entry =>
+                entry.Name.EndsWith(".dae.phyre", StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidOperationException(
+                    $"{one.Asset} holds no model.");
+            var cluster = archive.ReadEntry(modelEntry).ToArray();
 
-            project?.CaptureOriginal(one.PackagePath);
-            new PkgArchiveWriter().Write(one.PackagePath, archive.Magic, rebuilt);
-            project?.TrackSave(one.PackagePath);
+            var refused = new List<string>();
+            var alsoChanged = new List<string>();
+            foreach (var (material, assignment) in forAsset)
+            {
+                var plan = PhyreEffectRebind.Plan(
+                    cluster, material, assignment.ShaderAsset, assignment.Cluster);
+                if (plan.Problems.Count != 0)
+                {
+                    refused.Add($"{material} → {Path.GetFileName(assignment.ShaderAsset)} : "
+                        + string.Join(" ", plan.Problems));
+                    continue;
+                }
+                cluster = PhyreEffectRebind.Repoint(
+                    cluster, material, assignment.ShaderAsset, assignment.Cluster);
+                alsoChanged.AddRange(plan.SharedWith);
+            }
+
+            if (refused.Count != 0)
+            {
+                var rewrite = MessageBox.Show(
+                    this,
+                    string.Join(Environment.NewLine, refused)
+                        + Environment.NewLine + Environment.NewLine
+                        + "The model can be written again in full from its own"
+                        + " geometry, which lifts that restriction. Do that?",
+                    "Write the shaders",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question);
+                if (rewrite == DialogResult.Yes)
+                {
+                    RewriteWithShaders(one, forAsset);
+                    return;
+                }
+                if (alsoChanged.Count == 0 && refused.Count == forAsset.Count) return;
+            }
+
+            var entries = AuthoredShaderPackage.With(
+                one.PackagePath,
+                forAsset.Values
+                    .Select(value => (value.EntryName, value.Cluster))
+                    .DistinctBy(value => value.EntryName, StringComparer.OrdinalIgnoreCase)
+                    .ToArray(),
+                replaceModel: _ => cluster);
+
+            project.CaptureOriginal(one.PackagePath);
+            new PkgArchiveWriter().Write(one.PackagePath, archive.Magic, entries.ToArray());
+            project.TrackSave(one.PackagePath);
+            Forget(one.Asset);
             Reload();
-            status.Text = $"{entryName} écrit dans {one.Asset}"
-                + $" ({choice.Cluster.Length / 1024} Ko)."
-                + " Le lier au matériau reste à faire.";
+            status.Text = $"{one.Asset}: shader changed without rewriting the model"
+                + (alsoChanged.Count == 0
+                    ? "."
+                    : $" — {string.Join(", ", alsoChanged.Distinct())} shared the same"
+                        + " shader and followed it.");
         }
         catch (Exception failure)
         {
             MessageBox.Show(
-                this, failure.Message, "Shader",
+                this, failure.Message, "Write the shaders",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+        finally
+        {
+            Cursor = Cursors.Default;
+        }
+    }
+
+    /// <summary>
+    /// Writes the whole package again — its geometry read back out and written by
+    /// the same writer an import goes through, with every material on the shader it
+    /// was assigned.
+    /// </summary>
+    private void RewriteWithShaders(
+        EquipmentEntry one,
+        IReadOnlyDictionary<string, ShaderAssignment> forAsset)
+    {
+        if (EquipmentCatalog.AssetPaths(one.PackagePath) is not { } paths)
+        {
+            MessageBox.Show(
+                this,
+                $"{one.Asset} does not state the path its model answers to.",
+                "Write the shaders",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        var load = loader.LoadAsset(one.Asset, gameDataPath);
+        if (load.Status != AssetModelLoadStatus.Loaded || load.Model is null)
+        {
+            throw new InvalidOperationException(
+                $"{one.Asset} does not load, so its geometry cannot be"
+                    + " written again with another shader.");
+        }
+        var source = LoadedModelSource.From(load.Model, one.Asset, out var problems);
+        if (source is null)
+        {
+            throw new InvalidOperationException(string.Join(Environment.NewLine, problems));
+        }
+
+        MapModelPackage.WriteProp(
+            project!,
+            one.Asset,
+            source,
+            say: line => status.Text = line,
+            assetFolder: paths.Folder,
+            assetName: paths.Name,
+            shaderAssignments: forAsset);
+        Forget(one.Asset);
+        Reload();
+        status.Text = $"{one.Asset} written again: {forAsset.Count} material(s) on their shader.";
+    }
+
+    /// <summary>What each material draws with: what the package says, or what the
+    /// author has chosen for it since.</summary>
+    private void ShowMaterials(EquipmentEntry? entry)
+    {
+        materialList.BeginUpdate();
+        materialList.Items.Clear();
+        var keep = materialList.SelectedIndex;
+        if (entry is not null)
+        {
+            assignments.TryGetValue(entry.Asset, out var forAsset);
+            foreach (var (material, shader, _) in materials)
+            {
+                var assigned = forAsset is not null && forAsset.TryGetValue(material, out var one)
+                    ? one.Label
+                    : Path.GetFileName(shader);
+                materialList.Items.Add($"{material}   →   {assigned}");
+            }
+        }
+        materialList.EndUpdate();
+        if (keep >= 0 && keep < materialList.Items.Count) materialList.SelectedIndex = keep;
+        else if (materialList.Items.Count != 0) materialList.SelectedIndex = 0;
     }
 
     /// <summary>Writes one entry of the package out, so it can be worked on.</summary>
@@ -628,7 +815,7 @@ internal sealed class EquipmentEditorForm : Form
         if (Selected() is not { } one || string.IsNullOrEmpty(entryName)) return;
         using var dialog = new SaveFileDialog
         {
-            Title = $"Extraire {entryName}",
+            Title = $"Extract {entryName}",
             FileName = entryName,
         };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
@@ -636,7 +823,7 @@ internal sealed class EquipmentEditorForm : Form
         var entry = package.Entries.First(value =>
             value.Name.Equals(entryName, StringComparison.OrdinalIgnoreCase));
         File.WriteAllBytes(dialog.FileName, package.ReadEntry(entry).ToArray());
-        status.Text = $"{entryName} écrit dans {dialog.FileName}.";
+        status.Text = $"{entryName} written to {dialog.FileName}.";
     }
 
     /// <summary>
@@ -653,7 +840,7 @@ internal sealed class EquipmentEditorForm : Form
         {
             MessageBox.Show(
                 this,
-                "Choisissez d'abord un fichier du paquet.",
+                "Choose a file from the package first.",
                 "Remplacer",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
@@ -663,12 +850,12 @@ internal sealed class EquipmentEditorForm : Form
         var extension = Path.GetExtension(entryName);
         using var dialog = new OpenFileDialog
         {
-            Title = $"Remplacer {entryName} de {one.Asset}",
+            Title = $"Replace {entryName} of {one.Asset}",
             CheckFileExists = true,
             Filter = extension.Length > 1
                 ? $"Fichiers {extension.TrimStart('.')} (*{extension})|*{extension}"
-                    + "|Tous les fichiers (*.*)|*.*"
-                : "Tous les fichiers (*.*)|*.*",
+                    + "|All files (*.*)|*.*"
+                : "All files (*.*)|*.*",
         };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
@@ -697,9 +884,9 @@ internal sealed class EquipmentEditorForm : Form
             project?.TrackSave(one.PackagePath);
 
             Reload();
-            status.Text = $"{entryName} remplacé dans {one.Asset}"
+            status.Text = $"{entryName} replaced in {one.Asset}"
                 + $" ({replacement.Length / 1024} Ko)"
-                + (project is null ? " — hors projet, rien n'est suivi." : ".");
+                + (project is null ? " — outside a project, nothing is tracked." : ".");
         }
         catch (Exception failure)
         {

@@ -79,7 +79,7 @@ public static class Emission
                 if (placed.ContainsKey(one.Name)) continue;
                 var (dataType, size) = Generation.Shape(one);
                 placed[one.Name] = new Generation.Placed(next, size, dataType, Frequency(
-                    Generation.SemanticOf(one.Name, declarations, Semantic.Constant)));
+                    Generation.SemanticOf(one.Name, declarations, PhyreShaderSemantic.Constant)));
                 next += (size + 15) / 16 * 16;
             }
             foreach (var one in program.Bindings.Where(value => value.Type is 2 or 3))
@@ -329,7 +329,7 @@ public static class Emission
             names.Write(System.Text.Encoding.ASCII.GetBytes(one.Name + "\0"));
             var semantic = semantics.TryGetValue(one.Name, out var known)
                 ? known
-                : Generation.SemanticOf(one.Name, declarations, Semantic.Constant);
+                : Generation.SemanticOf(one.Name, declarations, PhyreShaderSemantic.Constant);
             made.Add(Object("PShaderParameterDefinition",
                 ("m_parameterType", new[] { semantic }),
                 ("m_dataType", new[] { one.DataType }),

@@ -64,7 +64,8 @@ public static class MapModelPackage
         IReadOnlyDictionary<string, string>? materialMap = null,
         string? nodeInformationFrom = null,
         IReadOnlyDictionary<string, string>? materialShaders = null,
-        IReadOnlyList<string>? extraShaderFiles = null)
+        IReadOnlyList<string>? extraShaderFiles = null,
+        IReadOnlyDictionary<string, ShaderAssignment>? shaderAssignments = null)
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentNullException.ThrowIfNull(model);
@@ -199,6 +200,27 @@ public static class MapModelPackage
         }
 
         var material = new PhyreShaderBinding(shaderAsset, parameters, perMaterial);
+
+        // What the author assigned, material by material. It replaces the binding
+        // above rather than adding to it: a block built from the chosen shader's own
+        // declarations is what that shader wants, and a block kept from anywhere else
+        // is what some other shader wanted.
+        if (shaderAssignments is { Count: > 0 })
+        {
+            var (assigned, brought) = AuthoredShaderBinding.Build(
+                MaterialSlots(drawn),
+                shaderAssignments,
+                material.Parameters,
+                NeutralTextureAsset);
+            material = assigned;
+            var carried = shaders.ToDictionary(
+                value => value.Name, value => value.Data, StringComparer.OrdinalIgnoreCase);
+            foreach (var (name, data) in brought) carried[name] = data;
+            shaders = carried.Select(pair => (Name: pair.Key, Data: pair.Value)).ToArray();
+            shaderAsset = material.ShaderAsset;
+            say?.Invoke($"shaders: {shaderAssignments.Count} material(s) assigned,"
+                + $" {shaders.Length} effect(s) in the package");
+        }
         // The same schema profile as a prop, when there is no collision to write.
         // A prop written this way loads; a map written the "native" way does not, and
         // the profile is one of the few things that has always differed between the

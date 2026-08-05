@@ -17,6 +17,86 @@ if (args.Length == 0)
     return 2;
 }
 
+// Sweeps the game for materials whose shader could be swapped in place, and
+// checks that swapping one really does change what the model binds.
+//
+//   --rebind-sweep <asset directory> [how many packages]
+if (args.Length > 2 && args[1] == "--rebind-sweep")
+{
+    var directory = args[2];
+    var limit = args.Length > 3 ? int.Parse(args[3]) : 40;
+    var packages = new PkgArchiveReader();
+
+    // Every variant the game ships, by name, read once.
+    var variants = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+    foreach (var path in Directory.EnumerateFiles(directory, "*.pkg"))
+    {
+        IPackageArchive holder;
+        try { holder = packages.Read(path); } catch (Exception) { continue; }
+        foreach (var entry in holder.Entries)
+        {
+            if (!entry.Name.Contains(".fx#", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!entry.Name.EndsWith(".phyre", StringComparison.OrdinalIgnoreCase)) continue;
+            var asset = "shaders/" + entry.Name[..^".phyre".Length];
+            if (variants.ContainsKey(asset)) continue;
+            try { variants[asset] = holder.ReadEntry(entry).ToArray(); } catch (Exception) { }
+        }
+        if (variants.Count > 2500) break;
+    }
+    Console.WriteLine($"{variants.Count} variants read.");
+
+    var examined = 0;
+    var swapped = 0;
+    foreach (var path in Directory.EnumerateFiles(directory, "*.pkg"))
+    {
+        if (examined >= limit) break;
+        IPackageArchive holder;
+        try { holder = packages.Read(path); } catch (Exception) { continue; }
+        var model = holder.Entries.FirstOrDefault(value =>
+            value.Name.EndsWith(".dae.phyre", StringComparison.OrdinalIgnoreCase));
+        if (model is null) continue;
+        byte[] cluster;
+        IReadOnlyDictionary<string, PhyreMaterialTable> materials;
+        try
+        {
+            cluster = holder.ReadEntry(model).ToArray();
+            materials = PhyreMaterialTableReader.ReadAll(cluster);
+        }
+        catch (Exception) { continue; }
+        if (materials.Count == 0) continue;
+        examined++;
+
+        foreach (var (name, table) in materials)
+        {
+            var fits = variants.Keys
+                .Where(value => value.Length == table.ShaderAsset.Length
+                    && !string.Equals(value, table.ShaderAsset, StringComparison.Ordinal))
+                .Select(value => (Asset: value,
+                    Plan: PhyreEffectRebind.Plan(cluster, name, value, variants[value])))
+                .FirstOrDefault(value => value.Plan.Problems.Count == 0);
+            if (fits.Asset is null) continue;
+
+            var written = PhyreEffectRebind.Repoint(cluster, name, fits.Asset, variants[fits.Asset]);
+            var after = PhyreMaterialTableReader.ReadAll(written);
+            var now = after[name].ShaderAsset;
+            var ok = string.Equals(now, fits.Asset, StringComparison.Ordinal)
+                && written.Length == cluster.Length;
+            // Nothing else moved: the two files differ only where the name is.
+            var changed = 0;
+            for (var at = 0; at < written.Length; at++) if (written[at] != cluster[at]) changed++;
+            swapped++;
+            Console.WriteLine(
+                $"{Path.GetFileNameWithoutExtension(path),-16} {name,-24}"
+                + $" {Path.GetFileName(table.ShaderAsset)} -> {Path.GetFileName(fits.Asset)}"
+                + $"  shares={fits.Plan.SharedWith.Count} bytes-changed={changed}"
+                + $" {(ok ? "ok" : "MISMATCH")}");
+            break;
+        }
+    }
+    Console.WriteLine($"{examined} models examined, {swapped} with a swappable material.");
+    return 0;
+}
+
 if (args.Length > 2 && args[1] == "--list-package")
 {
     var package = new PkgArchiveReader().Read(args[2]);

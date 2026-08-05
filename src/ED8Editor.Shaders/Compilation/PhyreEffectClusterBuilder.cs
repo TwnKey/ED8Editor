@@ -87,7 +87,7 @@ public sealed class PhyreEffectClusterBuilder
                     constant.Name,
                     (int)constant.Offset,
                     (int)size,
-                    Generation.SemanticOf(constant.Name, declarations, Semantic.Constant),
+                    Generation.SemanticOf(constant.Name, declarations, PhyreShaderSemantic.Constant),
                     dataType);
             }
             foreach (var binding in program.Bindings.Where(one => one.Type is 2 or 3))
@@ -151,7 +151,7 @@ public sealed class PhyreEffectClusterBuilder
                 DataTypeOf(components),
                 FormatOf(components),
                 slot++,
-                Semantic.Hash(input.Name)));
+                PhyreShaderSemantic.Hash(input.Name)));
         }
         return found;
     }
