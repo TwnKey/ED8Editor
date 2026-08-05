@@ -42,9 +42,29 @@ if errorlevel 1 (
   exit /b 1
 )
 
-rem  The version goes into the assembly, because that is what the updater compares
-rem  against. A release whose binary still says 1.0.0.0 is one every user is
-rem  offered for ever.
+rem  The version is written into the project as well as passed to the build.
+rem
+rem  Passing it alone would be enough for the release, but then a build made from
+rem  the sources afterwards would still report the old number and be offered an
+rem  update to what it already contains. Recording it means the repository always
+rem  states which release it is, which is also what someone reading it expects.
+echo == Setting the version to %VERSION%
+powershell -NoProfile -Command ^
+  "$p='%ROOT%src\ED8Editor.Viewer\ED8Editor.Viewer.csproj';" ^
+  "$t=Get-Content -Raw $p;" ^
+  "$n=[regex]::Replace($t,'<Version>[^<]*</Version>','<Version>%VERSION%</Version>');" ^
+  "if($n -ne $t){Set-Content -NoNewline -Encoding utf8 $p $n}"
+if errorlevel 1 (
+  echo Could not write the version into the project.
+  exit /b 1
+)
+git -C "%ROOT%" diff --quiet
+if errorlevel 1 (
+  git -C "%ROOT%" add "src/ED8Editor.Viewer/ED8Editor.Viewer.csproj"
+  git -C "%ROOT%" commit -q -m "v%VERSION%"
+  echo    recorded as a commit
+)
+
 echo == Building %VERSION%
 dotnet build "%ROOT%ED8Editor.sln" -c Release -p:Version=%VERSION% --nologo -v q
 if errorlevel 1 (
@@ -96,6 +116,14 @@ echo == Tagging v%VERSION%
 git -C "%ROOT%" tag -a "v%VERSION%" -m "v%VERSION%"
 if errorlevel 1 (
   echo That tag already exists. Pick another version.
+  exit /b 1
+)
+rem  The commit first, then the tag: a tag pushed alone would point at a commit
+rem  the remote does not have.
+git -C "%ROOT%" push origin HEAD
+if errorlevel 1 (
+  echo Could not push the branch; the release was not created.
+  git -C "%ROOT%" tag -d "v%VERSION%" >nul
   exit /b 1
 )
 git -C "%ROOT%" push origin "v%VERSION%"
