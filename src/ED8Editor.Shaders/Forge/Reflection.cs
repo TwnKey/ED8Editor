@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace ED8Editor.ShaderForge;
+namespace ED8Editor.Shaders.Forge;
 
 /// <summary>
 /// What a compiled program declares about itself, read straight out of its DXBC.

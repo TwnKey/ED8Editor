@@ -1434,6 +1434,8 @@ public sealed class ViewerForm : Form
         windows.DropDownItems.Add(new ToolStripMenuItem(
             "Enemy studio…", null, (_, _) => ShowCharacterStudio(CharacterAuthoringKind.Enemy)));
         windows.DropDownItems.Add(new ToolStripMenuItem(
+            "Equipment editor…", null, (_, _) => ShowEquipmentEditor()));
+        windows.DropDownItems.Add(new ToolStripMenuItem(
             "Quest editor…", null, (_, _) => ShowQuestEditor()));
         windows.DropDownItems.Add(new ToolStripMenuItem(
             "Create a map…", null, (_, _) => ShowMapStudio()));
@@ -3651,7 +3653,8 @@ public sealed class ViewerForm : Form
                 scriptAnimationLibrary,
                 kind,
                 (target, beforeWrite) => TrackModSave(target, beforeWrite),
-                instructionDefinitionsPath);
+                instructionDefinitionsPath,
+                modProject);
         }
         catch (Exception exception) when (exception is IOException
             or InvalidDataException or InvalidOperationException
@@ -3715,6 +3718,60 @@ public sealed class ViewerForm : Form
     /// Opens the editor for what a map's collision surfaces are made of — the node
     /// information file beside the map, which the writer creates and this edits.
     /// </summary>
+    /// <summary>
+    /// Lists what the game models as equipment, and lets its packages be edited.
+    ///
+    /// It needs the game folder and nothing else: the packages are the catalogue, and
+    /// the attach table only says who wears what.
+    /// </summary>
+    private void ShowEquipmentEditor()
+    {
+        var directory = ProjectGameDirectory();
+        if (directory is null)
+        {
+            MessageBox.Show(
+                this,
+                "Le dossier du jeu n'est pas connu de cette session : ouvrez un projet"
+                    + " de mod ou un script du jeu.",
+                "Équipements",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        if (graphics is null || session.Script.GameDataPath is not { } dataPath)
+        {
+            MessageBox.Show(
+                this,
+                "L'aperçu des équipements demande le dossier de données du jeu et le"
+                    + " rendu : ouvrez un script du jeu.",
+                "Équipements",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        var window = new EquipmentEditorForm(
+            directory, dataPath, modProject, graphics, projectLoader);
+        window.Show(this);
+    }
+
+    /// <summary>
+    /// The folder that contains <c>data</c>, whichever of the two a caller happens to
+    /// hold. The session names the data folder on some paths and the game folder on
+    /// others, so both are made to agree here rather than at each call site.
+    /// </summary>
+    private string? ProjectGameDirectory()
+    {
+        if (modProject is not null) return modProject.GameDirectory;
+        if (session.Script.GameDataPath is not { } gameData) return null;
+        var trimmed = gameData.TrimEnd(
+            Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return string.Equals(Path.GetFileName(trimmed), "data", StringComparison.OrdinalIgnoreCase)
+            ? Path.GetDirectoryName(trimmed) ?? trimmed
+            : trimmed;
+    }
+
     private void ShowNodeInformationEditor()
     {
         if (session.Map?.SourcePath is not { } opsPath)
@@ -5546,6 +5603,7 @@ public sealed class ViewerForm : Form
         var fileMenu = new ContextMenuStrip();
         fileMenu.Items.Add("Restore this file", null, (_, _) => RestoreModOriginals(selectedOnly: true));
         fileMenu.Items.Add("Re-apply this file", null, (_, _) => ApplyModFiles(selectedOnly: true));
+        fileMenu.Items.Add("Replace with a file…", null, (_, _) => ReplaceModFile());
         fileMenu.Items.Add(
             "Add an existing file to the mod… (no original is kept)",
             null,
@@ -5744,6 +5802,70 @@ public sealed class ViewerForm : Form
         RunModProjectAction(() =>
         {
             foreach (var file in dialog.FileNames) modProject.Include(file);
+            RefreshModProjectTab();
+        });
+    }
+
+    /// <summary>
+    /// Puts a file from disk in the place of one the mod holds.
+    ///
+    /// A map's OPS, a script, a package: often one already exists, made by hand or by
+    /// another tool, and there is no reason to go through whatever would otherwise
+    /// have written it. The game's own version is kept first, so restoring still
+    /// works afterwards.
+    /// </summary>
+    private void ReplaceModFile()
+    {
+        if (modProject is null) return;
+        if (modFileTree.SelectedNode?.Tag is not string relative)
+        {
+            MessageBox.Show(
+                this,
+                "Select one file, not a folder, before replacing it.",
+                "Replace mod file",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        var target = modProject.GameFilePath(relative);
+        var extension = Path.GetExtension(target);
+        using var dialog = new OpenFileDialog
+        {
+            Title = $"Replace {Path.GetFileName(target)}",
+            CheckFileExists = true,
+            // The same kind first, since that is what a replacement almost always is,
+            // but not only that kind: the file the game reads is decided by its name.
+            Filter = extension.Length > 1
+                ? $"{extension.TrimStart('.').ToUpperInvariant()} files (*{extension})"
+                    + $"|*{extension}|All files (*.*)|*.*"
+                : "All files (*.*)|*.*",
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+        var chosen = Path.GetFullPath(dialog.FileName);
+        if (string.Equals(chosen, Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+        if (!string.Equals(Path.GetExtension(chosen), extension, StringComparison.OrdinalIgnoreCase))
+        {
+            var anyway = MessageBox.Show(
+                this,
+                $"'{Path.GetFileName(chosen)}' is not a {extension} file, and the game reads"
+                + $" '{Path.GetFileName(target)}' expecting one.\n\nPut it there anyway?",
+                "Replace mod file",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+            if (anyway != DialogResult.Yes) return;
+        }
+
+        RunModProjectAction(() =>
+        {
+            modProject.CaptureOriginal(target);
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Copy(chosen, target, overwrite: true);
+            modProject.TrackSave(target);
             RefreshModProjectTab();
         });
     }

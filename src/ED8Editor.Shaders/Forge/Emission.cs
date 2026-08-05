@@ -2,7 +2,7 @@ using ED8Editor.Core;
 using ED8Editor.Phyre;
 using ED8Editor.Phyre.Authoring;
 
-namespace ED8Editor.ShaderForge;
+namespace ED8Editor.Shaders.Forge;
 
 /// <summary>
 /// Writes an effect's parameter interface, rather than keeping the one its template

@@ -11,3 +11,5 @@ dist/
 *.lib
 tmp-inspect/*
 *.obj
+*.zip
+publish/*

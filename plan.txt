@@ -1,23 +1,25 @@
 ﻿Aucune heuristique ou détection farfelue.
 
-Codex :
-- voir pour faire un loader de fichiers 3D pour les modèles custom, qui puisse partir de sources différentes (par ex un seul fichier fbx qui contient tout, ou un fichier obj + un fichier d'anim + des fichiers de textures, idk. se concentrer sur le fbx dans un premier temps. un exemple est ici :"C:\Users\Administrator\Desktop\Megidramon X") L'idée est qu'atm Claude est en train de bosser sur l'écriture de dae.phyre / dds.phyre, et nous on écrit la logique pour partir d'un modèle externe et fournir à claude des entrées adaptées pour son convertisseur
-- Voir pour comprendre comment marchent les boutiques et si on peut les rendre éditables facilement.
-- Voir pour les bancs de poisson comment ça marche, comment on définit leur position, les afficher dans le viewport...
-- Voir où on associe un script "battle" à un monstre/encounter/que sais je. en gros les scripts battle sont la logique d'un combat a priori, on veut pouvoir créer nos propres scénarios de combat et les relier à un enemi créé (pertinent dans l'éditeur d'enemi ? ou alors lié à un encounter (plusieurs ennemis)?).
-
-PLUS TARD:
-- "Le shader Phyre complet n’est pas encore activé : il manque le binding vérifié de tous les paramètres moteur ($Globals, brouillard, caméra, éclairage…)."
-- Implémenter les lumières et ombres (comme dans le jeu ?)
-- Implémenter la météo ? (sera nécessaire si settée par le script)
-
-Claude :
-- Implémenter la conversion moddèle 3D custom -> dae.phyre, idem textures, sans gabarit ou heuristique
-- Implémenter deux modes (animations custom vs transfert des animations du jeu d'origine sur notre nouveau modèle importé), les rendre le plus ergonomique possible
-- Voir pour facilement ajouter des armes custom.
-- Voir pour idéalement être capable d'écrire nos propres shaders HLSL et les faire lire par le jeu (donc les compiler phyre a priori).
-
-
+Derniers chantiers:
+l'éditeur de scripts :
+- Améliorer la lisibilité des conditions (à la fois, certaines conditions se chevauchent visuellement sur le graphe,
+mais aussi la structure indiquée est pas claire "TRUE: flag[256]" (je suppose que c'est if flag[256] is enabled) ; pire : False: work[5] push 4 == <- INCOMPREHENSIBLE. la syntaxe est incompréhensible et work on sait pas ce que c'est.
+- le constructeur d'expression est fraanchement ausis imbitable, l'ordre des opérandes est franchement bizarre pour un moddeur 
+- Quand on double clique sur une flèche, la boite de diaalogue doit avoir des champs qui correspodnent aux valeurs actuelles, pas à des valeurs par défaut (et pas que quand on clique sur des flèches mais de manière générale quoi)
+- Si on clique sur un bloc d'une branche grisée, que ça bascule sur cette branche et grise les autres 
+- Y a un GROS souci de flèches qui se superposent de manière générale ; il faut trouver un moyen que ça soit lisible
+- Si on clique droit sur une flèche (symbolisant un jump ou non d'ailleurs, si la flèche fait juste le lien avec la prochaine instruction), que ça nous propose d'insérer une instruction à l'endroit du clic 
+- Revoir l'ajout d'instructions : que ça ouvre une boite de dialogue avec la liste des instructions complète, la possibilité de cocher des cases pour filtrer par catégorie (Caméra, effets etc), le remplissage des valeurs des opérandes
+- Que par catégorie il existe des "presets" d'enchainement de plusieurs instructions (à définir dans un instructions_presets.json) qui permette d'insérer en un coup une série d'instructions, par ex pour insérer les zoom, rotation et scale de la caméra d'un coup
+- Qu'on puisse sélectionner plusieurs instructions en cliquant et en dessinant un cadre (comme dans l'explorateur de fichiers quand tu sélectionnes plusieurs fichiers). Mais le faire avec le clic droit, pas le gauche qui doit servir encore à "pan"?
+- que laa copy/paste fonctionne (avec raccourcis claviers)
+- que l'undo fonctionne sur 10 actions 
+- que le déplacement d'instruction/groupes d'instruction se fasse intelligemment en glissant déposant les blocs (que ça snap avant ou après des blocs existants).
+- Rermplacer le sélecteur d'opcode en haut par un sélecteur de fonction courante 
+- Augmenter la taille en hauteur de l'éditeur de script pour qu'il fasse toute la hauteur de la fene^tre(il a pas besoin de la toolbar du viewport) 
+- on supprime le bouton delete d'instruction, à la aplace on ajoute delete au menu contextuel quand on clique droit sur un bloc (avec copy)
+- Si la fonction est vide sans instruction, clic droit devrait permettre de rajouter une première instruction
+- Vire le label "Active path conditions", il est self explanatory, pas  besoin de prendre plus de place en hauteur c'est déjà très compressé
 ================================================================================
 LIMITES CONNUES A CLARIFIER AVANT DE SHIP (juillet 2026)
 ================================================================================

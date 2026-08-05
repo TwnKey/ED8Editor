@@ -74,6 +74,271 @@ if (args.Length > 4 && args[1] == "--pack-folder")
     return 0;
 }
 
+// Swaps one entry of a package for a file, keeping every other entry, their order
+// and the archive's own magic word. Repacking a folder does not do this: it sorts by
+// name and stamps the default magic, so a package that only needed one file changed
+// comes back different in two more ways.
+//
+//   PhyreAuthoringProbe x --replace-entry <package> <entry name> <file> <out.pkg>
+if (args.Length > 5 && args[1] == "--replace-entry")
+{
+    var source = new PkgArchiveReader().Read(args[2]);
+    var swapped = 0;
+    var rebuilt = source.Entries
+        .Select(entry =>
+        {
+            if (!entry.Name.Equals(args[3], StringComparison.OrdinalIgnoreCase))
+            {
+                return (entry.Name, Data: source.ReadEntry(entry).ToArray());
+            }
+            swapped++;
+            return (entry.Name, Data: File.ReadAllBytes(args[4]));
+        })
+        .ToArray();
+    if (swapped == 0)
+    {
+        Console.WriteLine($"'{args[3]}' n'est pas dans {Path.GetFileName(args[2])}");
+        return 1;
+    }
+    new PkgArchiveWriter().Write(args[5], source.Magic, rebuilt);
+    Console.WriteLine($"{rebuilt.Length} entrees, {swapped} remplacee(s),"
+        + $" magique 0x{source.Magic:X8} -> {args[5]}");
+    return 0;
+}
+
+// Every piece of equipment the game models, with who wears it. The packages are
+// the catalogue; the attach table only says who carries which.
+//
+//   PhyreAuthoringProbe x --equipment <game folder, the one containing data>
+if (args.Length > 2 && args[1] == "--equipment")
+{
+    var assetFolder = Path.Combine(args[2], "data", "asset", "D3D11");
+    var wearers = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+    var attachPath = new[] { "dat_us", "dat" }
+        .Select(folder => Path.Combine(args[2], "data", "text", folder, "t_attach.tbl"))
+        .FirstOrDefault(File.Exists);
+    if (attachPath is not null)
+    {
+        foreach (var one in ED8Editor.Tables.Cs1AttachTable.Read(attachPath).Attachments)
+        {
+            if (one.Model.Length == 0
+                || one.Model.Equals("null", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            if (!wearers.TryGetValue(one.Model, out var who))
+            {
+                who = new List<string>();
+                wearers[one.Model] = who;
+            }
+            who.Add($"personnage {one.Character} emplacement {one.Slot} sur {one.AttachPoint}");
+        }
+    }
+    // The catalogue is both halves: every equipment package, and every package the
+    // attach table names — the outfits are the character's own body package and the
+    // costumes are DLC ones, so equipment packages alone would leave them out.
+    var packages = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var path in Directory.EnumerateFiles(assetFolder, "C_EQU*.pkg"))
+    {
+        packages[Path.GetFileNameWithoutExtension(path)] = path;
+    }
+    foreach (var named in wearers.Keys)
+    {
+        var path = Path.Combine(assetFolder, named + ".pkg");
+        if (!packages.ContainsKey(named) && File.Exists(path)) packages[named] = path;
+    }
+    foreach (var pair in packages.OrderBy(one => one.Key, StringComparer.OrdinalIgnoreCase))
+    {
+        var who = wearers.TryGetValue(pair.Key, out var found) ? found : new List<string>();
+        Console.WriteLine($"  {pair.Key,-16} {new FileInfo(pair.Value).Length / 1024,6} Ko"
+            + $"  {(who.Count == 0 ? "(personne)" : string.Join(" | ", who))}");
+    }
+    foreach (var family in packages.Keys
+                 .GroupBy(name => new string(name.TakeWhile(char.IsLetter).ToArray())
+                     + new string(name.SkipWhile(char.IsLetter).TakeWhile(c => c == '_').ToArray()))
+                 .OrderByDescending(group => group.Count()))
+    {
+        Console.WriteLine($"  famille {family.Key,-10} {family.Count(),4} paquets"
+            + $"   ex. {string.Join(", ", family.Take(3))}");
+    }
+    var missing = wearers.Keys.Count(name => !packages.ContainsKey(name));
+    Console.WriteLine($"  {packages.Count} equipements,"
+        + $" {packages.Keys.Count(wearers.ContainsKey)} portes,"
+        + $" {missing} nomme(s) par t_attach sans paquet");
+    return 0;
+}
+
+// Per-segment skin bone remap tables: how many local slots a primitive has, and
+// which skeleton joint each slot answers to. Answers whether a segment's local
+// bone-index space is the whole skeleton (so a hierarchy index can be written
+// straight into the vertex stream) or a genuinely reduced, reordered subset.
+//
+//   PhyreAuthoringProbe x --skin-bones <cluster>
+if (args.Length > 2 && args[1] == "--skin-bones")
+{
+    var skinModel = new PhyreD3D11ModelReader().Read(
+        Path.GetFileNameWithoutExtension(args[2]), ReadClusterOrPackage(args[2]));
+    var skeleton = skinModel.Skeleton;
+    var meshIndex = 0;
+    foreach (var mesh in skinModel.Meshes)
+    {
+        var segmentIndex = 0;
+        foreach (var primitive in mesh.Primitives)
+        {
+            if (primitive.SkinBones is not { Count: > 0 } bones)
+            {
+                segmentIndex++;
+                continue;
+            }
+            Console.WriteLine($"mesh {meshIndex} segment {segmentIndex}: {bones.Count} local slots"
+                + (skeleton is null ? "" : $" of {skeleton.Joints.Count} hierarchy / {skeleton.InverseBindMatrices.Count} skin"));
+            if (skeleton is not null)
+            {
+                for (var local = 0; local < Math.Min(bones.Count, 12); local++)
+                {
+                    var skeletonIndex = bones[local].SkeletonMatrixIndex;
+                    var hierarchyIndex = skeletonIndex < skeleton.SkeletonToHierarchy.Count
+                        ? skeleton.SkeletonToHierarchy[skeletonIndex] : -1;
+                    var name = hierarchyIndex >= 0 && hierarchyIndex < skeleton.Joints.Count
+                        ? skeleton.Joints[hierarchyIndex].Name : "?";
+                    Console.WriteLine($"   local {local,3} -> skin {skeletonIndex,3} -> hierarchy {hierarchyIndex,3} {name}"
+                        + $"  (HierarchyMatrixIndex field = {bones[local].HierarchyMatrixIndex})");
+                }
+            }
+            segmentIndex++;
+        }
+        meshIndex++;
+    }
+    return 0;
+}
+
+// Stands a new character or enemy up from an existing one, into a throwaway copy
+// of the game folder, and checks the thing that decides whether it works: that the
+// new asset's own clips are found under the NEW id, in whichever package its
+// family keeps them in.
+//
+//   PhyreAuthoringProbe x --create-check <game data> <source id> <new id>
+if (args.Length > 4 && args[1] == "--create-check")
+{
+    var gameData = args[2];
+    var sourceId = args[3];
+    var newId = args[4];
+    var sandbox = Path.Combine(Path.GetTempPath(), "ed8-create-" + Guid.NewGuid().ToString("N"));
+    var sandboxAssets = Path.Combine(sandbox, "data", "asset", "D3D11");
+    Directory.CreateDirectory(sandboxAssets);
+    try
+    {
+        // Only the asset's own packages travel: enough to resolve it, and quick.
+        foreach (var source in ED8Editor.Application.CharacterCreation.Companions(
+                     Path.GetDirectoryName(gameData.TrimEnd(Path.DirectorySeparatorChar))!, sourceId))
+        {
+            File.Copy(source, Path.Combine(sandboxAssets, Path.GetFileName(source)));
+        }
+
+        // The tables too: creating names the asset, so the check has to see it.
+        var tables = Path.Combine(sandbox, "data", "text", "dat_us");
+        Directory.CreateDirectory(tables);
+        var enemy = sourceId.StartsWith("C_MON", StringComparison.OrdinalIgnoreCase);
+        var tableName = enemy ? "t_mons.tbl" : "t_name.tbl";
+        var realTable = new[] { "dat_us", "dat" }
+            .Select(one => Path.Combine(gameData, "text", one, tableName))
+            .FirstOrDefault(File.Exists);
+        if (realTable is not null) File.Copy(realTable, Path.Combine(tables, tableName));
+
+        var project = ED8Editor.Application.ModProject.Create(
+            Path.Combine(sandbox, "mod.json"), sandbox, "create check");
+        var made = ED8Editor.Application.CharacterCreation.Create(
+            project, sourceId, newId, null, enemy, (_, _) => { }, newId);
+        Console.WriteLine($"  table : {(made.TablePath is null ? "AUCUNE" : Path.GetFileName(made.TablePath))}"
+            + (made.Key is null ? "" : $", identifiant {made.Key}"));
+        Console.WriteLine($"  {made.Written.Count} paquet(s) ecrit(s),"
+            + $" {made.Symbols} symbole(s) renomme(s)");
+
+        var sandboxData = Path.Combine(sandbox, "data");
+        var before = ED8Editor.Application.CharacterAnimationPackage.Slots(
+            new ED8Editor.Assets.GameAssetResolverFactory(), new PkgArchiveReader(),
+            new ED8Editor.Assets.AssetManifestReader(), sandboxData, sourceId);
+        var after = ED8Editor.Application.CharacterAnimationPackage.Slots(
+            new ED8Editor.Assets.GameAssetResolverFactory(), new PkgArchiveReader(),
+            new ED8Editor.Assets.AssetManifestReader(), sandboxData, newId);
+
+        Console.WriteLine($"  {sourceId}: {before.Count} emplacement(s)"
+            + $" dans {string.Join(", ", before.Select(one => Path.GetFileName(one.PackagePath)).Distinct())}");
+        Console.WriteLine($"  {newId}: {after.Count} emplacement(s)"
+            + $" dans {string.Join(", ", after.Select(one => Path.GetFileName(one.PackagePath)).Distinct())}");
+
+        var sameSlots = before.Select(one => one.Slot).OrderBy(one => one, StringComparer.Ordinal)
+            .SequenceEqual(after.Select(one => one.Slot).OrderBy(one => one, StringComparer.Ordinal));
+        var model = ED8Editor.Application.CharacterRetargetPackage.ResolveModel(
+            new ED8Editor.Assets.GameAssetResolverFactory(), new PkgArchiveReader(),
+            new ED8Editor.Assets.AssetManifestReader(), sandboxData, newId);
+        Console.WriteLine($"  modele du nouvel asset resolu : {(model is not null ? "oui" : "NON")}");
+
+        // And whether the game's own catalogue now lists it — the only proof the
+        // row is not merely present but readable as the thing it claims to be.
+        var listed = enemy
+            && ED8Editor.Application.CharacterTableRegistration.Lists(sandboxData, true, newId);
+        if (enemy) Console.WriteLine($"  nomme dans la table : {(listed ? "oui" : "NON")}");
+        Console.WriteLine(sameSlots && after.Count != 0 && model is not null && (!enemy || listed)
+            ? "  le nouvel asset porte les memes emplacements que sa source, sous son propre nom"
+            : "  ECHEC : le nouvel asset ne retrouve pas ses clips ou son modele");
+        return sameSlots && after.Count != 0 && model is not null && (!enemy || listed) ? 0 : 1;
+    }
+    finally
+    {
+        try { Directory.Delete(sandbox, recursive: true); } catch (IOException) { }
+    }
+}
+
+// Every effect variant the game ships, with the switches it was built with.
+//
+//   PhyreAuthoringProbe x --shader-catalog <game folder> [hash]
+if (args.Length > 2 && args[1] == "--shader-catalog")
+{
+    var started = System.Diagnostics.Stopwatch.StartNew();
+    var catalog = ED8Editor.Application.ShaderVariantCatalog.Load(args[2], args.Length > 3);
+    Console.WriteLine($"  {catalog.Count} variante(s) en {started.ElapsedMilliseconds} ms");
+    foreach (var family in catalog.GroupBy(one => one.Source).OrderByDescending(one => one.Count()))
+    {
+        Console.WriteLine($"  {family.Key,-20} {family.Count(),4} variante(s)");
+    }
+    var wanted = args.Length > 3 ? args[3] : null;
+    foreach (var variant in catalog.Where(one =>
+                 wanted is null || one.Hash.StartsWith(wanted, StringComparison.OrdinalIgnoreCase))
+                 .Take(wanted is null ? 4 : 2))
+    {
+        Console.WriteLine($"  {variant.AssetName}");
+        Console.WriteLine($"     commutateurs : {string.Join(", ", variant.Switches)}");
+        var declared = ED8Editor.Application.ShaderVariantCatalog.Parameters(variant);
+        Console.WriteLine($"     {declared.Count(one => one.Settable)} parametre(s) reglable(s)"
+            + $" sur {declared.Count}");
+        foreach (var one in declared.Where(one => one.Settable).Take(6))
+        {
+            Console.WriteLine($"        {one.Name,-32} {one.Kind}");
+        }
+    }
+    return 0;
+}
+
+// Which animation slots an asset declares, and where each clip lives. What it
+// answers: whether a character and an enemy really are the same shape to write
+// against, or only look it.
+//
+//   PhyreAuthoringProbe x --clip-slots <game data> <asset id>
+if (args.Length > 3 && args[1] == "--clip-slots")
+{
+    var found = ED8Editor.Application.CharacterAnimationPackage.Slots(
+        new ED8Editor.Assets.GameAssetResolverFactory(), new PkgArchiveReader(),
+        new ED8Editor.Assets.AssetManifestReader(),
+        args[2], args[3]);
+    foreach (var slot in found)
+    {
+        Console.WriteLine($"  {slot.Slot,-20} {slot.EntryName,-34} {Path.GetFileName(slot.PackagePath)}");
+    }
+    Console.WriteLine($"  {found.Count} emplacement(s) pour {args[3]}");
+    return 0;
+}
+
 if (args.Length > 2 && args[1] == "--dump-scene")
 {
     var model = new PhyreD3D11ModelReader().Read(
@@ -116,6 +381,25 @@ if (args.Length > 4 && args[1] == "--extract-package-entry")
 // material from an effect rather than copying a model material.
 //
 //   PhyreAuthoringProbe x --dump-material <package.pkg>
+// Which shader and which texture each material of a cluster binds. One material
+// tells nothing about the others, and a map binds a different one per surface.
+//
+//   PhyreAuthoringProbe x --dump-materials <cluster>
+if (args.Length > 2 && args[1] == "--dump-materials")
+{
+    var all = PhyreMaterialTableReader.ReadAll(ReadClusterOrPackage(args[2]));
+    foreach (var (name, one) in all.OrderBy(value => value.Key, StringComparer.Ordinal))
+    {
+        var textures = one.Imports
+            .Where(value => value.Asset.Contains("images", StringComparison.OrdinalIgnoreCase))
+            .Select(value => value.Asset);
+        Console.WriteLine($"  {name,-34} {Path.GetFileName(one.ShaderAsset),-46}"
+            + $" {string.Join(", ", textures)}");
+    }
+    Console.WriteLine($"  {all.Count} materiaux");
+    return 0;
+}
+
 if (args.Length > 2 && args[1] == "--dump-material")
 {
     var table = PhyreMaterialTableReader.Read(ReadClusterOrPackage(args[2]));
@@ -1905,7 +2189,15 @@ if (graphCheck) pattern = args.Length > 3 ? args[3] : "*.pkg";
 var assembleCheck = pattern == "--assemble-check";
 if (assembleCheck) pattern = args.Length > 3 ? args[3] : "*.pkg";
 var replaceCheck = pattern == "--replace-check";
+var segmentReplaceCheck = pattern == "--segment-replace-check";
+var animationWriteCheck = pattern == "--animation-write-check";
+if (animationWriteCheck) pattern = args.Length > 3 ? args[3] : "C_NPC*_DF1.pkg";
+var clipWriteCheck = pattern == "--clip-write-check";
+if (clipWriteCheck) pattern = args.Length > 3 ? args[3] : "C_NPC*_DF1.pkg";
+var bindingCheck = pattern == "--binding-check";
+if (bindingCheck) pattern = args.Length > 3 ? args[3] : "C_NPC*_DF1.pkg";
 if (replaceCheck) pattern = args.Length > 3 ? args[3] : "C_PLY*.pkg";
+if (segmentReplaceCheck) pattern = args.Length > 3 ? args[3] : "C_PLY*.pkg";
 var animation = pattern == "--animation";
 if (animation) pattern = args.Length > 3 ? args[3] : "C_PLY000.pkg";
 var clipTargets = pattern == "--clip-targets";
@@ -2741,79 +3033,11 @@ if (replaceCheck)
         {
             foreach (var primitive in mesh.Primitives)
             {
-                var found = new Dictionary<string, ED8Editor.Core.CpuVertexBuffer>(StringComparer.Ordinal);
-                var count = 0;
-                foreach (var buffer in primitive.VertexBuffers)
-                {
-                    foreach (var attribute in buffer.Attributes)
-                    {
-                        found[attribute.Semantic.ToString()
-                            + (attribute.SemanticIndex == 0 ? "" : attribute.SemanticIndex.ToString())] = buffer;
-                        count = Math.Max(count, buffer.Stride == 0 ? 0 : buffer.Data.Length / buffer.Stride);
-                    }
-                }
-                if (!found.ContainsKey("Position") || !found.ContainsKey("Normal")
-                    || !found.ContainsKey("Tangent") || !found.ContainsKey("TextureCoordinate")
-                    || !found.ContainsKey("Bitangent"))
-                {
-                    usable = false;
-                    break;
-                }
-
-                Vector3 V3(string key, int at)
-                {
-                    var span = found[key].Data.AsSpan(at * 12);
-                    return new Vector3(
-                        BitConverter.ToSingle(span), BitConverter.ToSingle(span[4..]),
-                        BitConverter.ToSingle(span[8..]));
-                }
-
-                var vertices = new List<PhyreVertexSource>(count);
-                for (var at = 0; at < count; at++)
-                {
-                    var vertexJoints = new int[4];
-                    var vertexWeights = new float[4];
-                    if (found.TryGetValue("JointIndices", out var ji))
-                    {
-                        for (var slot = 0; slot < 4; slot++)
-                        {
-                            vertexJoints[slot] = ji.Data[at * 4 + slot];
-                            joints = Math.Max(joints, vertexJoints[slot] + 1);
-                        }
-                    }
-                    if (found.TryGetValue("JointWeights", out var jw))
-                    {
-                        for (var slot = 0; slot < 4; slot++)
-                        {
-                            vertexWeights[slot] = BitConverter.ToSingle(jw.Data.AsSpan(at * 16 + slot * 4));
-                        }
-                    }
-                    var sets = new List<PhyreTexCoordSet>();
-                    for (var set = 0; set < 4; set++)
-                    {
-                        var suffix = set == 0 ? "" : set.ToString();
-                        if (!found.ContainsKey("TextureCoordinate" + suffix)) break;
-                        var span = found["TextureCoordinate" + suffix].Data.AsSpan(at * 8);
-                        sets.Add(new PhyreTexCoordSet(
-                            new Vector2(BitConverter.ToSingle(span), BitConverter.ToSingle(span[4..])),
-                            found.ContainsKey("Tangent" + suffix) ? V3("Tangent" + suffix, at) : default,
-                            found.ContainsKey("Bitangent" + suffix) ? V3("Bitangent" + suffix, at) : default));
-                    }
-                    vertices.Add(new PhyreVertexSource(
-                        V3("Position", at), V3("Normal", at), sets, vertexJoints, vertexWeights));
-                }
-
-                // The indices as the file states them, not re-derived.
-                // The width follows the vertex count, as the packer's does.
-                var stride = vertices.Count < 0x10000 ? 2 : 4;
-                var indices = new int[primitive.Indices.Data.Length / stride];
-                for (var at = 0; at < indices.Length; at++)
-                {
-                    indices[at] = stride == 2
-                        ? BitConverter.ToUInt16(primitive.Indices.Data.AsSpan(at * 2))
-                        : (int)BitConverter.ToUInt32(primitive.Indices.Data.AsSpan(at * 4));
-                }
-                meshes.Add(new PhyreMeshSource("m", vertices, indices));
+                var read = PhyreMeshSourceReader.ReadVerbatim(primitive, "m");
+                if (read is null) { usable = false; break; }
+                foreach (var vertex in read.Vertices)
+                    foreach (var joint in vertex.Joints) joints = Math.Max(joints, joint + 1);
+                meshes.Add(read);
             }
             if (!usable) break;
         }
@@ -2846,6 +3070,536 @@ if (replaceCheck)
     Console.WriteLine($"{identical} of {models} models given their own mesh back unchanged");
     foreach (var line in examples) Console.WriteLine($"  {line}");
     return identical == models ? 0 : 1;
+}
+if (clipWriteCheck)
+{
+    // A clip written from nothing but its own channels has to be the same
+    // animation when read back.
+    //
+    // Byte equality is not the test here and could not be: the order channels are
+    // written in inside a run is free, and this writer chooses its own. What has
+    // to survive is the motion — every channel, its target, its path, its times
+    // and its values — and, separately, that the binding satisfies the rule the
+    // engine relies on. The donor supplies only the skeleton's own tables.
+    var clips = 0;
+    var faithful = 0;
+    var examples = new List<string>();
+    foreach (var (name, cluster) in ReadClusters())
+    {
+        if (!name.EndsWith(".dae.phyre", StringComparison.OrdinalIgnoreCase)) continue;
+        ED8Editor.Core.CpuAnimationClip clip;
+        try
+        {
+            clip = new PhyreAnimationReader().Read(Path.GetFileNameWithoutExtension(name), cluster);
+        }
+        catch (Exception exception) when (exception is ED8Editor.Phyre.InvalidPhyreException
+            or InvalidDataException or ArgumentException)
+        {
+            continue;
+        }
+
+        clips++;
+        try
+        {
+            var written = PhyreAnimationClipWriter.Write(cluster, clip);
+            var reread = new PhyreAnimationReader().Read(
+                Path.GetFileNameWithoutExtension(name), written);
+
+            var before = clip.Channels
+                .ToDictionary(c => (c.TargetName, c.Path), c => c);
+            var after = reread.Channels
+                .ToDictionary(c => (c.TargetName, c.Path), c => c);
+            var problems = new List<string>();
+            if (before.Count != after.Count)
+                problems.Add($"{before.Count} channels in, {after.Count} out");
+            foreach (var (key, source) in before)
+            {
+                if (!after.TryGetValue(key, out var got))
+                {
+                    problems.Add($"{key.TargetName}/{key.Path} lost");
+                    break;
+                }
+                // A curve whose every key is the same value is stored as a
+                // constant, which the reader gives back as two keys — the same
+                // animation, said the way the game says it.
+                // The same rule the writer uses: a curve that never moves is one
+                // value held, and the reader gives that back as two keys.
+                var constant = source.Values.Count <= 1
+                    || source.Values.All(v => System.Numerics.Vector4.Distance(v, source.Values[0]) <= 1e-7f);
+                if (!constant && source.Values.Count != got.Values.Count)
+                {
+                    problems.Add($"{key.TargetName}/{key.Path}: {source.Values.Count} keys in, {got.Values.Count} out");
+                    break;
+                }
+                var worst = 0f;
+                for (var at = 0; at < Math.Min(source.Values.Count, got.Values.Count); at++)
+                {
+                    worst = Math.Max(worst, System.Numerics.Vector4.Distance(
+                        source.Values[at], got.Values[at]));
+                }
+                if (worst > 1e-6f)
+                {
+                    problems.Add($"{key.TargetName}/{key.Path}: values moved by {worst}");
+                    break;
+                }
+            }
+            // The point of all this: a channel set that is not the donor's. Half
+            // the channels are dropped and the clip written again — if the count
+            // were still fixed by the file it came from, this could not work.
+            if (problems.Count == 0 && clip.Channels.Count > 3)
+            {
+                var half = clip.Channels.Where((_, index) => index % 2 == 0).ToArray();
+                var fewer = new ED8Editor.Core.CpuAnimationClip(
+                    clip.AssetId, clip.Name, clip.StartTime, clip.EndTime, half);
+                var writtenFewer = PhyreAnimationClipWriter.Write(cluster, fewer);
+                var rereadFewer = new PhyreAnimationReader().Read(
+                    Path.GetFileNameWithoutExtension(name), writtenFewer);
+                var wantedNames = half.Select(c => (c.TargetName, c.Path)).ToHashSet();
+                var gotNames = rereadFewer.Channels.Select(c => (c.TargetName, c.Path)).ToHashSet();
+                if (!wantedNames.SetEquals(gotNames))
+                {
+                    problems.Add($"half a clip came back with {gotNames.Count} of {wantedNames.Count} channels");
+                }
+            }
+            if (problems.Count == 0) { faithful++; continue; }
+            if (examples.Count < 6) examples.Add($"{name}: {string.Join("; ", problems)}");
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+            or ArgumentException or IndexOutOfRangeException or ArgumentOutOfRangeException
+            or ED8Editor.Phyre.InvalidPhyreException or InvalidDataException)
+        {
+            if (examples.Count < 6) examples.Add($"{name}: {exception.Message}");
+        }
+    }
+
+    Console.WriteLine($"{faithful} of {clips} clips written from their own channels and read back the same");
+    foreach (var line in examples) Console.WriteLine($"  {line}");
+    return faithful == clips ? 0 : 1;
+}
+if (bindingCheck)
+{
+    // The binding a clip carries has to be derivable from the clip alone.
+    //
+    // If it is, a clip can be written with whatever channels an author brings,
+    // because the one part of the file that is not authored data can be produced
+    // rather than copied. So every shipped binding is rebuilt from its own
+    // channels and compared with what the file holds — the parts of it that are
+    // data, that is: the two pointers per cache entry are addresses a load fills
+    // in, and are not the writer's to reproduce.
+    var bindings = 0;
+    var identical = 0;
+    var examples = new List<string>();
+    foreach (var (name, cluster) in ReadClusters())
+    {
+        if (!name.EndsWith(".dae.phyre", StringComparison.OrdinalIgnoreCase)) continue;
+        var read = new PhyreClusterReader().Read(cluster);
+        var groups = read.Metadata.InstanceGroups;
+        var bindingGroup = groups.FirstOrDefault(value => value.ClassName == "PAnimationClipBinding");
+        var setGroup = groups.FirstOrDefault(value => value.ClassName == "PAnimationSet");
+        var slotGroup = groups.FirstOrDefault(value => value.ClassName == "PAnimationSlotListIndex");
+        var targetGroup = groups.FirstOrDefault(value => value.ClassName == "PAnimationChannelTarget");
+        if (bindingGroup is null || setGroup is null || slotGroup is null || targetGroup is null) continue;
+
+        var channelGroup = groups.FirstOrDefault(value => value.ClassName == "PAnimationChannel");
+        var constantGroup = groups.FirstOrDefault(value => value.ClassName == "PAnimationConstantChannel");
+
+        // A key type is named by the user fixup a channel or a slot points at, and
+        // the engine registers them in one order: rotation, translation, scale.
+        // A fixup names its source either by member index or by raw offset; the
+        // game writes both forms, and only one of them was ever being looked for.
+        bool SourceAt(PhyreFixup fixup, uint offset)
+        {
+            if (!fixup.IsClassDataMember) return fixup.SourceOffset == offset;
+            var member = read.Metadata.Classes.SelectMany(value => value.Members)
+                .FirstOrDefault(value => value.Index == fixup.SourceMemberId);
+            return member is not null && member.ValueOffset == offset;
+        }
+
+        int KeyTypeIndex(string? named) => named switch
+        {
+            "Rotation" => 0, "Translation" => 1, "Scale" => 2, _ => -1,
+        };
+        string? KeyTypeOf(int groupIndex, uint objectId, uint offset)
+        {
+            var pointer = read.Fixups.Pointers.FirstOrDefault(value =>
+                value.SourceListIndex == groupIndex && value.SourceObjectId == objectId
+                && SourceAt(value, offset));
+            return pointer?.UserFixupId is { } id && id < read.Fixups.UserFixups.Count
+                ? read.Fixups.UserFixups[(int)id].Text : null;
+        }
+
+        // The slot the set gives to a key type and a target is that slot's own
+        // place in the set's slot array, which is sorted when the set is built.
+        var slots = new Dictionary<(int Key, int Target), int>();
+        var slotObjects = read.GetGroupObjectsData(slotGroup.Index).Span;
+        var slotSize = slotGroup.Count == 0 ? 0 : (int)(slotGroup.ObjectsSize / slotGroup.Count);
+        for (var id = 0u; id < slotGroup.Count; id++)
+        {
+            var key = KeyTypeIndex(KeyTypeOf(slotGroup.Index, id, 0x00));
+            var target = (int)BitConverter.ToUInt32(slotObjects[((int)id * slotSize + 8)..]);
+            if (key >= 0) slots.TryAdd((key, target), (int)id);
+        }
+
+        // Which target each channel drives. A channel IS a target — it inherits the
+        // type, the object it points at, the name and the index — and the engine
+        // matches on exactly those.
+        var targetObjects = read.GetGroupObjectsData(targetGroup.Index).Span;
+        var targetSize = targetGroup.Count == 0 ? 0 : (int)(targetGroup.ObjectsSize / targetGroup.Count);
+        string Identity(int groupIndex, uint objectId, ReadOnlySpan<byte> objects, int size)
+        {
+            var body = objects.Slice((int)objectId * size, size);
+            var instance = read.Fixups.Pointers.FirstOrDefault(value =>
+                value.SourceListIndex == groupIndex && value.SourceObjectId == objectId
+                && SourceAt(value, 0x04));
+            var group = read.Metadata.InstanceGroups[groupIndex];
+            var named = read.Fixups.Arrays.FirstOrDefault(value =>
+                value.SourceListIndex == groupIndex && value.SourceObjectId == objectId
+                && SourceAt(value, 0x14));
+            var text = "";
+            if (named is not null)
+            {
+                var span = read.GetArrayData(groupIndex, named.Offset, group.ArraysSize - named.Offset).Span;
+                var zero = span.IndexOf((byte)0);
+                text = zero < 0 ? "" : System.Text.Encoding.UTF8.GetString(span[..zero]);
+            }
+            return $"{BitConverter.ToInt32(body[0x10..])}|{instance?.DestinationListIndex}"
+                + $":{instance?.DestinationObjectId}|{text}|{BitConverter.ToUInt32(body[0x18..])}";
+        }
+
+        var targetIndexOf = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var id = 0u; id < targetGroup.Count; id++)
+        {
+            targetIndexOf.TryAdd(Identity(targetGroup.Index, id, targetObjects, targetSize), (int)id);
+        }
+
+        // The clip's own order, which is the order the binding is built in — a
+        // clip names its channels through a pointer array, and that order is not
+        // the order the objects happen to sit in.
+        var clipGroupIndex = groups.FirstOrDefault(value => value.ClassName == "PAnimationClip")?.Index ?? -1;
+        List<uint> ChannelOrder(PhyreInstanceGroup? group, uint offset)
+        {
+            var order = new List<uint>();
+            if (group is null || clipGroupIndex < 0) return order;
+            var pointers = read.Fixups.Pointers
+                .Where(value => value.SourceListIndex == clipGroupIndex && value.SourceObjectId == 0
+                    && SourceAt(value, offset) && value.DestinationListIndex == (uint)group.Index)
+                .OrderBy(value => value.ArrayIndex)
+                .ToArray();
+            if (pointers.Length > 1)
+            {
+                order.AddRange(pointers.Select(value => value.DestinationObjectId));
+            }
+            else if (pointers.Length == 1)
+            {
+                // One pointer at a run: the objects follow it, in order.
+                for (var at = 0u; at < group.Count; at++) order.Add(pointers[0].DestinationObjectId + at);
+            }
+            return order;
+        }
+
+        List<PhyreAnimationChannelBinding> Read(PhyreInstanceGroup? group, bool constant)
+        {
+            var built = new List<PhyreAnimationChannelBinding>();
+            if (group is null) return built;
+            var objects = read.GetGroupObjectsData(group.Index).Span;
+            var size = group.Count == 0 ? 0 : (int)(group.ObjectsSize / group.Count);
+            var order = ChannelOrder(group, constant ? 0x10u : 0x08u);
+            if (order.Count != group.Count) order = Enumerable.Range(0, (int)group.Count).Select(v => (uint)v).ToList();
+            foreach (var id in order)
+            {
+                var body = objects.Slice((int)id * size, size);
+                var key = KeyTypeIndex(KeyTypeOf(group.Index, id, 0x1c));
+                var interp = BitConverter.ToInt32(body[0x20..]);
+                var keyCount = constant ? 0 : (int)BitConverter.ToUInt32(body[0x30..]);
+                var target = targetIndexOf.GetValueOrDefault(
+                    Identity(group.Index, id, objects, size), -1);
+                built.Add(new PhyreAnimationChannelBinding(
+                    interp, key, target, keyCount, key == 0 ? 4 : 3));
+            }
+            return built;
+        }
+
+        var channels = Read(channelGroup, constant: false);
+        var constants = Read(constantGroup, constant: true);
+        if (channels.Concat(constants).Any(one => one.TargetIndex < 0 || one.KeyTypeIndex < 0))
+        {
+            if (examples.Count < 8) examples.Add($"{name}: a channel resolved to no target or key type");
+            continue;
+        }
+
+        bindings++;
+        var made = PhyreAnimationBinding.Build(
+            channels, constants,
+            (key, target) => slots.GetValueOrDefault((key, target), -1));
+        // The whole stored object, not the eight bytes the class declares: a
+        // binding is a header class, and everything derived lives past that.
+        var bindingSize = bindingGroup.Count == 0
+            ? 0 : (int)(bindingGroup.ObjectsSize / bindingGroup.Count);
+        var actual = read.GetGroupObjectsData(bindingGroup.Index).Span[..bindingSize];
+
+        // What the binding has to satisfy, rather than which permutation it
+        // happens to use.
+        //
+        // The order channels are written in inside a run is not fixed: the file's
+        // own is 0,1,2,3,4,38,6,37,… where a stable sort gives 0,1,2,3,4,6,8,…,
+        // and every one of those is the same key type and interpolation. What the
+        // engine relies on is that entries of a run share a sort key, so it can
+        // batch them, and that each map entry names the slot of the channel its
+        // own cache entry points at. So that is what is checked — on the file, to
+        // learn the rule, and on what this builds, to hold it to the same one.
+        var cacheAt = made.Length - channels.Count * 16;
+        var mapsAt = cacheAt - (channels.Count + constants.Count) * 4;
+        var wrong = new List<string>();
+
+        var runsDeclared = new List<int>();
+        for (var at = 8; at < mapsAt; at += 2)
+        {
+            var run = BitConverter.ToUInt16(actual[at..]);
+            if (run != 0) runsDeclared.Add(run);
+        }
+
+        void Audit(string which, ReadOnlySpan<byte> block)
+        {
+            var order = new int[channels.Count];
+            for (var w = 0; w < channels.Count; w++)
+            {
+                order[w] = BitConverter.ToUInt16(block[(cacheAt + w * 16 + 12)..]);
+            }
+            if (order.Distinct().Count() != channels.Count)
+            {
+                wrong.Add($"{which}: a source channel is written twice or not at all");
+                return;
+            }
+            var walked = 0;
+            for (var run = 0; run < runsDeclared.Count; run++)
+            {
+                var key = -1;
+                for (var inRun = 0; inRun < runsDeclared[run]; inRun++, walked++)
+                {
+                    var channel = channels[order[walked]];
+                    var sortKey = channel.Interpolation | (channel.KeyTypeIndex << 2);
+                    if (key < 0) key = sortKey;
+                    else if (key != sortKey)
+                    {
+                        wrong.Add($"{which}: run {run} mixes sort keys {key} and {sortKey}");
+                        return;
+                    }
+                    var slot = BitConverter.ToInt16(block[(mapsAt + walked * 4)..]);
+                    var interp = BitConverter.ToUInt16(block[(mapsAt + walked * 4 + 2)..]);
+                    var expected = slots.GetValueOrDefault(
+                        (channel.KeyTypeIndex, channel.TargetIndex), -1);
+                    if (slot != expected)
+                    {
+                        wrong.Add($"{which}: entry {walked} names slot {slot}, its channel's is {expected}");
+                        return;
+                    }
+                    if (interp != channel.Interpolation)
+                    {
+                        wrong.Add($"{which}: entry {walked} says interp {interp}, its channel's is {channel.Interpolation}");
+                        return;
+                    }
+                }
+            }
+            if (walked != channels.Count)
+            {
+                wrong.Add($"{which}: the run lengths cover {walked} of {channels.Count} channels");
+            }
+            for (var index = 0; index < constants.Count; index++)
+            {
+                var channel = constants[index];
+                var slot = BitConverter.ToInt16(block[(mapsAt + (channels.Count + index) * 4)..]);
+                var expected = slots.GetValueOrDefault(
+                    (channel.KeyTypeIndex, channel.TargetIndex), -1);
+                if (slot != expected)
+                {
+                    wrong.Add($"{which}: constant {index} names slot {slot}, its channel's is {expected}");
+                    return;
+                }
+            }
+        }
+
+        if (made.Length != actual.Length)
+        {
+            wrong.Add($"built {made.Length} bytes, the file holds {actual.Length}");
+        }
+        else
+        {
+            Audit("the file", actual);
+            Audit("what we build", made);
+        }
+
+        if (wrong.Count == 0) { identical++; continue; }
+        if (examples.Count < 6) examples.Add($"{name}: {string.Join("; ", wrong)}");
+    }
+
+    Console.WriteLine($"{identical} of {bindings} clip bindings satisfy the rule, built and shipped alike");
+    foreach (var line in examples) Console.WriteLine($"  {line}");
+    return identical == bindings ? 0 : 1;
+}
+if (animationWriteCheck)
+{
+    // A clip given its own keys back has to come out as the file it was.
+    //
+    // Everything the writer does — walking the array entries in the order their
+    // offsets already have, restating each key count, relaying the region — has
+    // to be exactly inverse to what the reader did. A byte that moves is a byte
+    // the writer would have moved on a real edit too, and nothing else in the
+    // chain would notice.
+    var clips = 0;
+    var identical = 0;
+    var examples = new List<string>();
+    foreach (var (name, cluster) in ReadClusters())
+    {
+        if (!name.EndsWith(".dae.phyre", StringComparison.OrdinalIgnoreCase)) continue;
+        ED8Editor.Core.CpuAnimationClip clip;
+        try
+        {
+            clip = new PhyreAnimationReader().Read(Path.GetFileNameWithoutExtension(name), cluster);
+        }
+        catch (Exception exception) when (exception is ED8Editor.Phyre.InvalidPhyreException
+            or InvalidDataException or ArgumentException)
+        {
+            continue;
+        }
+
+        clips++;
+        try
+        {
+            var written = PhyreAnimationWriter.Rewrite(cluster, clip);
+            if (written.AsSpan().SequenceEqual(cluster)) { identical++; continue; }
+            var at = 0;
+            while (at < cluster.Length && at < written.Length && cluster[at] == written[at]) at++;
+            if (examples.Count < 8)
+            {
+                examples.Add($"{name}: differs at {at} of {cluster.Length}"
+                    + $" (wrote {written.Length}, {clip.Channels.Count} channels)");
+            }
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+            or ArgumentException or IndexOutOfRangeException or ArgumentOutOfRangeException
+            or ED8Editor.Phyre.InvalidPhyreException)
+        {
+            if (examples.Count < 8) examples.Add($"{name}: {exception.Message}");
+        }
+    }
+
+    Console.WriteLine($"{identical} of {clips} clips given their own keys back unchanged");
+    foreach (var line in examples) Console.WriteLine($"  {line}");
+    return identical == clips ? 0 : 1;
+}
+if (segmentReplaceCheck)
+{
+    // The join PhyreSkinnedSegmentReplacement adds: a segment's own vertices,
+    // read back and re-expressed by the hierarchy names PhyreRigTransfer would
+    // hand it, translated back into that same segment's own local table. Doing
+    // nothing that changes what a bone is called has to give the segment back
+    // unchanged — hierarchy-to-local has to exactly invert local-to-hierarchy —
+    // and asking Replace to write only that one segment, passing every other
+    // one through, has to give the whole file back unchanged too.
+    var segments = 0;
+    var identical = 0;
+    var walked = 0;
+    var meaningfulMismatches = 0;
+    var examples = new List<string>();
+    foreach (var (name, cluster) in ReadClusters())
+    {
+        if (!name.EndsWith(".dae.phyre", StringComparison.OrdinalIgnoreCase)) continue;
+        ED8Editor.Core.CpuModel model;
+        try
+        {
+            model = new PhyreD3D11ModelReader().Read(Path.GetFileNameWithoutExtension(name), cluster);
+        }
+        catch (Exception exception) when (exception is ED8Editor.Phyre.InvalidPhyreException
+            or InvalidDataException or ArgumentException)
+        {
+            continue;
+        }
+        if (model.Skeleton is not { Joints.Count: > 0 } skeleton) continue;
+
+        var flattened = model.Meshes.SelectMany(mesh => mesh.Primitives).ToArray();
+        for (var index = 0; index < flattened.Length; index++)
+        {
+            var primitive = flattened[index];
+            if (primitive.SkinBones is not { Count: > 0 } bones) continue;
+            var local = PhyreMeshSourceReader.ReadVerbatim(primitive, "s");
+            if (local is null) continue;
+
+            // Local index to hierarchy index, the reverse of what Build does —
+            // exactly what a retargeter would have handed it, if it had bound
+            // every vertex back onto the bone it already had.
+            var hierarchyAddressed = local with
+            {
+                Vertices = local.Vertices.Select(vertex => vertex with
+                {
+                    Joints = vertex.Joints
+                        .Select(slot => slot >= 0 && slot < bones.Count ? bones[slot].HierarchyMatrixIndex : -1)
+                        .ToArray(),
+                }).ToArray(),
+            };
+
+            segments++;
+            try
+            {
+                var (source, segmentReport) = PhyreSkinnedSegmentReplacement.Build(
+                    model, skeleton, index, hierarchyAddressed);
+                if (segmentReport.Walked != 0) walked += segmentReport.Walked;
+                var written = PhyreModelReplacement.Replace(cluster, source);
+                if (written.AsSpan().SequenceEqual(cluster)) { identical++; continue; }
+                var at = 0;
+                while (at < cluster.Length && at < written.Length && cluster[at] == written[at]) at++;
+                // A byte mismatch might still be a meaningless one: a slot the
+                // original left at zero weight can hold any leftover index,
+                // and this does not try to reproduce that leftover. Decoding
+                // both sides and comparing only the influences that actually
+                // carry weight says whether what deforms the mesh agrees.
+                var meaningfulMismatch = false;
+                for (var v = 0; v < local!.Vertices.Count && !meaningfulMismatch; v++)
+                {
+                    var before = local.Vertices[v];
+                    var after = source.Meshes[index].Vertices[v];
+                    var beforeSet = Enumerable.Range(0, 4)
+                        .Where(slot => before.Weights[slot] > 0f)
+                        .Select(slot => (
+                            bones[before.Joints[slot]].HierarchyMatrixIndex,
+                            MathF.Round(before.Weights[slot], 4)))
+                        .OrderBy(pair => pair.Item1).ToArray();
+                    var afterSet = Enumerable.Range(0, 4)
+                        .Where(slot => after.Weights[slot] > 0f)
+                        .Select(slot => (
+                            bones[after.Joints[slot]].HierarchyMatrixIndex,
+                            MathF.Round(after.Weights[slot], 4)))
+                        .OrderBy(pair => pair.Item1).ToArray();
+                    // Renormalising after translation reintroduces ordinary
+                    // floating point noise — the game's own stored weights are
+                    // not exactly the values a fresh division produces either.
+                    // A hundredth of a percent of weight is not a mismatch.
+                    var disagrees = beforeSet.Length != afterSet.Length
+                        || beforeSet.Zip(afterSet).Any(pair =>
+                            pair.First.Item1 != pair.Second.Item1
+                            || MathF.Abs(pair.First.Item2 - pair.Second.Item2) > 0.001f);
+                    if (disagrees) meaningfulMismatch = true;
+                }
+                if (meaningfulMismatch)
+                {
+                    meaningfulMismatches++;
+                    examples.Add($"{name} segment {index}: differs at {at} of {cluster.Length}"
+                        + $" (walked {segmentReport.Walked}, dropped {segmentReport.Dropped:0.###},"
+                        + $" {local.Vertices.Count} vertices, {bones.Count} local bones)");
+                }
+            }
+            catch (Exception exception) when (exception is InvalidOperationException
+                or ArgumentException or IndexOutOfRangeException or ArgumentOutOfRangeException)
+            {
+                if (examples.Count < 8) examples.Add($"{name} segment {index}: {exception.Message}");
+            }
+        }
+    }
+
+    Console.WriteLine($"{identical} of {segments} segments given their own mesh back unchanged"
+        + $" ({walked} vertice(s) walked to an ancestor where none should have been needed,"
+        + $" {meaningfulMismatches} segment(s) where the WEIGHTED influences themselves disagree)");
+    foreach (var line in examples) Console.WriteLine($"  {line}");
+    return meaningfulMismatches == 0 && walked == 0 ? 0 : 1;
 }
 if (physicsRepair)
 {

@@ -1,4 +1,4 @@
-namespace ED8Editor.ShaderForge;
+namespace ED8Editor.Shaders.Forge;
 
 /// <summary>
 /// Which engine parameter a shader declaration asks for, from the semantic it is

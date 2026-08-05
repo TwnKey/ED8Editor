@@ -2,7 +2,7 @@ using ED8Editor.Core;
 using ED8Editor.Phyre;
 using ED8Editor.Phyre.Authoring;
 
-namespace ED8Editor.ShaderForge;
+namespace ED8Editor.Shaders.Forge;
 
 /// <summary>
 /// The parameter interface an effect must declare, computed from compiled bytecode

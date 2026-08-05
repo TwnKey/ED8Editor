@@ -372,13 +372,21 @@ public static class MapModelPackage
     /// every prop written with a copied block has crashed. Turning the one difference
     /// off says which of the two is at fault.
     /// </param>
+    /// <param name="shaderAssignments">
+    /// What the author pointed each material at, by material name. A material with
+    /// no assignment keeps the block the package already had, so assigning one
+    /// shader out of six changes one material and leaves five alone.
+    /// </param>
     public static string WriteProp(
         ModProject project,
         string assetId,
         PhyreModelSource model,
         Action<string>? say = null,
         string? shaderPackage = null,
-        PropMaterial material = PropMaterial.Minimal)
+        PropMaterial material = PropMaterial.Minimal,
+        string? assetFolder = null,
+        string? assetName = null,
+        IReadOnlyDictionary<string, ShaderAssignment>? shaderAssignments = null)
     {
         ArgumentNullException.ThrowIfNull(project);
         ArgumentNullException.ThrowIfNull(model);
@@ -481,7 +489,26 @@ public static class MapModelPackage
                 + $" {compatibleDefault.ParameterBufferSize} bytes,"
                 + $" {compatibleDefault.SamplerStates.Count} sampler states)"
             : $"material: {material}");
-        say?.Invoke($"the material asks for '{parameters.ShaderAsset}'");
+
+        // What the author chose, material by material. Each assigned block is built
+        // from its own shader's declarations, so the constants a material supplies
+        // are the ones that shader asks for rather than the ones its neighbour did.
+        if (shaderAssignments is { Count: > 0 })
+        {
+            var (assigned, brought) = AuthoredShaderBinding.Build(
+                MaterialSlots(authored),
+                shaderAssignments,
+                binding.Parameters,
+                NeutralTextureAsset);
+            binding = assigned;
+            var carried = shaders.ToDictionary(
+                value => value.Name, value => value.Data, StringComparer.OrdinalIgnoreCase);
+            foreach (var (name, data) in brought) carried[name] = data;
+            shaders = carried.Select(pair => (pair.Key, pair.Value)).ToArray();
+            say?.Invoke($"shaders: {shaderAssignments.Count} material(s) assigned,"
+                + $" {shaders.Length} effect(s) in the package");
+        }
+        say?.Invoke($"the material asks for '{binding.ShaderAsset}'");
         var cluster = PhyreClusterAssembler.Assemble(
             PhyreModelClusterWriter.Contents(
                 authored,

@@ -535,8 +535,14 @@ static int BuildFxPhyre(string hlslFile, string outputPath)
         .Replace("_ps_", "_vs_", StringComparison.OrdinalIgnoreCase)
         .Replace("_PS_", "_VS_", StringComparison.OrdinalIgnoreCase);
 
-    // For now, always use default VS to avoid packoffset conflicts in generated files
-    vsFile = ""; // force default
+    // A source that carries its own vertex entry point is used for both: forcing a
+    // generated vertex shader silently replaced the author's vertex inputs, which
+    // showed up as a stream the mesh could never bind.
+    if (!File.Exists(vsFile)
+        && File.ReadAllText(hlslFile).Contains("VSMain", StringComparison.Ordinal))
+    {
+        vsFile = hlslFile;
+    }
 
     if (!File.Exists(hlslFile))
     {

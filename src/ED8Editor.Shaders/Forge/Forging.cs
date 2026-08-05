@@ -3,7 +3,7 @@ using ED8Editor.Core;
 using ED8Editor.Phyre;
 using ED8Editor.Phyre.Authoring;
 
-namespace ED8Editor.ShaderForge;
+namespace ED8Editor.Shaders.Forge;
 
 /// <summary>
 /// Writes a shader variant: every one of its thirty-six programs recompiled from the
@@ -25,7 +25,8 @@ public static class Forging
         IReadOnlyList<string>? switches,
         string? assetName,
         Func<string, string, IReadOnlyList<string>, byte[]?> compile,
-        bool generateInterface = false)
+        bool generateInterface = false,
+        bool doubleSided = false)
     {
         ArgumentNullException.ThrowIfNull(compile);
         var image = (ReadOnlyMemory<byte>)File.ReadAllBytes(templatePath);
@@ -193,6 +194,9 @@ public static class Forging
                 Console.WriteLine($"  declare : {material.Count} commutateur(s)");
             }
         }
+
+        // Whether each pass culls, which the switches decide and recompiling does not.
+        Culling.Apply(groups, cut, fixups, classes, material, doubleSided);
 
         // The interface the programs ask for, rather than the one the template came
         // with. Only worth doing when the source is not the template's own: recompiling

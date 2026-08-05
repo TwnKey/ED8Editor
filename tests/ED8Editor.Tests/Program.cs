@@ -913,6 +913,9 @@ var tests = new (string Name, Action Run)[]
     ("imports textured OBJ into the canonical model scene", ImportsCanonicalObjModel),
     ("resolves a uniquely identified package texture", ResolvesUniquePackageTexture),
     ("adapts canonical skinning explicitly for Phyre", AdaptsCanonicalSkinningForPhyre),
+    ("maps common rig bone names onto the game's own", MapsCommonRigBoneNames),
+    ("matches imported animations to the slots the game plays", MatchesImportedAnimationSlots),
+    ("binds an unskinned mesh to the nearest bones", BindsUnskinnedMeshByProximity),
     ("adapts canonical geometry and animation for preview", AdaptsCanonicalModelForPreview),
     ("resolves semantic TBL references by category", ResolvesSemanticTableReferences),
     ("builds semantic choices from the requested TBL category", BuildsSemanticTableChoices),
@@ -1074,6 +1077,171 @@ static void ResolvesUniquePackageTexture()
     finally
     {
         Directory.Delete(directory, recursive: true);
+    }
+}
+
+// An imported animation has to find the slot the game's own logic plays, whatever
+// an exporter decided to call it. The slot names are read off C_NPC000's manifest.
+static void MatchesImportedAnimationSlots()
+{
+    var slots = new[] { "WAIT", "WALK", "RUN", "BTL_WAIT", "FIELD_ATTACK" };
+
+    foreach (var (imported, expected) in new[]
+             {
+                 ("RUN", "RUN"),
+                 ("run", "RUN"),
+                 ("Armature|Run", "RUN"),
+                 ("btl_wait", "BTL_WAIT"),
+                 ("Btl Wait", "BTL_WAIT"),
+                 ("field-attack", "FIELD_ATTACK"),
+             })
+    {
+        var found = CharacterAnimationPackage.GuessSlot(imported, slots);
+        if (found != expected)
+            throw new InvalidDataException($"'{imported}' matched {found ?? "nothing"}, not {expected}.");
+    }
+
+    // A name that means nothing here is left for a person rather than dropped on
+    // whichever slot happens to sort first.
+    if (CharacterAnimationPackage.GuessSlot("mocap_take_017", slots) is not null)
+        throw new InvalidDataException("An unrecognised animation was matched to a slot.");
+
+    // Renaming a channel's bone is what makes an imported curve drive anything;
+    // a channel whose bone the mapping does not name is left out rather than
+    // written against a name the skeleton has never heard of.
+    var clip = new CpuAnimationClip("a", "RUN", 0f, 1f, new[]
+    {
+        new CpuAnimationChannel("mixamorig:Hips", CpuAnimationPath.Translation,
+            CpuAnimationInterpolation.Linear, new[] { 0f }, new[] { Vector4.Zero }),
+        new CpuAnimationChannel("cape_flap", CpuAnimationPath.Rotation,
+            CpuAnimationInterpolation.Linear, new[] { 0f }, new[] { Vector4.Zero }),
+    });
+    var mapping = new Dictionary<string, string>(StringComparer.Ordinal) { ["mixamorig:Hips"] = "Hips" };
+    var retargeted = CharacterAnimationPackage.Retarget(clip, mapping);
+    if (retargeted.Channels.Count != 1 || retargeted.Channels[0].TargetName != "Hips")
+    {
+        throw new InvalidDataException(
+            $"Retargeting kept {retargeted.Channels.Count} channel(s) named"
+            + $" {string.Join(",", retargeted.Channels.Select(c => c.TargetName))}.");
+    }
+}
+
+// A humanoid rig from the usual pipelines has to land on the game's own bone
+// names without anyone typing a table. The names below are what Mixamo, Blender
+// and a Max Biped actually export; the game's are ply000's, read off the file.
+static void MapsCommonRigBoneNames()
+{
+    var game = new[]
+    {
+        "Hips", "Spine", "Head", "LeftShoulder", "LeftArm", "LeftForeArm", "LeftHand",
+        "RightShoulder", "RightArm", "RightForeArm", "RightHand",
+        "LeftUpLeg", "LeftLeg", "LeftFoot", "LeftToe",
+        "RightUpLeg", "RightLeg", "RightFoot", "RightToe",
+        "Bag01", "L_cat_point", "BS01",
+    };
+
+    // Mixamo: the game's own names under a namespace.
+    var mixamo = new[]
+    {
+        "mixamorig:Hips", "mixamorig:Spine", "mixamorig:Head",
+        "mixamorig:LeftArm", "mixamorig:LeftForeArm", "mixamorig:LeftHand",
+        "mixamorig:RightUpLeg", "mixamorig:RightLeg", "mixamorig:RightFoot",
+    };
+    var mapped = Cs1RigNameMapper.AutoMap(mixamo, game);
+    foreach (var one in mapped)
+    {
+        var expected = one.SourceName["mixamorig:".Length..];
+        if (one.TargetName != expected)
+            throw new InvalidDataException($"{one.SourceName} mapped to {one.TargetName ?? "nothing"}, not {expected}.");
+    }
+
+    // Blender/Rigify style: side as a suffix, different words for the same bones.
+    var blender = new[] { "pelvis", "upper_arm.L", "lower_arm.L", "thigh.R", "shin.R", "foot.R" };
+    var expectedBlender = new[] { "Hips", "LeftArm", "LeftForeArm", "RightUpLeg", "RightLeg", "RightFoot" };
+    var blenderMapped = Cs1RigNameMapper.AutoMap(blender, game);
+    for (var index = 0; index < blender.Length; index++)
+    {
+        if (blenderMapped[index].TargetName != expectedBlender[index])
+        {
+            throw new InvalidDataException(
+                $"{blender[index]} mapped to {blenderMapped[index].TargetName ?? "nothing"},"
+                + $" not {expectedBlender[index]}.");
+        }
+    }
+
+    // A bone no convention covers is left for a person, never guessed at: a wrong
+    // guess here drives a joint with the wrong rotation, which is worse than still.
+    var unknown = Cs1RigNameMapper.AutoMap(new[] { "cape_flap_03" }, game);
+    if (unknown[0].TargetName is not null)
+        throw new InvalidDataException("An unrecognised bone was mapped rather than left blank.");
+
+    // No two source bones may claim the same game bone.
+    var duplicated = Cs1RigNameMapper.AutoMap(new[] { "Hips", "pelvis" }, game);
+    if (duplicated.Count(one => one.TargetName == "Hips") != 1)
+        throw new InvalidDataException("Two source bones were both mapped onto Hips.");
+}
+
+// A mesh with no weights at all still has to end up following the skeleton. Every
+// vertex is placed right on top of one bone, so the nearest-bone bind has exactly
+// one right answer and any mistake shows.
+static void BindsUnskinnedMeshByProximity()
+{
+    var joints = new[]
+    {
+        new CpuSkeletonJoint("Hips", -1, Matrix4x4.CreateTranslation(0, 1, 0)),
+        new CpuSkeletonJoint("Spine", 0, Matrix4x4.CreateTranslation(0, 0.5f, 0)),
+        new CpuSkeletonJoint("Head", 1, Matrix4x4.CreateTranslation(0, 0.5f, 0)),
+        new CpuSkeletonJoint("head_point", 2, Matrix4x4.CreateTranslation(0, 0.2f, 0)),
+    };
+    var skeleton = new CpuSkeleton(joints, Array.Empty<Matrix4x4>(), Array.Empty<int>());
+
+    // One vertex sitting on each of the three deforming joints.
+    var positions = new[] { new Vector3(0, 1, 0), new Vector3(0, 1.5f, 0), new Vector3(0, 2f, 0) };
+    var vertices = positions.Select(position => new PhyreVertexSource(
+        position, Vector3.UnitY,
+        new[] { new PhyreTexCoordSet(Vector2.Zero, Vector3.UnitX, Vector3.UnitZ) },
+        Array.Empty<int>(), Array.Empty<float>())).ToArray();
+    var model = new PhyreModelSource(
+        "m", new[] { new PhyreMeshSource("m", vertices, new[] { 0, 1, 2 }) },
+        Array.Empty<PhyreJointSource>());
+
+    var bound = PhyreProximitySkinBinder.Bind(model, skeleton);
+    var boundVertices = bound.Meshes[0].Vertices;
+    for (var index = 0; index < 3; index++)
+    {
+        if (boundVertices[index].Joints[0] != index)
+        {
+            throw new InvalidDataException(
+                $"Vertex {index} sits on joint {index} but bound to {boundVertices[index].Joints[0]}.");
+        }
+        var total = boundVertices[index].Weights.Sum();
+        if (MathF.Abs(total - 1f) > 1e-4f)
+            throw new InvalidDataException($"Vertex {index} weights sum to {total}, not one.");
+        // An attachment locator never deforms geometry, so nothing may bind to it.
+        if (boundVertices[index].Joints.Take(2).Contains(3))
+            throw new InvalidDataException($"Vertex {index} bound to the attachment locator.");
+    }
+
+    // Fitting to height has to make an import of any size stand where the skeleton
+    // does — the whole basis on which "nearest bone" means anything.
+    var giant = model with
+    {
+        Meshes = new[]
+        {
+            model.Meshes[0] with
+            {
+                Vertices = vertices
+                    .Select(vertex => vertex with { Position = vertex.Position * 100f })
+                    .ToArray(),
+            },
+        },
+    };
+    var fitted = PhyreProximitySkinBinder.FitToHeight(giant, skeleton);
+    var fittedY = fitted.Meshes[0].Vertices.Select(vertex => vertex.Position.Y).ToArray();
+    if (MathF.Abs(fittedY.Min() - 1f) > 1e-3f || MathF.Abs(fittedY.Max() - 2f) > 1e-3f)
+    {
+        throw new InvalidDataException(
+            $"Fitted mesh spans {fittedY.Min()}..{fittedY.Max()}, not the skeleton's 1..2.");
     }
 }
 

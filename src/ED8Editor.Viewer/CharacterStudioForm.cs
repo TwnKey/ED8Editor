@@ -1,8 +1,11 @@
 using System.Numerics;
 using ED8Editor.Application;
+using ED8Editor.Assets;
 using ED8Editor.Core;
 using ED8Editor.Decompiler;
 using ED8Editor.Models;
+using ED8Editor.Packages;
+using ED8Editor.Phyre;
 using ED8Editor.Rendering;
 using ED8Editor.Scene;
 using System.Drawing.Imaging;
@@ -25,6 +28,7 @@ internal sealed class CharacterStudioForm : Form
     private readonly ScriptAnimationLibrary animationLibrary;
     private readonly CharacterAuthoringKind kind;
     private readonly Action<string, bool> onSaving;
+    private readonly ModProject? modProject;
     private readonly string? instructionDefinitionsPath;
     private readonly IReadOnlyList<CharacterAuthoringEntry> catalog;
     private readonly IReadOnlyDictionary<int, EnemyBattleProfile> enemyProfiles;
@@ -90,6 +94,25 @@ internal sealed class CharacterStudioForm : Form
         AutoSize = true,
         Enabled = false,
     };
+    private readonly Button fitImportedModel = new()
+    {
+        Text = "Fit imported model onto this character…",
+        AutoSize = true,
+        Enabled = false,
+    };
+    private readonly Button importAnimations = new()
+    {
+        Text = "Put imported animations into this character's slots…",
+        AutoSize = true,
+        Enabled = false,
+    };
+    private readonly Button createFromSelected = new()
+    {
+        Text = "Create a new one from the selected…",
+        AutoSize = true,
+    };
+    private ImportedModelScene? importedScene;
+    private IReadOnlyList<CpuAnimationClip> importedClips = Array.Empty<CpuAnimationClip>();
     private readonly Label status = new() { Dock = DockStyle.Bottom, Height = 24, AutoEllipsis = true };
     private readonly System.Windows.Forms.Timer renderTimer = new() { Interval = 16 };
     private readonly Dictionary<string, CpuModel> models = new(StringComparer.OrdinalIgnoreCase);
@@ -116,7 +139,8 @@ internal sealed class CharacterStudioForm : Form
         ScriptAnimationLibrary animationLibrary,
         CharacterAuthoringKind kind,
         Action<string, bool> onSaving,
-        string? instructionDefinitionsPath = null)
+        string? instructionDefinitionsPath = null,
+        ModProject? modProject = null)
     {
         this.gameDataPath = gameDataPath ?? throw new ArgumentNullException(nameof(gameDataPath));
         this.loader = loader ?? throw new ArgumentNullException(nameof(loader));
@@ -124,6 +148,7 @@ internal sealed class CharacterStudioForm : Form
         this.animationLibrary = animationLibrary ?? throw new ArgumentNullException(nameof(animationLibrary));
         this.kind = kind;
         this.onSaving = onSaving ?? throw new ArgumentNullException(nameof(onSaving));
+        this.modProject = modProject;
         this.instructionDefinitionsPath = instructionDefinitionsPath;
         var profiles = kind == CharacterAuthoringKind.Enemy
             ? EnemyBattleCatalog.LoadProfiles(gameDataPath)
@@ -159,6 +184,9 @@ internal sealed class CharacterStudioForm : Form
         importModelPackage.Click += async (_, _) => await ImportModelPackageAsync();
         importedAnimations.SelectedIndexChanged += (_, _) => SelectImportedAnimation();
         copyAnimationProgram.Click += (_, _) => CopyAnimationProgram();
+        fitImportedModel.Click += (_, _) => FitImportedModel();
+        importAnimations.Click += (_, _) => ImportAnimations();
+        createFromSelected.Click += (_, _) => CreateFromSelected();
         saveEnemyProfile.Click += (_, _) => SaveEnemyProfile();
         openEnemyAi.Click += (_, _) => OpenSelectedEnemyScript(ai: true);
         openEnemyAni.Click += (_, _) => OpenSelectedEnemyScript(ai: false);
@@ -235,7 +263,9 @@ internal sealed class CharacterStudioForm : Form
         authoring.Controls.Add(importReport);
         authoring.Controls.Add(copyAnimationProgram);
         authoring.Controls.Add(new Button { Text = "Create blank ANI… (format contract incomplete)", AutoSize = true, Enabled = false });
-        authoring.Controls.Add(new Button { Text = "Write .dae.phyre… (writer unavailable)", AutoSize = true, Enabled = false });
+        authoring.Controls.Add(fitImportedModel);
+        authoring.Controls.Add(importAnimations);
+        authoring.Controls.Add(createFromSelected);
         authoringTab.Controls.Add(authoring);
         inspectorTabs.TabPages.Add(authoringTab);
 
@@ -351,6 +381,10 @@ internal sealed class CharacterStudioForm : Form
                 importedAnimations.EndUpdate();
             }
             importReport.Text = BuildImportReport(result.Scene, result.Preview);
+            importedScene = result.Scene;
+            importedClips = result.Preview.Animations;
+            fitImportedModel.Enabled = true;
+            importAnimations.Enabled = importedClips.Count != 0;
             await UpdateRigComparisonAsync();
             status.Text =
                 $"Imported {Path.GetFileName(modelPath)}: {result.Scene.Meshes.Count} meshes, "
@@ -530,6 +564,350 @@ internal sealed class CharacterStudioForm : Form
         await battleDataTask;
         status.Text = $"{entry.ModelAssetId}: {model.Meshes.Count} meshes, "
             + $"{model.Materials.Count} materials, {model.Skeleton?.Joints.Count ?? 0} joints.";
+    }
+
+    /// <summary>
+    /// Puts the imported model onto the selected character, so it rides that
+    /// character's own animations.
+    ///
+    /// Nothing about the character's skeleton, shaders, materials or clips
+    /// changes — only the geometry of the one segment chosen in the dialog.
+    /// That is what makes this safe to try: whatever the import turns out to
+    /// be, the file it goes into is still the file the game already loads.
+    /// </summary>
+    private void FitImportedModel()
+    {
+        if (importedScene is not { } scene)
+        {
+            MessageBox.Show(
+                this, "Importez d'abord un modèle.", "Fit imported model",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        if (entries.SelectedItem is not CharacterAuthoringEntry entry)
+        {
+            MessageBox.Show(
+                this, "Choisissez le personnage à habiller.", "Fit imported model",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        CharacterRetargetPackage.ResolvedModel? resolved;
+        CpuModel? targetModel;
+        try
+        {
+            resolved = CharacterRetargetPackage.ResolveModel(
+                new GameAssetResolverFactory(),
+                new PkgArchiveReader(),
+                new AssetManifestReader(),
+                gameDataPath,
+                entry.ModelAssetId);
+            targetModel = resolved is null
+                ? null
+                : new PhyreD3D11ModelReader().Read(entry.ModelAssetId, resolved.Cluster);
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException or InvalidPhyreException or ArgumentException)
+        {
+            MessageBox.Show(
+                this, exception.Message, "Fit imported model",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        if (resolved is null || targetModel is null)
+        {
+            MessageBox.Show(
+                this,
+                $"Le paquet de {entry.ModelAssetId} n'a pas pu être résolu.",
+                "Fit imported model",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+        if (targetModel.Skeleton is not { Joints.Count: > 0 })
+        {
+            MessageBox.Show(
+                this,
+                $"{entry.ModelAssetId} n'a pas de squelette : il n'y a aucune animation"
+                    + " à laquelle raccrocher un modèle.",
+                "Fit imported model",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        using var dialog = new CharacterRetargetForm(
+            scene, targetModel, entry.ModelAssetId,
+            (segmentIndex, mapping) => Commit(scene, resolved, targetModel, segmentIndex, mapping));
+        dialog.ShowDialog(this);
+    }
+
+    /// <summary>
+    /// Stands a new character or enemy up from the selected one.
+    ///
+    /// Every package that belongs to it travels — the model and each companion —
+    /// and each one is renamed to answer to the new asset. That is what makes the
+    /// same action right for both kinds: a character keeps its clips in a
+    /// <c>_DF1</c> package and an enemy in its own, and neither is a rule this
+    /// has to know, because every companion follows the asset's name.
+    /// </summary>
+    private void CreateFromSelected()
+    {
+        if (entries.SelectedItem is not CharacterAuthoringEntry entry)
+        {
+            MessageBox.Show(
+                this, "Choisissez d'abord celui à reprendre comme base.",
+                "Create", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        if (modProject is null)
+        {
+            MessageBox.Show(
+                this,
+                "Créer passe par un projet de mod, qui suit les fichiers créés et sait"
+                    + " les retirer. Ouvrez-en un.",
+                "Create",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            return;
+        }
+
+        var companions = CharacterCreation.Companions(
+            modProject.GameDirectory, entry.ModelAssetId);
+        var chosen = Prompt(
+            "Nom du nouvel asset",
+            $"Copié depuis {entry.ModelAssetId} et ses {companions.Count} paquet(s)."
+                + " Gardez la forme des noms du jeu.",
+            Suggested(entry.ModelAssetId));
+        if (chosen is null) return;
+        chosen = chosen.Trim().ToUpperInvariant();
+        if (chosen.Length == 0) return;
+
+        try
+        {
+            Cursor = Cursors.WaitCursor;
+            var made = CharacterCreation.Create(
+                modProject, entry.ModelAssetId, chosen, line => status.Text = line);
+            MessageBox.Show(
+                this,
+                $"{made.AssetId} créé : {made.Written.Count} paquet(s),"
+                + $" {made.Symbols} symbole(s) renommé(s).\r\n\r\n"
+                + "Il charge déjà, avec le modèle et les animations de sa source. Ce qui"
+                + " reste pour que le jeu l'emploie est de le nommer dans ses tables —"
+                + " t_mons pour un ennemi, t_name pour un personnage — ce que cette"
+                + " fenêtre ne fait pas encore.",
+                "Create",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            status.Text = $"{made.AssetId}: {string.Join(", ", made.Written)}";
+        }
+        catch (Exception exception) when (exception is IOException
+            or FileNotFoundException or ArgumentException or InvalidDataException)
+        {
+            MessageBox.Show(
+                this, exception.Message, "Create",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            Cursor = Cursors.Default;
+        }
+    }
+
+    /// <summary>A name of the same shape, in the range mods can take over.</summary>
+    private string Suggested(string assetId)
+    {
+        var digits = new string(assetId.Reverse().TakeWhile(char.IsDigit).Reverse().ToArray());
+        if (digits.Length == 0) return assetId + "_NEW";
+        var stem = assetId[..^digits.Length];
+        for (var number = 900; number < 1000; number++)
+        {
+            var candidate = stem + number.ToString(new string('0', digits.Length));
+            if (CharacterCreation.Companions(
+                    modProject!.GameDirectory, candidate).Count == 0)
+            {
+                return candidate;
+            }
+        }
+        return stem + "900";
+    }
+
+    /// <summary>A one-line question, which WinForms does not offer on its own.</summary>
+    private static string? Prompt(string title, string message, string initial)
+    {
+        using var window = new Form
+        {
+            Text = title,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterParent,
+            MinimizeBox = false,
+            MaximizeBox = false,
+            ClientSize = new Size(470, 140),
+        };
+        var label = new Label { Left = 12, Top = 12, Width = 446, Height = 46, Text = message };
+        var box = new TextBox { Left = 12, Top = 66, Width = 446, Text = initial };
+        var ok = new Button
+        {
+            Text = "OK", DialogResult = DialogResult.OK, Left = 302, Top = 100, Width = 75,
+        };
+        var cancel = new Button
+        {
+            Text = "Annuler", DialogResult = DialogResult.Cancel, Left = 383, Top = 100, Width = 75,
+        };
+        window.Controls.AddRange(new Control[] { label, box, ok, cancel });
+        window.AcceptButton = ok;
+        window.CancelButton = cancel;
+        return window.ShowDialog() == DialogResult.OK ? box.Text : null;
+    }
+
+    /// <summary>
+    /// Writes the animations the import brought into the character's own clip
+    /// slots, so the game plays them without a script being touched.
+    ///
+    /// The bones are renamed on the way in, by the same guess the model fit uses —
+    /// an animation targeting <c>mixamorig:LeftForeArm</c> has to drive the bone
+    /// the game calls <c>LeftForeArm</c>, or it drives nothing.
+    /// </summary>
+    private void ImportAnimations()
+    {
+        if (importedScene is not { } scene || importedClips.Count == 0)
+        {
+            MessageBox.Show(
+                this, "Importez d'abord un modèle qui porte des animations.",
+                "Imported animations", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        if (entries.SelectedItem is not CharacterAuthoringEntry entry)
+        {
+            MessageBox.Show(
+                this, "Choisissez le personnage à animer.",
+                "Imported animations", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        IReadOnlyList<CharacterAnimationPackage.ClipSlot> slots;
+        CpuModel? target;
+        try
+        {
+            slots = CharacterAnimationPackage.Slots(
+                new GameAssetResolverFactory(), new PkgArchiveReader(), new AssetManifestReader(),
+                gameDataPath, entry.ModelAssetId);
+            target = LoadedModel(entry.ModelAssetId);
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException or ArgumentException)
+        {
+            MessageBox.Show(
+                this, exception.Message, "Imported animations",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        if (slots.Count == 0)
+        {
+            MessageBox.Show(
+                this,
+                $"{entry.ModelAssetId} ne déclare aucun emplacement d'animation, donc il n'y"
+                    + " a rien que le jeu saurait jouer.",
+                "Imported animations",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        // Rig bone to game bone, guessed the same way the model fit guesses it.
+        var gameBones = target?.Skeleton?.Joints.Select(joint => joint.Name).ToArray()
+            ?? Array.Empty<string>();
+        var sourceBones = scene.Nodes.Select(node => node.Name).ToArray();
+        var mapping = Cs1RigNameMapper.AutoMap(sourceBones, gameBones)
+            .Where(value => value.TargetName is not null)
+            .ToDictionary(value => value.SourceName, value => value.TargetName!, StringComparer.Ordinal);
+
+        using var dialog = new CharacterAnimationImportForm(
+            importedClips, slots, entry.ModelAssetId,
+            chosen => CommitAnimations(chosen, mapping, entry.ModelAssetId));
+        dialog.ShowDialog(this);
+    }
+
+    /// <summary>The character's own model, loaded synchronously for its skeleton.</summary>
+    private CpuModel? LoadedModel(string assetId)
+    {
+        if (models.TryGetValue(assetId, out var cached)) return cached;
+        var load = loader.LoadAsset(assetId, gameDataPath);
+        if (load.Status != AssetModelLoadStatus.Loaded || load.Model is null) return null;
+        models[assetId] = load.Model;
+        return load.Model;
+    }
+
+    private bool CommitAnimations(
+        IReadOnlyList<(CpuAnimationClip Clip, CharacterAnimationPackage.ClipSlot Slot)> chosen,
+        IReadOnlyDictionary<string, string> mapping,
+        string assetId)
+    {
+        try
+        {
+            var written = 0;
+            var dropped = 0;
+            foreach (var (clip, slot) in chosen)
+            {
+                var retargeted = CharacterAnimationPackage.Retarget(clip, mapping);
+                if (retargeted.Channels.Count == 0)
+                {
+                    dropped++;
+                    continue;
+                }
+                CharacterAnimationPackage.Write(
+                    onSaving, new PkgArchiveReader(), slot, retargeted);
+                written++;
+            }
+            status.Text = dropped == 0
+                ? $"{written} animation(s) written into {assetId}."
+                : $"{written} animation(s) written into {assetId}; {dropped} drove no bone"
+                    + " this skeleton has and were left out.";
+            return written != 0;
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException or InvalidOperationException
+            or ArgumentException or NotSupportedException)
+        {
+            MessageBox.Show(
+                this, exception.Message, "Imported animations",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return false;
+        }
+    }
+
+    /// <summary>Fits and writes, reporting exactly what the fit cost.</summary>
+    private bool Commit(
+        ImportedModelScene scene,
+        CharacterRetargetPackage.ResolvedModel resolved,
+        CpuModel targetModel,
+        int segmentIndex,
+        IReadOnlyDictionary<string, string>? mapping)
+    {
+        try
+        {
+            var fit = CharacterRetargetPackage.Fit(scene, targetModel, segmentIndex, mapping);
+            CharacterRetargetPackage.WriteSegment(onSaving, resolved, fit.Full);
+            models.Remove(targetModel.AssetId);
+            if (resources.Remove(targetModel.AssetId, out var stale)) stale.Dispose();
+            status.Text =
+                $"Segment {segmentIndex} of {targetModel.AssetId} replaced —"
+                + $" {(fit.UsedForeignSkin ? "weights re-addressed from the import's own rig" : "bound to the nearest bones")}"
+                + $", {fit.Walked} vertex/vertices carried to an ancestor bone"
+                + $", at most {fit.DroppedWeight:0.###} of a vertex's weight dropped.";
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException
+            or InvalidDataException or InvalidOperationException
+            or ArgumentException or NotSupportedException)
+        {
+            MessageBox.Show(
+                this, exception.Message, "Fit imported model",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return false;
+        }
     }
 
     private void CopyAnimationProgram()
